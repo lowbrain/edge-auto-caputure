@@ -1,2 +1,13 @@
-__pycache__
-output
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# 仮想環境
+.venv/
+venv/
+
+# このツールの生成物（キャプチャ保存先）
+output/

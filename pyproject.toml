@@ -1,0 +1,17 @@
+[project]
+name = "edge-auto-capture"
+version = "0.1.0"
+description = "Edge の URL/タブ変化ごとにスクショと全文テキストを自動保存するツール"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "playwright",
+]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# 本体は単一モジュール構成（パッケージフォルダを作らない）
+py-modules = ["edge_auto_capture"]
