@@ -7,16 +7,52 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
 事前準備:
   1) pip install playwright
      playwright install
-  2) 既存の Edge を一度すべて閉じてから、デバッグポート付きで起動:
-     Windows:
+
+推奨の起動方法（ランチャを使う）:
+  付属の start_edge_debug.ps1 / run.bat が、デバッグポート付き Edge の起動 →
+  ポート待機 → 本スクリプト実行 までを自動で行う。最初に開くページや保存先などは
+  config.ini で指定する（起動ページは start_url。空なら about:blank）。
+    - run.bat をダブルクリック、または
+    - powershell -ExecutionPolicy Bypass -File .\\start_edge_debug.ps1
+  ランチャは毎回まっさらな一時プロファイルを使い、Ctrl+C で停止すると
+  自分が起動した Edge の終了と一時プロファイルの掃除まで行う。
+
+手動で起動する場合:
+  1) 既存の Edge を一度すべて閉じてから、デバッグポート付きで起動:
+     Windows（start_edge_debug.ps1 と同じオプション指定）:
        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" ^
          --remote-debugging-port=9222 ^
          --user-data-dir="C:\\edge-debug" ^
+         --no-first-run ^
+         --no-default-browser-check ^
+         --disable-sync ^
+         --disable-features=msImplicitSignin ^
          https://example.com
-     ※ 末尾の URL が最初に開くページ。省略すると空白ページで起動する。
-       ランチャ(start_edge_debug.ps1 / run.bat)で起動する場合は、この URL を
-       config.ini の start_url で指定する（空なら about:blank）。
-  3) その Edge で閲覧しながら実行:
+
+     各オプションの意味:
+       --remote-debugging-port=9222
+           CDP(DevTools)接続用のデバッグポートを開く。本スクリプトはこの
+           ポート（config.ini の cdp_url）へ接続して Edge を監視する。必須。
+       --user-data-dir="C:\\edge-debug"
+           使用するプロファイル（ユーザーデータ）フォルダを指定する。既存の
+           個人プロファイルと分離した専用フォルダにすることで、普段の Edge に
+           影響を与えずデバッグ用として起動できる。
+       --no-first-run
+           初回起動時のセットアップ画面（ようこそ画面など）を出さない。
+       --no-default-browser-check
+           「既定のブラウザにしますか？」の確認を出さない。
+       --disable-sync
+           アカウント同期を無効化する（プロファイル分離と併せてサインイン回避）。
+       --disable-features=msImplicitSignin
+           Edge の暗黙的サインインを抑止する（サインイン誘導ダイアログの回避）。
+       末尾の https://example.com
+           最初に開くページ。省略すると空白ページで起動する。
+
+     ※ --user-data-dir で指定したフォルダ（上記なら C:\\edge-debug）は手動起動
+       では自動削除されない。ランチャ(start_edge_debug.ps1)は一時フォルダを使い
+       終了時に掃除するが、手動の場合は残り続けるので、不要になったら自分で削除
+       すること。毎回まっさらにしたいなら起動前に削除するか別フォルダを指定する。
+  2) その Edge で閲覧しながら実行:
        python edge_auto_capture.py
 
 設定はソースではなく、同じフォルダの config.ini を編集して変更する。
