@@ -19,19 +19,12 @@ edge-auto-capture/
 ├─ pyproject.toml        依存とパッケージ設定
 ├─ README.md             このファイル（開発者向け）
 ├─ USAGE.txt             配布物(exe)に同梱する利用者向けの使い方
-├─ run.bat               開発時のダブルクリック起動
 └─ build.ps1             配布用 exe のビルド（PyInstaller）
 ```
 
 生成物（`build/` `dist/` `output/` `__pycache__/` `*.spec`）は Git 管理外。
 
 ## 開発時の実行
-
-```bat
-run.bat
-```
-
-または直接:
 
 ```bash
 pip install -e .
