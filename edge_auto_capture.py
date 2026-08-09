@@ -25,6 +25,7 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
 
 import asyncio
 import configparser
+import itertools
 import re
 import shutil
 import sys
@@ -33,6 +34,10 @@ from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import async_playwright
+
+# 保存ファイル名の一意性を保証する通し番号（この起動中で連番）。
+# next() は不可分なので、並行する capture() 同士でも番号は重複しない。
+_seq_counter = itertools.count(1)
 
 # ==== 設定（値は config.ini から load_config() で読み込む）========
 # 実際の値はスクリプトと同じフォルダの config.ini で調整する。
@@ -106,8 +111,14 @@ def safe_name(url: str) -> str:
 
 async def capture(page, url: str) -> None:
     OUTPUT_DIR.mkdir(exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    stem = f"{ts}_{safe_name(url)}"          # 3ファイルで同じ接頭辞を共有
+    # 一意性は「ミリ秒付き日時 + 通し番号」で保証する。URL スラッグは
+    # 読みやすさ用の装飾で、切り詰めや正規化で衝突しても実害はない。
+    # seq / stem は await より前に確定させ、番号を予約してから保存する。
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d_%H%M%S")
+    ms = now.strftime("%f")[:3]              # マイクロ秒の先頭3桁＝ミリ秒
+    seq = next(_seq_counter)
+    stem = f"{ts}_{ms}_{seq:04d}_{safe_name(url)}"   # 3ファイルで同じ接頭辞を共有
 
     # 読み込み完了を待つ（タイムアウトしても続行）
     try:
