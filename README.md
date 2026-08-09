@@ -18,7 +18,7 @@ edge-auto-capture/
 ├─ config.ini            既定の設定ファイル
 ├─ pyproject.toml        依存とパッケージ設定
 ├─ README.md             このファイル（開発者向け）
-├─ README_dist.txt       配布物(exe)に同梱する利用者向け説明
+├─ USAGE.txt             配布物(exe)に同梱する利用者向けの使い方
 └─ scripts/
     ├─ run.bat           開発時のダブルクリック起動
     ├─ build.bat         配布用 exe のビルド（build.ps1 を呼ぶ ASCII ラッパ）
@@ -71,7 +71,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 PyInstaller が `dist\edge_auto_capture\` を生成し、`config.ini` と
-`README_dist.txt`（→ `README.txt`）を exe の隣へ同梱する。
+`USAGE.txt` を exe の隣へ同梱する。
 
 ### 配布方法
 
@@ -81,7 +81,7 @@ PyInstaller が `dist\edge_auto_capture\` を生成し、`config.ini` と
 edge_auto_capture\
 ├─ edge_auto_capture.exe   ダブルクリックで起動
 ├─ config.ini              利用者が編集可能
-├─ README.txt              利用者向け説明
+├─ USAGE.txt               利用者向けの使い方
 ├─ _internal\              ランタイム + playwright ドライバ（必須・触らない）
 └─ output\                 実行後に生成される保存先
 ```
