@@ -8,8 +8,9 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
 毎回まっさらな一時プロファイルで Edge を起動し、終了時に自動で掃除する）。
 
 事前準備:
-  1) pip install playwright
-     playwright install
+  pip install -e .          （または pip install playwright）
+  ※ システムにインストール済みの Edge をそのまま使うため、
+    playwright install（ブラウザ同梱バイナリの取得）は不要。
 
 起動方法:
   - run.bat をダブルクリック、または
@@ -30,87 +31,123 @@ import re
 import shutil
 import sys
 import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Tuple
 
-from playwright.async_api import async_playwright
+from playwright.async_api import Page, async_playwright
+
+# 設定ファイルのパス（スクリプトと同じフォルダ固定）。
+CONFIG_PATH = Path(__file__).with_name("config.ini")
+
+# safe_name() がファイル名スラッグを切り詰める最大長。
+NAME_MAX_LEN = 80
 
 # 保存ファイル名の一意性を保証する通し番号（この起動中で連番）。
 # next() は不可分なので、並行する capture() 同士でも番号は重複しない。
 _seq_counter = itertools.count(1)
 
-# ==== 設定（値は config.ini から load_config() で読み込む）========
-# 実際の値はスクリプトと同じフォルダの config.ini で調整する。
-# 以下の各代入値は「既定値」を兼ねる: config.ini にその項目の
-# 行そのものが無い場合、load_config() はここの値へフォールバックする。
-# （項目行はあるが値だけ空の場合の扱いは load_config() のコメント参照）
-CONFIG_PATH = Path(__file__).with_name("config.ini")
-
-START_URL = "about:blank"           # Edge 起動時に最初に開くページ（空なら about:blank）
-EDGE_PATH = ""                      # Edge 実行ファイルのパス（空なら channel="msedge" に委ねる）
-OUTPUT_DIR = Path("output")         # 保存先フォルダ（png も txt もここ）
-POLL_INTERVAL = 1.0                 # URL変化を確認する間隔（秒）
-SETTLE_DELAY = 0.8                  # 変化検知後、描画が落ち着くまで待つ秒数
-LOAD_TIMEOUT = 5000                 # ページ読み込み待ちの上限（ミリ秒）
-SKIP_URLS = ("about:blank", "")     # 撮らないURL
-TARGET_SELECTOR = ""                # 一部抜き出しの CSS セレクタ（空ならスキップ）
-# ================================================================
+# 実行中の capture タスクへの強参照を保持する集合。
+# これが無いとイベントループはタスクを弱参照でしか持たず、
+# 実行途中で GC されて消える恐れがある（例外も握り潰される）。
+_tasks: set = set()
 
 
-def load_config() -> None:
-    """config.ini を読み込み、モジュールグローバルの設定値へ反映する。
+@dataclass
+class Config:
+    """config.ini から読み込む設定値一式。
+
+    各フィールドの初期値が「既定値」を兼ねる: config.ini にその項目行が
+    無い場合、load_config() はここの値へフォールバックする。
+    """
+
+    start_url: str = "about:blank"          # Edge 起動時に最初に開くページ
+    edge_path: str = ""                     # Edge 実行ファイルのパス（空なら channel="msedge"）
+    output_dir: Path = Path("output")       # 保存先フォルダ（png も txt もここ）
+    poll_interval: float = 1.0              # URL変化を確認する間隔（秒）
+    settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
+    load_timeout: int = 5000                # ページ読み込み待ちの上限（ミリ秒）
+    skip_urls: Tuple[str, ...] = ("about:blank", "")   # 撮らないURL
+    target_selector: str = ""               # 一部抜き出しの CSS セレクタ（空ならスキップ）
+
+
+def load_config() -> Config:
+    """config.ini を読み込み、Config を返す。
 
     ファイルが無い / 値が不正な場合はメッセージを表示して終了する。
 
     既定値まわりの挙動（現状仕様）:
       - config.ini / [capture] セクションが無い    → メッセージ表示して終了。
-      - 項目の「行そのものが無い」                 → モジュール冒頭の既定値を使う
+      - 項目の「行そのものが無い」                 → Config の既定値を使う
         （sec.get / getfloat / getint の第2引数が既定値）。
       - 数値項目の値だけが空（例: poll_interval =）→ 変換に失敗し終了（ValueError）。
-      - 文字列項目の値だけが空（cdp_url / output_dir）→ 空文字がそのまま入る。
+      - 文字列項目の値だけが空（output_dir / edge_path など）→ 空文字がそのまま入る。
         ※ output_dir が空だと Path('.') となりカレントフォルダへ保存されるので注意。
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
     """
-    global START_URL, EDGE_PATH, OUTPUT_DIR, POLL_INTERVAL, SETTLE_DELAY
-    global LOAD_TIMEOUT, SKIP_URLS, TARGET_SELECTOR
-
     if not CONFIG_PATH.exists():
         print(f"設定ファイルが見つかりません: {CONFIG_PATH}")
         print("スクリプトと同じフォルダに config.ini を置いてください。")
         sys.exit(1)
 
+    defaults = Config()
     parser = configparser.ConfigParser()
     try:
         parser.read(CONFIG_PATH, encoding="utf-8")
         sec = parser["capture"]
         # 第2引数は「その項目行が無い」ときのフォールバック既定値。
         # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）
-        START_URL = sec.get("start_url", START_URL).strip() or "about:blank"
-        EDGE_PATH = sec.get("edge_path", "").strip()
-        OUTPUT_DIR = Path(sec.get("output_dir", str(OUTPUT_DIR)))
-        POLL_INTERVAL = sec.getfloat("poll_interval", POLL_INTERVAL)
-        SETTLE_DELAY = sec.getfloat("settle_delay", SETTLE_DELAY)
-        LOAD_TIMEOUT = sec.getint("load_timeout", LOAD_TIMEOUT)
-        TARGET_SELECTOR = sec.get("target_selector", "").strip()
+        start_url = sec.get("start_url", defaults.start_url).strip() or "about:blank"
+        edge_path = sec.get("edge_path", "").strip()
+        output_dir = Path(sec.get("output_dir", str(defaults.output_dir)))
+        poll_interval = sec.getfloat("poll_interval", defaults.poll_interval)
+        settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
+        load_timeout = sec.getint("load_timeout", defaults.load_timeout)
+        target_selector = sec.get("target_selector", "").strip()
 
         # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
         raw = sec.get("skip_urls", "")
         urls = [u.strip() for u in raw.split(",") if u.strip()]
-        SKIP_URLS = tuple(urls) + ("",)
+        skip_urls = tuple(urls) + ("",)
     except (configparser.Error, KeyError, ValueError) as e:
         print(f"config.ini の読み込みに失敗しました: {e}")
         print("[capture] セクションと各項目の値を確認してください。")
         sys.exit(1)
 
+    return Config(
+        start_url=start_url,
+        edge_path=edge_path,
+        output_dir=output_dir,
+        poll_interval=poll_interval,
+        settle_delay=settle_delay,
+        load_timeout=load_timeout,
+        skip_urls=skip_urls,
+        target_selector=target_selector,
+    )
+
 
 def safe_name(url: str) -> str:
-    """URL をファイル名に使える形へ変換（長すぎる場合は先頭80文字）。"""
-    name = re.sub(r"[^\w\-]+", "_", url)[:80].strip("_")
+    """URL をファイル名に使える形へ変換（長すぎる場合は先頭 NAME_MAX_LEN 文字）。"""
+    name = re.sub(r"[^\w\-]+", "_", url)[:NAME_MAX_LEN].strip("_")
     return name or "page"
 
 
-async def capture(page, url: str) -> None:
-    OUTPUT_DIR.mkdir(exist_ok=True)
+@contextmanager
+def _step(tag: str, url: str):
+    """保存処理 1 ステップ分の共通ラッパ。
+
+    例外が出ても [skip <tag>] を表示して握り、他ステップの続行を妨げない。
+    （png / txt / part の 3 ステップで同じ try/except を書かないための共通化）
+    """
+    try:
+        yield
+    except Exception as e:
+        print(f"[skip {tag}] {url}  ({e})")
+
+
+async def capture(page: Page, url: str, config: Config) -> None:
     # 一意性は「ミリ秒付き日時 + 通し番号」で保証する。URL スラッグは
     # 読みやすさ用の装飾で、切り詰めや正規化で衝突しても実害はない。
     # seq / stem は await より前に確定させ、番号を予約してから保存する。
@@ -121,40 +158,44 @@ async def capture(page, url: str) -> None:
     stem = f"{ts}_{ms}_{seq:04d}_{safe_name(url)}"   # 3ファイルで同じ接頭辞を共有
 
     # 読み込み完了を待つ（タイムアウトしても続行）
-    try:
-        await page.wait_for_load_state("load", timeout=LOAD_TIMEOUT)
-    except Exception:
-        pass
-    await asyncio.sleep(SETTLE_DELAY)
+    with _step("load", url):
+        await page.wait_for_load_state("load", timeout=config.load_timeout)
+    await asyncio.sleep(config.settle_delay)
 
     # 1) フルページ スクリーンショット
-    try:
-        await page.screenshot(path=str(OUTPUT_DIR / f"{stem}.png"), full_page=True)
-    except Exception as e:
-        print(f"[skip png]  {url}  ({e})")
+    with _step("png", url):
+        await page.screenshot(
+            path=str(config.output_dir / f"{stem}.png"), full_page=True
+        )
 
     # 2) ページ全文テキスト
-    try:
+    with _step("txt", url):
         text = await page.inner_text("body")
-        (OUTPUT_DIR / f"{stem}.txt").write_text(
+        (config.output_dir / f"{stem}.txt").write_text(
             f"URL: {url}\n\n{text}", encoding="utf-8"
         )
-    except Exception as e:
-        print(f"[skip txt]  {url}  ({e})")
 
     # 3) 一部抜き出し（セレクタ設定時のみ）
-    if TARGET_SELECTOR:
-        try:
-            parts = await page.locator(TARGET_SELECTOR).all_inner_texts()
+    if config.target_selector:
+        with _step("part", url):
+            parts = await page.locator(config.target_selector).all_inner_texts()
             body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
-            (OUTPUT_DIR / f"{stem}_part.txt").write_text(
-                f"URL: {url}\nSELECTOR: {TARGET_SELECTOR}\n\n{body}",
+            (config.output_dir / f"{stem}_part.txt").write_text(
+                f"URL: {url}\nSELECTOR: {config.target_selector}\n\n{body}",
                 encoding="utf-8",
             )
-        except Exception as e:
-            print(f"[skip part] {url}  ({e})")
 
     print(f"[saved] {stem}.*  <- {url}")
+
+
+def _spawn_capture(page: Page, url: str, config: Config) -> None:
+    """capture() をバックグラウンドタスクとして起動し、参照を保持する。
+
+    タスクを _tasks に入れて GC を防ぎ、完了時に取り除く。
+    """
+    task = asyncio.create_task(capture(page, url, config))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
 
 def cleanup_old_profiles() -> None:
@@ -168,8 +209,11 @@ def cleanup_old_profiles() -> None:
             shutil.rmtree(d, ignore_errors=True)
 
 
-async def main() -> None:
+async def main(config: Config) -> None:
     seen: dict = {}  # page オブジェクト -> 直近のURL
+
+    # 保存先は起動時に一度だけ作成（親フォルダごと）。
+    config.output_dir.mkdir(parents=True, exist_ok=True)
 
     cleanup_old_profiles()
     tmp = tempfile.mkdtemp(prefix="edge-debug-")  # 今回用の一時プロファイル
@@ -188,8 +232,8 @@ async def main() -> None:
         headless=False,
         args=edge_args,
     )
-    if EDGE_PATH:
-        launch_kwargs["executable_path"] = EDGE_PATH
+    if config.edge_path:
+        launch_kwargs["executable_path"] = config.edge_path
 
     async with async_playwright() as p:
         try:
@@ -207,11 +251,11 @@ async def main() -> None:
         try:
             # 最初のページで start_url を開く（about:blank ならそのまま）
             page = context.pages[0] if context.pages else await context.new_page()
-            if START_URL and START_URL != "about:blank":
+            if config.start_url and config.start_url != "about:blank":
                 try:
-                    await page.goto(START_URL)
+                    await page.goto(config.start_url)
                 except Exception as e:
-                    print(f"[skip goto] {START_URL}  ({e})")
+                    print(f"[skip goto] {config.start_url}  ({e})")
 
             print("Edge を起動しました。URL/タブの変化を監視します（Ctrl+Cで停止）")
 
@@ -229,13 +273,13 @@ async def main() -> None:
                         url = pg.url
                     except Exception:
                         continue
-                    if url in SKIP_URLS:
+                    if url in config.skip_urls:
                         continue
                     if seen.get(pg) != url:
                         seen[pg] = url
-                        asyncio.create_task(capture(pg, url))
+                        _spawn_capture(pg, url, config)
 
-                await asyncio.sleep(POLL_INTERVAL)
+                await asyncio.sleep(config.poll_interval)
         finally:
             # Ctrl+C / ウィンドウを閉じた場合のどちらでもここが走る。
             # 起動した Edge を終了し、一時プロファイルを削除する。
@@ -247,8 +291,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    load_config()
+    config = load_config()
     try:
-        asyncio.run(main())
+        asyncio.run(main(config))
     except KeyboardInterrupt:
         print("\n停止しました。")
