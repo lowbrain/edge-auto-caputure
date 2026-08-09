@@ -39,6 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from string import Template
 from typing import Tuple
 
 from playwright.async_api import Page, async_playwright
@@ -69,59 +70,63 @@ NAME_MAX_LEN = 80
 # コンソール無し（windowed exe）で実行しても後から動作を追えるようにする。
 LOG_PATH = BASE_DIR / "log.txt"
 
-# Edge の各ページ左上に出す「キャプチャ中」バッジの識別子と表示文言。
-# add_init_script でページ遷移や新規タブにも自動で付与する。
-# 文言は「edge-auto-capture がキャプチャ中」であることを明示する。
+# 各ページ左上に出す「キャプチャ中」バッジの識別子と表示文言。
 _BADGE_ID = "__eac_rec_badge__"
 _BADGE_TEXT = "🔴 edge-auto-capture がこの画面をキャプチャ中です"
 
-# JS へ埋め込む文字列は json.dumps で安全にリテラル化（絵文字/日本語も \uXXXX へ）。
-_BADGE_SCRIPT = (
-    "(() => {"
-    # add_init_script は各 iframe にも注入されるため、最上位フレーム以外では
-    # 何もしない（そうしないと iframe の数だけバッジが重複表示される）。
-    "  if(window.top!==window.self) return;"
-    f"  const ID={json.dumps(_BADGE_ID)};"
-    f"  const TXT={json.dumps(_BADGE_TEXT)};"
-    "  function add(){"
-    "    if(!document.body) return;"
-    "    if(document.getElementById(ID)) return;"
-    "    const el=document.createElement('div');"
-    "    el.id=ID;"
-    "    el.textContent=TXT;"
-    "    el.style.cssText='position:fixed;top:8px;left:50%;transform:translateX(-50%);"
-    "z-index:2147483647;background:rgba(200,0,0,.92);color:#fff;"
-    "font:bold 13px/1.4 \"Segoe UI\",sans-serif;padding:4px 14px;border-radius:6px;"
-    "pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);white-space:nowrap;';"
-    "    document.body.appendChild(el);"
-    "  }"
-    "  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',add);}else{add();}"
-    "  new MutationObserver(()=>{if(!document.getElementById(ID))add();})"
-    "    .observe(document.documentElement,{childList:true,subtree:true});"
-    "})();"
-)
+# JS へ埋め込む値は json.dumps で安全にリテラル化（絵文字/日本語も \uXXXX へ）。
+# 下の Template では $ID / $TXT がこれらに置換される（JS 中に $ は他に無い）。
+_ID_JS = json.dumps(_BADGE_ID)
+_TXT_JS = json.dumps(_BADGE_TEXT)
+
+# バッジ本体を注入するスクリプト。add_init_script でページ遷移・新規タブにも自動適用される。
+_BADGE_SCRIPT = Template(r"""
+(() => {
+  // add_init_script は各 iframe にも注入される。最上位フレーム以外では
+  // 何もしない（iframe の数だけバッジが重複表示されるのを防ぐ）。
+  if (window.top !== window.self) return;
+  const ID = $ID, TXT = $TXT;
+  function add() {
+    if (!document.body || document.getElementById(ID)) return;
+    const el = document.createElement('div');
+    el.id = ID;
+    el.textContent = TXT;
+    el.style.cssText =
+      'position:fixed;top:8px;left:50%;transform:translateX(-50%);'
+      + 'z-index:2147483647;background:rgba(200,0,0,.92);color:#fff;'
+      + 'font:bold 13px/1.4 "Segoe UI",sans-serif;padding:4px 14px;border-radius:6px;'
+      + 'pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);white-space:nowrap;';
+    document.body.appendChild(el);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', add);
+  } else {
+    add();
+  }
+  // サイト側の再描画でバッジが消えても付け直す。
+  new MutationObserver(() => { if (!document.getElementById(ID)) add(); })
+    .observe(document.documentElement, { childList: true, subtree: true });
+})();
+""").substitute(ID=_ID_JS, TXT=_TXT_JS)
+
 # スクリーンショットにバッジを写し込まないための一時 非表示 / 復帰。
-_BADGE_HIDE = (
-    f"document.getElementById({json.dumps(_BADGE_ID)})"
-    "?.style.setProperty('display','none','important')"
-)
-_BADGE_SHOW = (
-    f"document.getElementById({json.dumps(_BADGE_ID)})?.style.setProperty('display','')"
-)
-# body 全文テキストを取得する際、バッジを一時的に隠して innerText から除外する。
-# innerText は display:none の要素を含まないため、同期的に隠す→取得→復帰で写り込みを防ぐ。
-_BODY_TEXT_JS = (
-    "() => {"
-    f"  const b=document.getElementById({json.dumps(_BADGE_ID)});"
-    "  if(!b) return document.body ? document.body.innerText : '';"
-    "  const prev=b.style.getPropertyValue('display');"
-    "  const prio=b.style.getPropertyPriority('display');"
-    "  b.style.setProperty('display','none','important');"
-    "  const t=document.body ? document.body.innerText : '';"
-    "  if(prev) b.style.setProperty('display',prev,prio); else b.style.removeProperty('display');"
-    "  return t;"
-    "}"
-)
+_BADGE_HIDE = f"document.getElementById({_ID_JS})?.style.setProperty('display','none','important')"
+_BADGE_SHOW = f"document.getElementById({_ID_JS})?.style.setProperty('display','')"
+
+# body 全文テキスト取得時にバッジを隠して innerText から除外する。
+# innerText は display:none の要素を含まないため、隠す→取得→復帰で写り込みを防ぐ。
+_BODY_TEXT_JS = Template(r"""
+() => {
+  const b = document.getElementById($ID);
+  if (!b) return document.body ? document.body.innerText : '';
+  const prev = b.style.getPropertyValue('display');
+  const prio = b.style.getPropertyPriority('display');
+  b.style.setProperty('display', 'none', 'important');
+  const t = document.body ? document.body.innerText : '';
+  if (prev) b.style.setProperty('display', prev, prio); else b.style.removeProperty('display');
+  return t;
+}
+""").substitute(ID=_ID_JS)
 
 
 def log(msg: str) -> None:
@@ -218,46 +223,39 @@ def load_config() -> Config:
         )
         sys.exit(1)
 
+    # 各 get の第2引数は「その項目行が無い」ときのフォールバック既定値
+    # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）。
     defaults = Config()
     parser = configparser.ConfigParser()
     try:
         parser.read(CONFIG_PATH, encoding="utf-8")
         sec = parser["capture"]
-        # 第2引数は「その項目行が無い」ときのフォールバック既定値。
-        # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）
-        start_url = sec.get("start_url", defaults.start_url).strip() or "about:blank"
-        edge_path = sec.get("edge_path", "").strip()
+
         # 相対パスは基準フォルダ基準に固定（exe 隣の output\ に確実に保存する）。
         # 絶対パス指定時はそのまま使う（config.ini で任意の保存先に変更可能）。
         output_dir = Path(sec.get("output_dir", str(defaults.output_dir)))
         if not output_dir.is_absolute():
             output_dir = BASE_DIR / output_dir
-        poll_interval = sec.getfloat("poll_interval", defaults.poll_interval)
-        settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
-        load_timeout = sec.getint("load_timeout", defaults.load_timeout)
-        target_selector = sec.get("target_selector", "").strip()
 
         # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
-        raw = sec.get("skip_urls", "")
-        urls = [u.strip() for u in raw.split(",") if u.strip()]
-        skip_urls = tuple(urls) + ("",)
+        urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
+
+        return Config(
+            start_url=sec.get("start_url", defaults.start_url).strip() or "about:blank",
+            edge_path=sec.get("edge_path", "").strip(),
+            output_dir=output_dir,
+            poll_interval=sec.getfloat("poll_interval", defaults.poll_interval),
+            settle_delay=sec.getfloat("settle_delay", defaults.settle_delay),
+            load_timeout=sec.getint("load_timeout", defaults.load_timeout),
+            skip_urls=tuple(urls) + ("",),
+            target_selector=sec.get("target_selector", "").strip(),
+        )
     except (configparser.Error, KeyError, ValueError) as e:
         _notify_fatal(
             f"config.ini の読み込みに失敗しました: {e}\n"
             "[capture] セクションと各項目の値を確認してください。"
         )
         sys.exit(1)
-
-    return Config(
-        start_url=start_url,
-        edge_path=edge_path,
-        output_dir=output_dir,
-        poll_interval=poll_interval,
-        settle_delay=settle_delay,
-        load_timeout=load_timeout,
-        skip_urls=skip_urls,
-        target_selector=target_selector,
-    )
 
 
 def safe_name(url: str) -> str:
@@ -351,7 +349,6 @@ def cleanup_old_profiles() -> None:
 async def main(config: Config) -> None:
     seen: "dict[Page, str]" = {}  # page オブジェクト -> 直近のURL
 
-    # 保存先は起動時に一度だけ作成（親フォルダごと）。
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
     cleanup_old_profiles()
