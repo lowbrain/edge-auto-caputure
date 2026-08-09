@@ -13,8 +13,8 @@ if ($LASTEXITCODE -ne 0) { Write-Host "依存のインストールに失敗し�
 
 Write-Host "[2/3] PyInstaller でビルドします ..."
 # --collect-all playwright : Playwright の node ドライバを同梱（凍結時に必須）
-# --console                : print 表示と Ctrl+C 停止のためコンソールを残す
-pyinstaller --noconfirm --onedir --console --name edge_auto_capture --collect-all playwright edge_auto_capture.py
+# --noconsole              : 黒いコンソール窓を出さない（動作ログは log.txt に出力）
+pyinstaller --noconfirm --onedir --noconsole --name edge_auto_capture --collect-all playwright edge_auto_capture.py
 if ($LASTEXITCODE -ne 0) { Write-Host "ビルドに失敗しました。上のメッセージを確認してください。" -ForegroundColor Red; exit 1 }
 
 Write-Host "[3/3] config.ini と説明書を配布フォルダへ同梱します ..."

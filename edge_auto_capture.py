@@ -20,8 +20,11 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
   閲覧すると、URL/タブの変化ごとに output\\ へ自動保存される。
 
 設定はソースではなく、同じフォルダの config.ini を編集して変更する。
-停止は Ctrl + C、または Edge のウィンドウを閉じる。停止すると、この
-スクリプトが起動した Edge の終了と一時プロファイルの削除まで行う。
+停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C
+も使える）。停止すると、このスクリプトが起動した Edge の終了と一時プロファイル
+の削除まで行う。動作ログは exe/スクリプトと同じフォルダの log.txt に残る。
+各ページの左上には「このEdgeは画面キャプチャ中」バッジを表示する
+（保存するスクリーンショットには写り込まない）。
 """
 
 import asyncio
@@ -60,6 +63,72 @@ CONFIG_PATH = BASE_DIR / "config.ini"
 
 # safe_name() がファイル名スラッグを切り詰める最大長。
 NAME_MAX_LEN = 80
+
+# 実行ログの出力先（exe/スクリプトと同じフォルダ）。
+# コンソール無し（windowed exe）で実行しても後から動作を追えるようにする。
+LOG_PATH = BASE_DIR / "log.txt"
+
+# Edge の各ページ左上に出す「キャプチャ中」バッジの識別子とスタイル。
+# add_init_script でページ遷移や新規タブにも自動で付与する。
+_BADGE_ID = "__eac_rec_badge__"
+_BADGE_SCRIPT = (
+    "(() => {"
+    f"  const ID='{_BADGE_ID}';"
+    "  function add(){"
+    "    if(!document.body) return;"
+    "    if(document.getElementById(ID)) return;"
+    "    const el=document.createElement('div');"
+    "    el.id=ID;"
+    "    el.textContent='\\uD83D\\uDD34 このEdgeは画面キャプチャ中です';"
+    "    el.style.cssText='position:fixed;top:8px;left:50%;transform:translateX(-50%);"
+    "z-index:2147483647;background:rgba(200,0,0,.92);color:#fff;"
+    "font:bold 13px/1.4 \"Segoe UI\",sans-serif;padding:4px 14px;border-radius:6px;"
+    "pointer-events:none;box-shadow:0 2px 6px rgba(0,0,0,.4);white-space:nowrap;';"
+    "    document.body.appendChild(el);"
+    "  }"
+    "  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',add);}else{add();}"
+    "  new MutationObserver(()=>{if(!document.getElementById(ID))add();})"
+    "    .observe(document.documentElement,{childList:true,subtree:true});"
+    "})();"
+)
+# スクリーンショットにバッジを写し込まないための一時 非表示 / 復帰。
+_BADGE_HIDE = (
+    f"document.getElementById('{_BADGE_ID}')"
+    "?.style.setProperty('display','none','important')"
+)
+_BADGE_SHOW = f"document.getElementById('{_BADGE_ID}')?.style.setProperty('display','')"
+
+
+def log(msg: str) -> None:
+    """メッセージを log.txt へ追記し、可能ならコンソールにも出す。
+
+    windowed exe（コンソール無し）では sys.stdout が None になり得るため、
+    print は失敗しても無視する。ファイルへの記録を主とする。
+    """
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+    try:
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        print(line)
+    except Exception:
+        pass
+
+
+def _message_box(msg: str, title: str = "edge-auto-capture") -> None:
+    """致命的エラーを Windows のメッセージボックスで通知する（失敗しても無視）。
+
+    コンソールを持たない windowed exe では print が見えないため、
+    起動失敗などはダイアログで利用者に伝える。
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
 
 # 保存ファイル名の一意性を保証する通し番号（この起動中で連番）。
 # next() は不可分なので、並行する capture() 同士でも番号は重複しない。
@@ -104,8 +173,12 @@ def load_config() -> Config:
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
     """
     if not CONFIG_PATH.exists():
-        print(f"設定ファイルが見つかりません: {CONFIG_PATH}")
-        print("スクリプトと同じフォルダに config.ini を置いてください。")
+        msg = (
+            f"設定ファイルが見つかりません: {CONFIG_PATH}\n"
+            "exe と同じフォルダに config.ini を置いてください。"
+        )
+        log(msg)
+        _message_box(msg)
         sys.exit(1)
 
     defaults = Config()
@@ -132,8 +205,12 @@ def load_config() -> Config:
         urls = [u.strip() for u in raw.split(",") if u.strip()]
         skip_urls = tuple(urls) + ("",)
     except (configparser.Error, KeyError, ValueError) as e:
-        print(f"config.ini の読み込みに失敗しました: {e}")
-        print("[capture] セクションと各項目の値を確認してください。")
+        msg = (
+            f"config.ini の読み込みに失敗しました: {e}\n"
+            "[capture] セクションと各項目の値を確認してください。"
+        )
+        log(msg)
+        _message_box(msg)
         sys.exit(1)
 
     return Config(
@@ -164,7 +241,7 @@ def _step(tag: str, url: str):
     try:
         yield
     except Exception as e:
-        print(f"[skip {tag}] {url}  ({e})")
+        log(f"[skip {tag}] {url}  ({e})")
 
 
 async def capture(page: Page, url: str, config: Config) -> None:
@@ -183,10 +260,21 @@ async def capture(page: Page, url: str, config: Config) -> None:
     await asyncio.sleep(config.settle_delay)
 
     # 1) フルページ スクリーンショット
+    #    「キャプチャ中」バッジは撮影の瞬間だけ隠し、保存画像へ写し込まない。
     with _step("png", url):
-        await page.screenshot(
-            path=str(config.output_dir / f"{stem}.png"), full_page=True
-        )
+        try:
+            await page.evaluate(_BADGE_HIDE)
+        except Exception:
+            pass
+        try:
+            await page.screenshot(
+                path=str(config.output_dir / f"{stem}.png"), full_page=True
+            )
+        finally:
+            try:
+                await page.evaluate(_BADGE_SHOW)
+            except Exception:
+                pass
 
     # 2) ページ全文テキスト
     with _step("txt", url):
@@ -205,7 +293,7 @@ async def capture(page: Page, url: str, config: Config) -> None:
                 encoding="utf-8",
             )
 
-    print(f"[saved] {stem}.*  <- {url}")
+    log(f"[saved] {stem}.*  <- {url}")
 
 
 def _spawn_capture(page: Page, url: str, config: Config) -> None:
@@ -259,10 +347,18 @@ async def main(config: Config) -> None:
         try:
             context = await p.chromium.launch_persistent_context(**launch_kwargs)
         except Exception as e:
-            print(f"Edge を起動できませんでした: {e}")
-            print("Edge がインストールされているか、config.ini の edge_path を確認してください。")
+            msg = (
+                f"Edge を起動できませんでした: {e}\n"
+                "Edge がインストールされているか、config.ini の edge_path を確認してください。"
+            )
+            log(msg)
+            _message_box(msg)
             shutil.rmtree(tmp, ignore_errors=True)
             return
+
+        # 全ページ・全タブの左上に「キャプチャ中」バッジを常時表示する。
+        # add_init_script は以後開くページ／新規タブにも自動適用される。
+        await context.add_init_script(_BADGE_SCRIPT)
 
         # Edge のウィンドウを閉じたら監視ループを抜けるためのフラグ
         closed = asyncio.Event()
@@ -275,9 +371,9 @@ async def main(config: Config) -> None:
                 try:
                     await page.goto(config.start_url)
                 except Exception as e:
-                    print(f"[skip goto] {config.start_url}  ({e})")
+                    log(f"[skip goto] {config.start_url}  ({e})")
 
-            print("Edge を起動しました。URL/タブの変化を監視します（Ctrl+Cで停止）")
+            log("Edge を起動しました。URL/タブの変化を監視します（終了するには Edge のウィンドウを閉じてください）")
 
             while not closed.is_set():
                 pages = list(context.pages)
@@ -311,8 +407,17 @@ async def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
+    # 起動ごとにログを作り直す（前回分は残さない）。
+    try:
+        LOG_PATH.write_text("", encoding="utf-8")
+    except Exception:
+        pass
+    log("=== edge-auto-capture 起動 ===")
+
     config = load_config()
     try:
         asyncio.run(main(config))
     except KeyboardInterrupt:
-        print("\n停止しました。")
+        # コンソール実行時のみ届く保険的な停止経路。
+        log("停止しました。")
+    log("=== 終了 ===")
