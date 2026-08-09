@@ -14,7 +14,7 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
 
 起動方法:
   - python edge_auto_capture.py（開発時）、または
-  - ビルドした edge_auto_capture.exe をダブルクリック（配布時）
+  - ビルドした edge-auto-capture.exe をダブルクリック（配布時）
   最初に開くページ・保存先などは同じフォルダの config.ini で指定する
   （起動ページは start_url。空なら about:blank）。開いた Edge で普通に
   閲覧すると、URL/タブの変化ごとに output\\ へ自動保存される。
@@ -23,7 +23,7 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
 停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C
 も使える）。停止すると、このスクリプトが起動した Edge の終了と一時プロファイル
 の削除まで行う。動作ログは exe/スクリプトと同じフォルダの log.txt に残る。
-各ページの左上には「edge_auto_capture がこの画面をキャプチャ中」バッジを表示する
+各ページの左上には「edge-auto-capture がこの画面をキャプチャ中」バッジを表示する
 （保存するスクリーンショットにも、抽出する txt / part テキストにも含めない）。
 """
 
@@ -71,9 +71,9 @@ LOG_PATH = BASE_DIR / "log.txt"
 
 # Edge の各ページ左上に出す「キャプチャ中」バッジの識別子と表示文言。
 # add_init_script でページ遷移や新規タブにも自動で付与する。
-# 文言は「edge_auto_capture がキャプチャ中」であることを明示する。
+# 文言は「edge-auto-capture がキャプチャ中」であることを明示する。
 _BADGE_ID = "__eac_rec_badge__"
-_BADGE_TEXT = "🔴 edge_auto_capture がこの画面をキャプチャ中です"
+_BADGE_TEXT = "🔴 edge-auto-capture がこの画面をキャプチャ中です"
 
 # JS へ埋め込む文字列は json.dumps で安全にリテラル化（絵文字/日本語も \uXXXX へ）。
 _BADGE_SCRIPT = (

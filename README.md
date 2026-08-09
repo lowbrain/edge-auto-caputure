@@ -55,16 +55,16 @@ Python 未導入の Windows PC でも動く、単一 EXE（フォルダ形式）
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-PyInstaller が `dist\edge_auto_capture\` を生成し、`config.ini` と
+PyInstaller が `dist\edge-auto-capture\` を生成し、`config.ini` と
 `USAGE.txt` を exe の隣へ同梱する。
 
 ### 配布方法
 
-`dist\edge_auto_capture\` を **フォルダごと ZIP** にして配る。中身:
+`dist\edge-auto-capture\` を **フォルダごと ZIP** にして配る。中身:
 
 ```
-edge_auto_capture\
-├─ edge_auto_capture.exe   ダブルクリックで起動
+edge-auto-capture\
+├─ edge-auto-capture.exe   ダブルクリックで起動
 ├─ config.ini              利用者が編集可能
 ├─ USAGE.txt               利用者向けの使い方
 ├─ _internal\              ランタイム + playwright ドライバ（必須・触らない）
