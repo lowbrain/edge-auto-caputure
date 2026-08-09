@@ -14,13 +14,13 @@ if ($LASTEXITCODE -ne 0) { Write-Host "依存のインストールに失敗し�
 Write-Host "[2/3] PyInstaller でビルドします ..."
 # --collect-all playwright : Playwright の node ドライバを同梱（凍結時に必須）
 # --noconsole              : 黒いコンソール窓を出さない（動作ログは log.txt に出力）
-pyinstaller --noconfirm --onedir --noconsole --name edge_auto_capture --collect-all playwright edge_auto_capture.py
+pyinstaller --noconfirm --onedir --noconsole --name edge-auto-capture --collect-all playwright edge_auto_capture.py
 if ($LASTEXITCODE -ne 0) { Write-Host "ビルドに失敗しました。上のメッセージを確認してください。" -ForegroundColor Red; exit 1 }
 
 Write-Host "[3/3] config.ini と説明書を配布フォルダへ同梱します ..."
-$dist = Join-Path $root "dist\edge_auto_capture"
+$dist = Join-Path $root "dist\edge-auto-capture"
 Copy-Item -Force (Join-Path $root "config.ini")                (Join-Path $dist "config.ini")
 Copy-Item -Force (Join-Path $root "USAGE.txt")                 (Join-Path $dist "USAGE.txt")
 
 Write-Host ""
-Write-Host "完了: dist\edge_auto_capture\ フォルダを ZIP にして配布してください。" -ForegroundColor Green
+Write-Host "完了: dist\edge-auto-capture\ フォルダを ZIP にして配布してください。" -ForegroundColor Green
