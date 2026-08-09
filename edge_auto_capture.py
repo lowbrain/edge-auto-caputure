@@ -78,6 +78,9 @@ _BADGE_TEXT = "🔴 edge-auto-capture がこの画面をキャプチャ中です
 # JS へ埋め込む文字列は json.dumps で安全にリテラル化（絵文字/日本語も \uXXXX へ）。
 _BADGE_SCRIPT = (
     "(() => {"
+    # add_init_script は各 iframe にも注入されるため、最上位フレーム以外では
+    # 何もしない（そうしないと iframe の数だけバッジが重複表示される）。
+    "  if(window.top!==window.self) return;"
     f"  const ID={json.dumps(_BADGE_ID)};"
     f"  const TXT={json.dumps(_BADGE_TEXT)};"
     "  function add(){"
@@ -361,12 +364,20 @@ async def main(config: Config) -> None:
         "--no-default-browser-check",
         "--disable-sync",
         "--disable-features=msImplicitSignin",
+        # 既定で最大化して起動する。
+        "--start-maximized",
     ]
     launch_kwargs = dict(
         user_data_dir=tmp,
         channel="msedge",
         headless=False,
         args=edge_args,
+        # Playwright は既定で --no-sandbox を付け、Edge が黄色い警告バナーを出す。
+        # サンドボックスを有効化してバナーを消す（キャプチャ画像への映り込みも防ぐ）。
+        chromium_sandbox=True,
+        # 固定ビューポートのエミュレーションを外し、ウィンドウサイズにページを
+        # 追従させる（--start-maximized も no_viewport でないと効かない）。
+        no_viewport=True,
     )
     if config.edge_path:
         launch_kwargs["executable_path"] = config.edge_path
