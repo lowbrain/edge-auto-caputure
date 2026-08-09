@@ -19,10 +19,8 @@ edge-auto-capture/
 ├─ pyproject.toml        依存とパッケージ設定
 ├─ README.md             このファイル（開発者向け）
 ├─ USAGE.txt             配布物(exe)に同梱する利用者向けの使い方
-└─ scripts/
-    ├─ run.bat           開発時のダブルクリック起動
-    ├─ build.bat         配布用 exe のビルド（build.ps1 を呼ぶ ASCII ラッパ）
-    └─ build.ps1         ビルド本体（PyInstaller）
+├─ run.bat               開発時のダブルクリック起動
+└─ build.ps1             配布用 exe のビルド（PyInstaller）
 ```
 
 生成物（`build/` `dist/` `output/` `__pycache__/` `*.spec`）は Git 管理外。
@@ -30,7 +28,7 @@ edge-auto-capture/
 ## 開発時の実行
 
 ```bat
-scripts\run.bat
+run.bat
 ```
 
 または直接:
@@ -60,14 +58,8 @@ URL/タブの変化ごとに `output\` へ保存される。停止は Ctrl+C か
 
 Python 未導入の Windows PC でも動く、単一 EXE（フォルダ形式）を作る。
 
-```bat
-scripts\build.bat
-```
-
-または:
-
 ```bash
-powershell -ExecutionPolicy Bypass -File scripts\build.ps1
+powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
 PyInstaller が `dist\edge_auto_capture\` を生成し、`config.ini` と

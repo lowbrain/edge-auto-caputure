@@ -1,10 +1,10 @@
 ﻿# ============================================================
 #  edge_auto_capture.py を単一EXE(フォルダ形式)へビルドする。
 #  Python 未導入の Windows PC へ配布できる形にまとめる。
-#  scripts\ 配下に置くため、基準はスクリプトの親(プロジェクトルート)。
+#  実行例: powershell -ExecutionPolicy Bypass -File build.ps1
 # ============================================================
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot   # プロジェクトルート
+$root = $PSScriptRoot   # このスクリプトのあるフォルダ＝プロジェクトルート
 Set-Location -Path $root
 
 Write-Host "[1/3] ビルド用の依存を確認します (pyinstaller / playwright) ..."

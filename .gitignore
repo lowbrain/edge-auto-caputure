@@ -5,7 +5,7 @@ __pycache__/
 build/
 dist/
 
-# PyInstaller の生成 spec（build.bat のコマンドで再生成できる）
+# PyInstaller の生成 spec（build.ps1 のコマンドで再生成できる）
 *.spec
 
 # 仮想環境
