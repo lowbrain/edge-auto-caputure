@@ -86,7 +86,7 @@ _LABEL_SHOT = "📸 今すぐ1枚"
 
 # キャプチャ時に、撮れたことを利用者へ知らせるリアクション文言。
 # 待機中の単発ショットは「保存しました」、記録中（記録開始/URL移動の自動保存）は
-# 「記録しました」を出し、消えると下地の「🔴 記録中」表示に戻る。
+# 「記録しました」を出し、消えると下地の状態表示（記録中/待機中）に戻る。
 _REACT_BUSY = "⏳ 保存中…"
 _REACT_DONE = "✓ 保存しました"
 _REACT_REC = "✓ 記録しました"
@@ -104,7 +104,8 @@ _R_DONE_JS = json.dumps(_REACT_DONE)
 
 # 操作パネル本体を注入するスクリプト。add_init_script でページ遷移・新規タブにも自動適用される。
 #   - window.__eacApplyState(recording) で見た目（記録中/待機中）を更新できる。
-#   - window.__eacReact('busy'|'done'|'off') で「今すぐ1枚」の手応えを表示できる。
+#   - window.__eacReact('busy'|'done'[, text]) でキャプチャの手応え（保存中→…）を表示できる。
+#   - 描画前に window.__eac_getstate() で現在の記録状態を取得する（遷移直後のちらつき防止）。
 #   - ボタンは window.__eac_toggle() / window.__eac_shot()（Python 側 expose_binding）を呼ぶ。
 _BADGE_SCRIPT = Template(r"""
 (() => {
@@ -139,9 +140,10 @@ _BADGE_SCRIPT = Template(r"""
     box.style.setProperty('background', recording ? 'rgba(200,0,0,.92)' : 'rgba(90,90,90,.92)', 'important');
   }
 
-  // 「今すぐ1枚」の手応え。パネルコンテナ内のオーバーレイに重ねるので、
-  // 撮影中は他のパネル要素と一緒に隠れ、保存物（png/txt/part）には写り込まない。
-  // position:absolute なのでパネル幅（ボタン位置）には影響しない。
+  // キャプチャの手応え（保存中→保存しました/記録しました）。パネルコンテナ内の
+  // オーバーレイに重ねるので、撮影中は他のパネル要素と一緒に隠れ、保存物
+  // （png/txt/part）には写り込まない。position:absolute なのでパネル幅（ボタン位置）
+  // には影響しない。text を渡すと done の文言を差し替えられる（既定は「保存しました」）。
   function react(kind, text) {
     const box = document.getElementById(ID);
     if (!box) return;
@@ -170,12 +172,10 @@ _BADGE_SCRIPT = Template(r"""
     if (!document.body || document.getElementById(ID)) return;
     const box = document.createElement('div');
     box.id = ID;
-    // コンテナ自体は pointer-events:none（下のページ操作を妨げない）。
-    // ボタンだけ pointer-events:auto に戻してクリックできるようにする。
-    // 高さ固定＋各プロパティを明示してサイト側 CSS の影響を受けないようにする
-    // （ページごとにバーの高さ/幅が変わるのを防ぐ）。余白は gap/padding で確保。
-    // 全プロパティを !important で明示し、サイト側 CSS（!important 含む）の影響を
-    // 完全に遮断する。これでどのページでもバーの高さ・幅・余白が固定になる。
+    // コンテナは pointer-events:none（下のページ操作を妨げない。ボタンだけ後で
+    // pointer-events:auto に戻す）。全プロパティを !important で明示して、サイト側
+    // CSS（!important 含む）の影響を完全に遮断し、どのページでもバーの高さ・幅・
+    // 余白を一定に保つ。要素間の余白は gap で確保する。
     box.style.cssText =
       'position:fixed !important;top:8px !important;left:50% !important;transform:translateX(-50%) !important;'
       + 'z-index:2147483647 !important;box-sizing:border-box !important;height:36px !important;'
@@ -273,13 +273,13 @@ _BADGE_SCRIPT = Template(r"""
     R_BUSY=_R_BUSY_JS, R_DONE=_R_DONE_JS,
 )
 
-# スクリーンショットにバッジを写し込まないための一時 非表示 / 復帰。
+# スクリーンショットに操作パネルを写し込まないための一時 非表示 / 復帰。
 # 復帰は display を空にする（削除する）と flex レイアウトが失われ gap が効かなく
 # なるため、必ず 'flex'（!important）へ戻す。
 _BADGE_HIDE = f"document.getElementById({_ID_JS})?.style.setProperty('display','none','important')"
 _BADGE_SHOW = f"document.getElementById({_ID_JS})?.style.setProperty('display','flex','important')"
 
-# body 全文テキスト取得時にバッジを隠して innerText から除外する。
+# body 全文テキスト取得時に操作パネルを隠して innerText から除外する。
 # innerText は display:none の要素を含まないため、隠す→取得→復帰で写り込みを防ぐ。
 _BODY_TEXT_JS = Template(r"""
 () => {
@@ -461,7 +461,7 @@ async def capture(page: Page, url: str, config: Config) -> None:
     await asyncio.sleep(config.settle_delay)
 
     # 1) フルページ スクリーンショット
-    #    「キャプチャ中」バッジは撮影の瞬間だけ隠し、保存画像へ写し込まない。
+    #    操作パネルは撮影の瞬間だけ隠し、保存画像へ写し込まない。
     with _step("png", url):
         await _try_eval(page, _BADGE_HIDE)
         try:
@@ -471,7 +471,7 @@ async def capture(page: Page, url: str, config: Config) -> None:
         finally:
             await _try_eval(page, _BADGE_SHOW)
 
-    # 2) ページ全文テキスト（キャプチャ中バッジは除外して取得）
+    # 2) ページ全文テキスト（操作パネルは除外して取得）
     with _step("txt", url):
         text = await page.evaluate(_BODY_TEXT_JS)
         (config.output_dir / f"{stem}.txt").write_text(
@@ -621,9 +621,8 @@ async def main(config: Config) -> None:
             seen は触らないので自動キャプチャの判定には影響しない（記録ON中でも
             同一 URL の「撮り直し」として別ファイルにもう1枚保存される）。
 
-            撮れたことが分かるよう、押下直後に「保存中…」、保存完了後に
-            「✓ 保存しました」をパネル上に表示する（保存物には写り込まない）。
-            背景タスクにせず await するのは、保存完了に合わせて手応えを出すため。
+            手応え表示（保存中→保存しました/記録しました）は _spawn_capture が
+            撮影の前後で行う（記録中は「記録しました」、待機中は「保存しました」）。
             """
             pg = source["page"]
             try:
