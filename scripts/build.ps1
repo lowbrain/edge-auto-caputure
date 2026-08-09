@@ -20,7 +20,7 @@ if ($LASTEXITCODE -ne 0) { Write-Host "ビルドに失敗しました。上の�
 Write-Host "[3/3] config.ini と説明書を配布フォルダへ同梱します ..."
 $dist = Join-Path $root "dist\edge_auto_capture"
 Copy-Item -Force (Join-Path $root "config.ini")                (Join-Path $dist "config.ini")
-Copy-Item -Force (Join-Path $root "dist-assets\README_dist.txt") (Join-Path $dist "README.txt")
+Copy-Item -Force (Join-Path $root "README_dist.txt")           (Join-Path $dist "README.txt")
 
 Write-Host ""
 Write-Host "完了: dist\edge_auto_capture\ フォルダを ZIP にして配布してください。" -ForegroundColor Green
