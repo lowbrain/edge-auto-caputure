@@ -1,9 +1,11 @@
 ﻿# ============================================================
 #  edge_auto_capture.py を単一EXE(フォルダ形式)へビルドする。
 #  Python 未導入の Windows PC へ配布できる形にまとめる。
+#  scripts\ 配下に置くため、基準はスクリプトの親(プロジェクトルート)。
 # ============================================================
 $ErrorActionPreference = "Stop"
-Set-Location -Path $PSScriptRoot
+$root = Split-Path -Parent $PSScriptRoot   # プロジェクトルート
+Set-Location -Path $root
 
 Write-Host "[1/3] ビルド用の依存を確認します (pyinstaller / playwright) ..."
 pip install pyinstaller playwright
@@ -16,9 +18,9 @@ pyinstaller --noconfirm --onedir --console --name edge_auto_capture --collect-al
 if ($LASTEXITCODE -ne 0) { Write-Host "ビルドに失敗しました。上のメッセージを確認してください。" -ForegroundColor Red; exit 1 }
 
 Write-Host "[3/3] config.ini と説明書を配布フォルダへ同梱します ..."
-$dist = Join-Path $PSScriptRoot "dist\edge_auto_capture"
-Copy-Item -Force (Join-Path $PSScriptRoot "config.ini")      (Join-Path $dist "config.ini")
-Copy-Item -Force (Join-Path $PSScriptRoot "README_dist.txt") (Join-Path $dist "README.txt")
+$dist = Join-Path $root "dist\edge_auto_capture"
+Copy-Item -Force (Join-Path $root "config.ini")                (Join-Path $dist "config.ini")
+Copy-Item -Force (Join-Path $root "dist-assets\README_dist.txt") (Join-Path $dist "README.txt")
 
 Write-Host ""
 Write-Host "完了: dist\edge_auto_capture\ フォルダを ZIP にして配布してください。" -ForegroundColor Green

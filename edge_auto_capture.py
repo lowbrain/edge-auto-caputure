@@ -13,7 +13,7 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
     playwright install（ブラウザ同梱バイナリの取得）は不要。
 
 起動方法:
-  - run.bat をダブルクリック、または
+  - scripts\\run.bat をダブルクリック、または
   - python edge_auto_capture.py
   最初に開くページ・保存先などは同じフォルダの config.ini で指定する
   （起動ページは start_url。空なら about:blank）。開いた Edge で普通に
