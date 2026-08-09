@@ -1,7 +1,9 @@
 @echo off
 rem ============================================================
-rem  Double-click wrapper for start_edge_debug.ps1
-rem  Runs the PowerShell launcher with ExecutionPolicy bypassed,
-rem  so it works from a double-click without changing system policy.
+rem  edge_auto_capture.py のダブルクリック起動用ラッパ
+rem  bat のあるフォルダへ移動してから Python を実行する
+rem  （output\ をこのフォルダに作るため）。
 rem ============================================================
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0start_edge_debug.ps1"
+cd /d "%~dp0"
+python edge_auto_capture.py
+pause

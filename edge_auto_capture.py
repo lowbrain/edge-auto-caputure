@@ -4,65 +4,31 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
   - ページ全文テキスト              (.txt)
   - ページ内の指定した一部だけ      (_part.txt)   ※セレクタ設定時のみ
 
+このスクリプトが Edge の起動・監視・後始末までを一括で行う（Playwright が
+毎回まっさらな一時プロファイルで Edge を起動し、終了時に自動で掃除する）。
+
 事前準備:
   1) pip install playwright
      playwright install
 
-推奨の起動方法（ランチャを使う）:
-  付属の start_edge_debug.ps1 / run.bat が、デバッグポート付き Edge の起動 →
-  ポート待機 → 本スクリプト実行 までを自動で行う。最初に開くページや保存先などは
-  config.ini で指定する（起動ページは start_url。空なら about:blank）。
-    - run.bat をダブルクリック、または
-    - powershell -ExecutionPolicy Bypass -File .\\start_edge_debug.ps1
-  ランチャは毎回まっさらな一時プロファイルを使い、Ctrl+C で停止すると
-  自分が起動した Edge の終了と一時プロファイルの掃除まで行う。
-
-手動で起動する場合:
-  1) 既存の Edge を一度すべて閉じてから、デバッグポート付きで起動:
-     Windows（start_edge_debug.ps1 と同じオプション指定）:
-       "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" ^
-         --remote-debugging-port=9222 ^
-         --user-data-dir="C:\\edge-debug" ^
-         --no-first-run ^
-         --no-default-browser-check ^
-         --disable-sync ^
-         --disable-features=msImplicitSignin ^
-         https://example.com
-
-     各オプションの意味:
-       --remote-debugging-port=9222
-           CDP(DevTools)接続用のデバッグポートを開く。本スクリプトはこの
-           ポート（config.ini の cdp_url）へ接続して Edge を監視する。必須。
-       --user-data-dir="C:\\edge-debug"
-           使用するプロファイル（ユーザーデータ）フォルダを指定する。既存の
-           個人プロファイルと分離した専用フォルダにすることで、普段の Edge に
-           影響を与えずデバッグ用として起動できる。
-       --no-first-run
-           初回起動時のセットアップ画面（ようこそ画面など）を出さない。
-       --no-default-browser-check
-           「既定のブラウザにしますか？」の確認を出さない。
-       --disable-sync
-           アカウント同期を無効化する（プロファイル分離と併せてサインイン回避）。
-       --disable-features=msImplicitSignin
-           Edge の暗黙的サインインを抑止する（サインイン誘導ダイアログの回避）。
-       末尾の https://example.com
-           最初に開くページ。省略すると空白ページで起動する。
-
-     ※ --user-data-dir で指定したフォルダ（上記なら C:\\edge-debug）は手動起動
-       では自動削除されない。ランチャ(start_edge_debug.ps1)は一時フォルダを使い
-       終了時に掃除するが、手動の場合は残り続けるので、不要になったら自分で削除
-       すること。毎回まっさらにしたいなら起動前に削除するか別フォルダを指定する。
-  2) その Edge で閲覧しながら実行:
-       python edge_auto_capture.py
+起動方法:
+  - run.bat をダブルクリック、または
+  - python edge_auto_capture.py
+  最初に開くページ・保存先などは同じフォルダの config.ini で指定する
+  （起動ページは start_url。空なら about:blank）。開いた Edge で普通に
+  閲覧すると、URL/タブの変化ごとに output\\ へ自動保存される。
 
 設定はソースではなく、同じフォルダの config.ini を編集して変更する。
-停止は Ctrl + C。
+停止は Ctrl + C、または Edge のウィンドウを閉じる。停止すると、この
+スクリプトが起動した Edge の終了と一時プロファイルの削除まで行う。
 """
 
 import asyncio
 import configparser
 import re
+import shutil
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -75,7 +41,8 @@ from playwright.async_api import async_playwright
 # （項目行はあるが値だけ空の場合の扱いは load_config() のコメント参照）
 CONFIG_PATH = Path(__file__).with_name("config.ini")
 
-CDP_URL = "http://127.0.0.1:9222"   # Edge を起動したデバッグポート（IPv4を明示）
+START_URL = "about:blank"           # Edge 起動時に最初に開くページ（空なら about:blank）
+EDGE_PATH = ""                      # Edge 実行ファイルのパス（空なら channel="msedge" に委ねる）
 OUTPUT_DIR = Path("output")         # 保存先フォルダ（png も txt もここ）
 POLL_INTERVAL = 1.0                 # URL変化を確認する間隔（秒）
 SETTLE_DELAY = 0.8                  # 変化検知後、描画が落ち着くまで待つ秒数
@@ -99,7 +66,7 @@ def load_config() -> None:
         ※ output_dir が空だと Path('.') となりカレントフォルダへ保存されるので注意。
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
     """
-    global CDP_URL, OUTPUT_DIR, POLL_INTERVAL, SETTLE_DELAY
+    global START_URL, EDGE_PATH, OUTPUT_DIR, POLL_INTERVAL, SETTLE_DELAY
     global LOAD_TIMEOUT, SKIP_URLS, TARGET_SELECTOR
 
     if not CONFIG_PATH.exists():
@@ -113,7 +80,8 @@ def load_config() -> None:
         sec = parser["capture"]
         # 第2引数は「その項目行が無い」ときのフォールバック既定値。
         # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）
-        CDP_URL = sec.get("cdp_url", CDP_URL)
+        START_URL = sec.get("start_url", START_URL).strip() or "about:blank"
+        EDGE_PATH = sec.get("edge_path", "").strip()
         OUTPUT_DIR = Path(sec.get("output_dir", str(OUTPUT_DIR)))
         POLL_INTERVAL = sec.getfloat("poll_interval", POLL_INTERVAL)
         SETTLE_DELAY = sec.getfloat("settle_delay", SETTLE_DELAY)
@@ -178,41 +146,93 @@ async def capture(page, url: str) -> None:
     print(f"[saved] {stem}.*  <- {url}")
 
 
+def cleanup_old_profiles() -> None:
+    """前回までに残った一時プロファイル（edge-debug-*）を掃除する。
+
+    使用中のフォルダは削除に失敗しても無視する（ignore_errors=True）。
+    """
+    base = Path(tempfile.gettempdir())
+    for d in base.glob("edge-debug-*"):
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
+
+
 async def main() -> None:
     seen: dict = {}  # page オブジェクト -> 直近のURL
 
+    cleanup_old_profiles()
+    tmp = tempfile.mkdtemp(prefix="edge-debug-")  # 今回用の一時プロファイル
+
+    # まっさらなプロファイルで起動するための Edge 起動オプション
+    # （サインイン/同期ダイアログや初回セットアップ画面を回避する）
+    edge_args = [
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-sync",
+        "--disable-features=msImplicitSignin",
+    ]
+    launch_kwargs = dict(
+        user_data_dir=tmp,
+        channel="msedge",
+        headless=False,
+        args=edge_args,
+    )
+    if EDGE_PATH:
+        launch_kwargs["executable_path"] = EDGE_PATH
+
     async with async_playwright() as p:
         try:
-            browser = await p.chromium.connect_over_cdp(CDP_URL)
+            context = await p.chromium.launch_persistent_context(**launch_kwargs)
         except Exception as e:
-            print(f"Edge に接続できませんでした: {e}")
-            print("Edge をデバッグポート付き(--remote-debugging-port=9222)で"
-                  "起動しているか確認してください。")
+            print(f"Edge を起動できませんでした: {e}")
+            print("Edge がインストールされているか、config.ini の edge_path を確認してください。")
+            shutil.rmtree(tmp, ignore_errors=True)
             return
 
-        print("Edge に接続しました。URL/タブの変化を監視します（Ctrl+Cで停止）")
+        # Edge のウィンドウを閉じたら監視ループを抜けるためのフラグ
+        closed = asyncio.Event()
+        context.on("close", lambda: closed.set())
 
-        while True:
-            pages = [pg for ctx in browser.contexts for pg in ctx.pages]
-
-            # 閉じられたページを管理から除去
-            for pg in list(seen):
-                if pg not in pages:
-                    del seen[pg]
-
-            # URL変化 / 新規タブを検知して保存
-            for pg in pages:
+        try:
+            # 最初のページで start_url を開く（about:blank ならそのまま）
+            page = context.pages[0] if context.pages else await context.new_page()
+            if START_URL and START_URL != "about:blank":
                 try:
-                    url = pg.url
-                except Exception:
-                    continue
-                if url in SKIP_URLS:
-                    continue
-                if seen.get(pg) != url:
-                    seen[pg] = url
-                    asyncio.create_task(capture(pg, url))
+                    await page.goto(START_URL)
+                except Exception as e:
+                    print(f"[skip goto] {START_URL}  ({e})")
 
-            await asyncio.sleep(POLL_INTERVAL)
+            print("Edge を起動しました。URL/タブの変化を監視します（Ctrl+Cで停止）")
+
+            while not closed.is_set():
+                pages = list(context.pages)
+
+                # 閉じられたページを管理から除去
+                for pg in list(seen):
+                    if pg not in pages:
+                        del seen[pg]
+
+                # URL変化 / 新規タブを検知して保存
+                for pg in pages:
+                    try:
+                        url = pg.url
+                    except Exception:
+                        continue
+                    if url in SKIP_URLS:
+                        continue
+                    if seen.get(pg) != url:
+                        seen[pg] = url
+                        asyncio.create_task(capture(pg, url))
+
+                await asyncio.sleep(POLL_INTERVAL)
+        finally:
+            # Ctrl+C / ウィンドウを閉じた場合のどちらでもここが走る。
+            # 起動した Edge を終了し、一時プロファイルを削除する。
+            try:
+                await context.close()
+            except Exception:
+                pass
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":
