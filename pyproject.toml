@@ -8,6 +8,10 @@ dependencies = [
     "playwright",
 ]
 
+[project.optional-dependencies]
+# 配布用 exe をビルドする人向け（配布物の実行には不要）。
+build = ["pyinstaller"]
+
 [build-system]
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"

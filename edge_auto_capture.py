@@ -39,8 +39,24 @@ from typing import Tuple
 
 from playwright.async_api import Page, async_playwright
 
-# 設定ファイルのパス（スクリプトと同じフォルダ固定）。
-CONFIG_PATH = Path(__file__).with_name("config.ini")
+def _base_dir() -> Path:
+    """設定・保存先の基準フォルダを返す。
+
+    PyInstaller で exe 化した場合（sys.frozen）は exe のあるフォルダ、
+    通常の Python 実行時はこのスクリプトのあるフォルダを基準にする。
+    これにより、配布した exe の隣に置いた config.ini を読み、
+    output\\ も exe の隣に作れる（＝第三者が config.ini を編集できる）。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+# 設定・出力の基準フォルダ（通常実行なら本ファイル、exe 実行なら exe と同じ場所）。
+BASE_DIR = _base_dir()
+
+# 設定ファイルのパス（基準フォルダ固定）。
+CONFIG_PATH = BASE_DIR / "config.ini"
 
 # safe_name() がファイル名スラッグを切り詰める最大長。
 NAME_MAX_LEN = 80
@@ -101,7 +117,11 @@ def load_config() -> Config:
         # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）
         start_url = sec.get("start_url", defaults.start_url).strip() or "about:blank"
         edge_path = sec.get("edge_path", "").strip()
+        # 相対パスは基準フォルダ基準に固定（exe 隣の output\ に確実に保存する）。
+        # 絶対パス指定時はそのまま使う（config.ini で任意の保存先に変更可能）。
         output_dir = Path(sec.get("output_dir", str(defaults.output_dir)))
+        if not output_dir.is_absolute():
+            output_dir = BASE_DIR / output_dir
         poll_interval = sec.getfloat("poll_interval", defaults.poll_interval)
         settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
         load_timeout = sec.getint("load_timeout", defaults.load_timeout)
