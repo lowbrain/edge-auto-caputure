@@ -13,8 +13,8 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
     playwright install（ブラウザ同梱バイナリの取得）は不要。
 
 起動方法:
-  - run.bat をダブルクリック、または
-  - python edge_auto_capture.py
+  - python edge_auto_capture.py（開発時）、または
+  - ビルドした edge_auto_capture.exe をダブルクリック（配布時）
   最初に開くページ・保存先などは同じフォルダの config.ini で指定する
   （起動ページは start_url。空なら about:blank）。開いた Edge で普通に
   閲覧すると、URL/タブの変化ごとに output\\ へ自動保存される。
@@ -23,13 +23,14 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
 停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C
 も使える）。停止すると、このスクリプトが起動した Edge の終了と一時プロファイル
 の削除まで行う。動作ログは exe/スクリプトと同じフォルダの log.txt に残る。
-各ページの左上には「このEdgeは画面キャプチャ中」バッジを表示する
-（保存するスクリーンショットには写り込まない）。
+各ページの左上には「edge_auto_capture がこの画面をキャプチャ中」バッジを表示する
+（保存するスクリーンショットにも、抽出する txt / part テキストにも含めない）。
 """
 
 import asyncio
 import configparser
 import itertools
+import json
 import re
 import shutil
 import sys
@@ -68,18 +69,23 @@ NAME_MAX_LEN = 80
 # コンソール無し（windowed exe）で実行しても後から動作を追えるようにする。
 LOG_PATH = BASE_DIR / "log.txt"
 
-# Edge の各ページ左上に出す「キャプチャ中」バッジの識別子とスタイル。
+# Edge の各ページ左上に出す「キャプチャ中」バッジの識別子と表示文言。
 # add_init_script でページ遷移や新規タブにも自動で付与する。
+# 文言は「edge_auto_capture がキャプチャ中」であることを明示する。
 _BADGE_ID = "__eac_rec_badge__"
+_BADGE_TEXT = "🔴 edge_auto_capture がこの画面をキャプチャ中です"
+
+# JS へ埋め込む文字列は json.dumps で安全にリテラル化（絵文字/日本語も \uXXXX へ）。
 _BADGE_SCRIPT = (
     "(() => {"
-    f"  const ID='{_BADGE_ID}';"
+    f"  const ID={json.dumps(_BADGE_ID)};"
+    f"  const TXT={json.dumps(_BADGE_TEXT)};"
     "  function add(){"
     "    if(!document.body) return;"
     "    if(document.getElementById(ID)) return;"
     "    const el=document.createElement('div');"
     "    el.id=ID;"
-    "    el.textContent='\\uD83D\\uDD34 このEdgeは画面キャプチャ中です';"
+    "    el.textContent=TXT;"
     "    el.style.cssText='position:fixed;top:8px;left:50%;transform:translateX(-50%);"
     "z-index:2147483647;background:rgba(200,0,0,.92);color:#fff;"
     "font:bold 13px/1.4 \"Segoe UI\",sans-serif;padding:4px 14px;border-radius:6px;"
@@ -93,10 +99,26 @@ _BADGE_SCRIPT = (
 )
 # スクリーンショットにバッジを写し込まないための一時 非表示 / 復帰。
 _BADGE_HIDE = (
-    f"document.getElementById('{_BADGE_ID}')"
+    f"document.getElementById({json.dumps(_BADGE_ID)})"
     "?.style.setProperty('display','none','important')"
 )
-_BADGE_SHOW = f"document.getElementById('{_BADGE_ID}')?.style.setProperty('display','')"
+_BADGE_SHOW = (
+    f"document.getElementById({json.dumps(_BADGE_ID)})?.style.setProperty('display','')"
+)
+# body 全文テキストを取得する際、バッジを一時的に隠して innerText から除外する。
+# innerText は display:none の要素を含まないため、同期的に隠す→取得→復帰で写り込みを防ぐ。
+_BODY_TEXT_JS = (
+    "() => {"
+    f"  const b=document.getElementById({json.dumps(_BADGE_ID)});"
+    "  if(!b) return document.body ? document.body.innerText : '';"
+    "  const prev=b.style.getPropertyValue('display');"
+    "  const prio=b.style.getPropertyPriority('display');"
+    "  b.style.setProperty('display','none','important');"
+    "  const t=document.body ? document.body.innerText : '';"
+    "  if(prev) b.style.setProperty('display',prev,prio); else b.style.removeProperty('display');"
+    "  return t;"
+    "}"
+)
 
 
 def log(msg: str) -> None:
@@ -130,6 +152,20 @@ def _message_box(msg: str, title: str = "edge-auto-capture") -> None:
     except Exception:
         pass
 
+
+def _notify_fatal(msg: str) -> None:
+    """致命的メッセージをログとダイアログの両方へ出す（終了処理は呼び出し側）。"""
+    log(msg)
+    _message_box(msg)
+
+
+async def _try_eval(page: Page, js: str) -> None:
+    """ページ側 JS を実行。失敗しても無視する（バッジの表示/非表示など副次処理用）。"""
+    try:
+        await page.evaluate(js)
+    except Exception:
+        pass
+
 # 保存ファイル名の一意性を保証する通し番号（この起動中で連番）。
 # next() は不可分なので、並行する capture() 同士でも番号は重複しない。
 _seq_counter = itertools.count(1)
@@ -137,7 +173,7 @@ _seq_counter = itertools.count(1)
 # 実行中の capture タスクへの強参照を保持する集合。
 # これが無いとイベントループはタスクを弱参照でしか持たず、
 # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
-_tasks: set = set()
+_tasks: "set[asyncio.Task]" = set()
 
 
 @dataclass
@@ -173,12 +209,10 @@ def load_config() -> Config:
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
     """
     if not CONFIG_PATH.exists():
-        msg = (
+        _notify_fatal(
             f"設定ファイルが見つかりません: {CONFIG_PATH}\n"
             "exe と同じフォルダに config.ini を置いてください。"
         )
-        log(msg)
-        _message_box(msg)
         sys.exit(1)
 
     defaults = Config()
@@ -205,12 +239,10 @@ def load_config() -> Config:
         urls = [u.strip() for u in raw.split(",") if u.strip()]
         skip_urls = tuple(urls) + ("",)
     except (configparser.Error, KeyError, ValueError) as e:
-        msg = (
+        _notify_fatal(
             f"config.ini の読み込みに失敗しました: {e}\n"
             "[capture] セクションと各項目の値を確認してください。"
         )
-        log(msg)
-        _message_box(msg)
         sys.exit(1)
 
     return Config(
@@ -262,23 +294,17 @@ async def capture(page: Page, url: str, config: Config) -> None:
     # 1) フルページ スクリーンショット
     #    「キャプチャ中」バッジは撮影の瞬間だけ隠し、保存画像へ写し込まない。
     with _step("png", url):
-        try:
-            await page.evaluate(_BADGE_HIDE)
-        except Exception:
-            pass
+        await _try_eval(page, _BADGE_HIDE)
         try:
             await page.screenshot(
                 path=str(config.output_dir / f"{stem}.png"), full_page=True
             )
         finally:
-            try:
-                await page.evaluate(_BADGE_SHOW)
-            except Exception:
-                pass
+            await _try_eval(page, _BADGE_SHOW)
 
-    # 2) ページ全文テキスト
+    # 2) ページ全文テキスト（キャプチャ中バッジは除外して取得）
     with _step("txt", url):
-        text = await page.inner_text("body")
+        text = await page.evaluate(_BODY_TEXT_JS)
         (config.output_dir / f"{stem}.txt").write_text(
             f"URL: {url}\n\n{text}", encoding="utf-8"
         )
@@ -287,6 +313,8 @@ async def capture(page: Page, url: str, config: Config) -> None:
     if config.target_selector:
         with _step("part", url):
             parts = await page.locator(config.target_selector).all_inner_texts()
+            # 広いセレクタ（div / body / * など）だとバッジ文言を拾うことがあるため除外。
+            parts = [p for p in parts if p.strip() != _BADGE_TEXT]
             body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
             (config.output_dir / f"{stem}_part.txt").write_text(
                 f"URL: {url}\nSELECTOR: {config.target_selector}\n\n{body}",
@@ -318,7 +346,7 @@ def cleanup_old_profiles() -> None:
 
 
 async def main(config: Config) -> None:
-    seen: dict = {}  # page オブジェクト -> 直近のURL
+    seen: "dict[Page, str]" = {}  # page オブジェクト -> 直近のURL
 
     # 保存先は起動時に一度だけ作成（親フォルダごと）。
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -347,12 +375,10 @@ async def main(config: Config) -> None:
         try:
             context = await p.chromium.launch_persistent_context(**launch_kwargs)
         except Exception as e:
-            msg = (
+            _notify_fatal(
                 f"Edge を起動できませんでした: {e}\n"
                 "Edge がインストールされているか、config.ini の edge_path を確認してください。"
             )
-            log(msg)
-            _message_box(msg)
             shutil.rmtree(tmp, ignore_errors=True)
             return
 
@@ -407,11 +433,7 @@ async def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
-    # 起動ごとにログを作り直す（前回分は残さない）。
-    try:
-        LOG_PATH.write_text("", encoding="utf-8")
-    except Exception:
-        pass
+    # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
     log("=== edge-auto-capture 起動 ===")
 
     config = load_config()
