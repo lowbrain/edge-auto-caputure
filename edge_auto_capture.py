@@ -11,33 +11,87 @@ Edge の URL / タブが変わるたびに、以下を同じフォルダへ自�
      Windows:
        "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe" ^
          --remote-debugging-port=9222 ^
-         --user-data-dir="C:\\edge-debug"
+         --user-data-dir="C:\\edge-debug" ^
+         https://example.com
+     ※ 末尾の URL が最初に開くページ。省略すると空白ページで起動する。
+       ランチャ(start_edge_debug.ps1 / run.bat)で起動する場合は、この URL を
+       config.ini の start_url で指定する（空なら about:blank）。
   3) その Edge で閲覧しながら実行:
        python edge_auto_capture.py
 
+設定はソースではなく、同じフォルダの config.ini を編集して変更する。
 停止は Ctrl + C。
 """
 
 import asyncio
+import configparser
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 
 from playwright.async_api import async_playwright
 
-# ==== 設定（ここだけ触れば調整できます）==========================
+# ==== 設定（値は config.ini から load_config() で読み込む）========
+# 実際の値はスクリプトと同じフォルダの config.ini で調整する。
+# 以下の各代入値は「既定値」を兼ねる: config.ini にその項目の
+# 行そのものが無い場合、load_config() はここの値へフォールバックする。
+# （項目行はあるが値だけ空の場合の扱いは load_config() のコメント参照）
+CONFIG_PATH = Path(__file__).with_name("config.ini")
+
 CDP_URL = "http://127.0.0.1:9222"   # Edge を起動したデバッグポート（IPv4を明示）
 OUTPUT_DIR = Path("output")         # 保存先フォルダ（png も txt もここ）
 POLL_INTERVAL = 1.0                 # URL変化を確認する間隔（秒）
 SETTLE_DELAY = 0.8                  # 変化検知後、描画が落ち着くまで待つ秒数
 LOAD_TIMEOUT = 5000                 # ページ読み込み待ちの上限（ミリ秒）
 SKIP_URLS = ("about:blank", "")     # 撮らないURL
-
-# --- 一部抜き出し設定 --------------------------------------------
-# 抜きたい箇所の CSS セレクタをここに書く。空("")のままなら一部抜きはスキップ。
-# 例: "h1"  /  "article"  /  ".price"  /  "#main .title"
-TARGET_SELECTOR = ""
+TARGET_SELECTOR = ""                # 一部抜き出しの CSS セレクタ（空ならスキップ）
 # ================================================================
+
+
+def load_config() -> None:
+    """config.ini を読み込み、モジュールグローバルの設定値へ反映する。
+
+    ファイルが無い / 値が不正な場合はメッセージを表示して終了する。
+
+    既定値まわりの挙動（現状仕様）:
+      - config.ini / [capture] セクションが無い    → メッセージ表示して終了。
+      - 項目の「行そのものが無い」                 → モジュール冒頭の既定値を使う
+        （sec.get / getfloat / getint の第2引数が既定値）。
+      - 数値項目の値だけが空（例: poll_interval =）→ 変換に失敗し終了（ValueError）。
+      - 文字列項目の値だけが空（cdp_url / output_dir）→ 空文字がそのまま入る。
+        ※ output_dir が空だと Path('.') となりカレントフォルダへ保存されるので注意。
+      - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
+    """
+    global CDP_URL, OUTPUT_DIR, POLL_INTERVAL, SETTLE_DELAY
+    global LOAD_TIMEOUT, SKIP_URLS, TARGET_SELECTOR
+
+    if not CONFIG_PATH.exists():
+        print(f"設定ファイルが見つかりません: {CONFIG_PATH}")
+        print("スクリプトと同じフォルダに config.ini を置いてください。")
+        sys.exit(1)
+
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(CONFIG_PATH, encoding="utf-8")
+        sec = parser["capture"]
+        # 第2引数は「その項目行が無い」ときのフォールバック既定値。
+        # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）
+        CDP_URL = sec.get("cdp_url", CDP_URL)
+        OUTPUT_DIR = Path(sec.get("output_dir", str(OUTPUT_DIR)))
+        POLL_INTERVAL = sec.getfloat("poll_interval", POLL_INTERVAL)
+        SETTLE_DELAY = sec.getfloat("settle_delay", SETTLE_DELAY)
+        LOAD_TIMEOUT = sec.getint("load_timeout", LOAD_TIMEOUT)
+        TARGET_SELECTOR = sec.get("target_selector", "").strip()
+
+        # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
+        raw = sec.get("skip_urls", "")
+        urls = [u.strip() for u in raw.split(",") if u.strip()]
+        SKIP_URLS = tuple(urls) + ("",)
+    except (configparser.Error, KeyError, ValueError) as e:
+        print(f"config.ini の読み込みに失敗しました: {e}")
+        print("[capture] セクションと各項目の値を確認してください。")
+        sys.exit(1)
 
 
 def safe_name(url: str) -> str:
@@ -126,6 +180,7 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    load_config()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
