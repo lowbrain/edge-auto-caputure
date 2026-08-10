@@ -8,6 +8,11 @@
 「記録開始／停止」で記録期間を制御でき、「今すぐ1枚」で今のページを1回だけ撮れる。
 既定は記録OFF（待機）で起動する（config.ini の start_recording で変更可）。
 
+SPA（URLが変わらず中身だけ変わるページ）向けに、パネルの入力欄へ CSS セレクタを
+入れて「SPA検知」を ON にすると、記録ON中はそのセレクタ要素の中身が変わるたびに
+自動保存する（同じ内容は署名比較で撮らない）。セレクタ入力が空だと SPA検知は使えない。
+このセレクタは _part.txt の抜き出し対象も兼ねる（初期値は config.ini の target_selector）。
+
 このスクリプトが Edge の起動・監視・後始末までを一括で行う（Playwright が
 毎回まっさらな一時プロファイルで Edge を起動し、終了時に自動で掃除する）。
 
@@ -27,8 +32,9 @@
 停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C
 も使える）。停止すると、このスクリプトが起動した Edge の終了と一時プロファイル
 の削除まで行う。動作ログは exe/スクリプトと同じフォルダの log.txt に残る。
-各ページの上部には操作パネル（記録中/待機中の表示＋「記録開始/停止」＋「今すぐ1枚」）
-を表示する（保存するスクリーンショットにも、抽出する txt / part テキストにも含めない）。
+各ページの上部には操作パネル（記録中/待機中の表示＋「記録開始/停止」＋「今すぐ1枚」＋
+セレクタ入力欄＋「SPA検知」トグル）を表示する
+（保存するスクリーンショットにも、抽出する txt / part テキストにも含めない）。
 """
 
 import asyncio
@@ -83,6 +89,17 @@ _STATUS_OFF = "待機中"
 _LABEL_START = "記録開始"
 _LABEL_STOP = "記録停止"
 _LABEL_SHOT = "📸 今すぐ1枚"
+# SPA（URLが変わらず中身だけ変わるページ）向けトグルスイッチの横に出すラベル。
+# セレクタ入力に値がある時だけ操作可能。スイッチ内の ON/OFF 表示は JS 側の固定文言。
+_LABEL_SPA = "SPA検知"
+# セレクタ入力欄の意味づけ。左に常時出す短いラベル＋例示プレースホルダ＋ホバー説明(title)。
+# 値を入れるとプレースホルダは消えるため、何の欄かは常時ラベルで示す。
+_LABEL_SEL = "TEXT抽出要素"
+_PLACEHOLDER_SEL = "例: #main, .results"
+_TITLE_SEL = (
+    "SPA検知で変化を監視する CSS セレクタ。指定した要素の中身が変わると自動保存します"
+    "（一部抜き出し _part.txt の対象も兼ねます）。例: #main / .results / article"
+)
 
 # キャプチャ時に、撮れたことを利用者へ知らせるリアクション文言。
 # 待機中の単発ショットは「保存しました」、記録中（記録開始/URL移動の自動保存）は
@@ -99,6 +116,10 @@ _S_OFF_JS = json.dumps(_STATUS_OFF)
 _L_START_JS = json.dumps(_LABEL_START)
 _L_STOP_JS = json.dumps(_LABEL_STOP)
 _L_SHOT_JS = json.dumps(_LABEL_SHOT)
+_L_SPA_JS = json.dumps(_LABEL_SPA)
+_L_SEL_JS = json.dumps(_LABEL_SEL)
+_PH_SEL_JS = json.dumps(_PLACEHOLDER_SEL)
+_TITLE_SEL_JS = json.dumps(_TITLE_SEL)
 _R_BUSY_JS = json.dumps(_REACT_BUSY)
 _R_DONE_JS = json.dumps(_REACT_DONE)
 
@@ -114,17 +135,27 @@ _BADGE_SCRIPT = Template(r"""
   if (window.top !== window.self) return;
   const ID = $ID;
   const S_ON = $S_ON, S_OFF = $S_OFF, L_START = $L_START, L_STOP = $L_STOP, L_SHOT = $L_SHOT;
+  const L_SPA = $L_SPA, L_SEL = $L_SEL, PH_SEL = $PH_SEL, TITLE_SEL = $TITLE_SEL;
   const R_BUSY = $R_BUSY, R_DONE = $R_DONE;
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
+  let spaOn = false;       // 直近に適用された SPA 検知状態
+  let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
   let rxTimer = null;      // 「保存しました」を自動で消すためのタイマー
 
-  function apply(r) {
+  function apply(r, s, sel) {
     recording = !!r;
+    spaOn = !!s;
+    if (sel !== undefined && sel !== null) selector = String(sel);
     const box = document.getElementById(ID);
     if (!box) return;
     const lbl = box.querySelector('[data-eac="label"]');
     const dot = box.querySelector('[data-eac="dot"]');
     const tg = box.querySelector('[data-eac="toggle"]');
+    const spa = box.querySelector('[data-eac="spa"]');        // トグルスイッチのトラック
+    const spaKnob = box.querySelector('[data-eac="spa-knob"]');
+    const spaText = box.querySelector('[data-eac="spa-text"]');
+    const spaWrap = box.querySelector('[data-eac="spa-wrap"]');
+    const inp = box.querySelector('[data-eac="selector"]');
     if (lbl) lbl.textContent = recording ? S_ON : S_OFF;
     if (dot) {
       // 記録中＝白い丸、待機中＝白い輪郭のみの丸（固定サイズ・同一質感）。
@@ -138,6 +169,37 @@ _BADGE_SCRIPT = Template(r"""
     }
     if (tg) tg.textContent = recording ? L_STOP : L_START;
     box.style.setProperty('background', recording ? 'rgba(200,0,0,.92)' : 'rgba(90,90,90,.92)', 'important');
+    // セレクタ入力欄はフォーカス中は書き換えない（タイピングを壊さない）。
+    // 非フォーカス時のみ現在値と差があれば同期（別タブでの変更を反映）。
+    if (inp && document.activeElement !== inp && inp.value !== selector) inp.value = selector;
+    // SPA検知トグルスイッチ: セレクタ未設定なら無効（灰色・押せない）。設定時のみ切替可。
+    // ON=緑・ノブ右・「ON」左寄せ / OFF=半透明白・ノブ左・「OFF」右寄せ。
+    const present = (selector || '').trim().length > 0;
+    if (spa) {
+      spa.disabled = !present;
+      if (!present) {
+        spa.style.setProperty('background', 'rgba(255,255,255,.2)', 'important');
+        spa.style.setProperty('cursor', 'not-allowed', 'important');
+        if (spaWrap) spaWrap.style.setProperty('opacity', '.45', 'important');
+      } else {
+        spa.style.setProperty('background', spaOn ? '#7cc243' : 'rgba(255,255,255,.35)', 'important');
+        spa.style.setProperty('cursor', 'pointer', 'important');
+        if (spaWrap) spaWrap.style.setProperty('opacity', '1', 'important');
+      }
+      // ノブ位置（トラック50px・ノブ20px → 右端は left:28px）。
+      if (spaKnob) spaKnob.style.setProperty('left', spaOn ? '28px' : '2px', 'important');
+      // ON/OFF 文言はノブと反対側へ寄せる。
+      if (spaText) {
+        spaText.textContent = spaOn ? 'ON' : 'OFF';
+        if (spaOn) {
+          spaText.style.setProperty('left', '8px', 'important');
+          spaText.style.setProperty('right', 'auto', 'important');
+        } else {
+          spaText.style.setProperty('right', '7px', 'important');
+          spaText.style.setProperty('left', 'auto', 'important');
+        }
+      }
+    }
   }
 
   // キャプチャの手応え（保存中→保存しました/記録しました）。パネルコンテナ内の
@@ -166,9 +228,9 @@ _BADGE_SCRIPT = Template(r"""
 
   function build() {
     if (!document.body || document.getElementById(ID)) return;
-    // 遷移直後に誤った状態（待機中）を一瞬見せないよう、先に現在の記録状態を
-    // Python へ問い合わせ、分かってからパネルを描画する。
-    const render = (initOn) => {
+    // 遷移直後に誤った状態（待機中）を一瞬見せないよう、先に現在の状態
+    //（記録中/SPA検知/セレクタ）を Python へ問い合わせ、分かってから描画する。
+    const render = (st) => {
     if (!document.body || document.getElementById(ID)) return;
     const box = document.createElement('div');
     box.id = ID;
@@ -231,6 +293,85 @@ _BADGE_SCRIPT = Template(r"""
     sh.style.cssText = bcss;
     sh.addEventListener('click', () => { try { window.__eac_shot(); } catch (e) {} });
 
+    // SPA検知の対象セレクタ入力欄。左に「検知対象」ラベルを添えて何の欄か常時分かるようにし、
+    // プレースホルダで記入例、title でホバー時の詳しい説明を出す。値がある時だけ SPA検知が押せる。
+    const selWrap = document.createElement('span');
+    selWrap.setAttribute('data-eac', 'sel-wrap');
+    selWrap.style.cssText =
+      'box-sizing:border-box !important;flex:0 0 auto !important;display:inline-flex !important;'
+      + 'align-items:center !important;gap:8px !important;margin:0 !important;padding:0 !important;'
+      + 'pointer-events:auto !important;';
+    const selLbl = document.createElement('span');
+    selLbl.setAttribute('data-eac', 'sel-label');
+    selLbl.textContent = L_SEL;
+    selLbl.title = TITLE_SEL;
+    selLbl.style.cssText =
+      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
+      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:bold !important;line-height:1 !important;';
+    // サイト側 CSS の影響を排除するため主要プロパティを !important で明示する。
+    const inp = document.createElement('input');
+    inp.setAttribute('data-eac', 'selector');
+    inp.type = 'text';
+    inp.placeholder = PH_SEL;
+    inp.title = TITLE_SEL;
+    inp.style.cssText =
+      'box-sizing:border-box !important;flex:0 0 auto !important;width:180px !important;height:26px !important;'
+      + 'margin:0 !important;padding:0 8px !important;pointer-events:auto !important;'
+      + 'border:1px solid rgba(255,255,255,.6) !important;border-radius:5px !important;'
+      + 'background:#fff !important;color:#111 !important;'
+      + 'font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:normal !important;line-height:1 !important;'
+      + 'appearance:none !important;-webkit-appearance:none !important;';
+    // 入力のたびにローカルで即座に見た目（SPAボタンの有効/無効）を反映しつつ、
+    // Python 側へも値を通知する（入力欄はフォーカス中なので apply が上書きしない）。
+    inp.addEventListener('input', () => {
+      apply(recording, spaOn, inp.value);
+      try { window.__eac_set_selector(inp.value); } catch (e) {}
+    });
+    selWrap.appendChild(selLbl);
+    selWrap.appendChild(inp);
+
+    // SPA検知トグル: 「SPA検知」ラベル＋ピル型スイッチ（ノブがスライドする ON/OFF）。
+    // スイッチのトラック(button[data-eac=spa])がクリック対象。見た目は apply() が更新する。
+    const spaWrap = document.createElement('span');
+    spaWrap.setAttribute('data-eac', 'spa-wrap');
+    spaWrap.style.cssText =
+      'box-sizing:border-box !important;flex:0 0 auto !important;display:inline-flex !important;'
+      + 'align-items:center !important;gap:8px !important;margin:0 !important;padding:0 !important;'
+      + 'pointer-events:auto !important;';
+    const spaLbl = document.createElement('span');
+    spaLbl.setAttribute('data-eac', 'spa-label');
+    spaLbl.textContent = L_SPA;
+    spaLbl.style.cssText =
+      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
+      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:bold !important;line-height:1 !important;';
+    const spa = document.createElement('button');
+    spa.setAttribute('data-eac', 'spa');
+    spa.setAttribute('role', 'switch');
+    spa.style.cssText =
+      'box-sizing:border-box !important;position:relative !important;flex:0 0 auto !important;'
+      + 'width:50px !important;height:24px !important;margin:0 !important;padding:0 !important;'
+      + 'border:0 !important;border-radius:12px !important;pointer-events:auto !important;cursor:pointer !important;'
+      + 'background:rgba(255,255,255,.35) !important;appearance:none !important;-webkit-appearance:none !important;'
+      + 'transition:background .15s ease !important;';
+    const spaText = document.createElement('span');
+    spaText.setAttribute('data-eac', 'spa-text');
+    spaText.style.cssText =
+      'position:absolute !important;top:0 !important;height:24px !important;display:flex !important;'
+      + 'align-items:center !important;margin:0 !important;padding:0 !important;'
+      + 'font-family:"Segoe UI",sans-serif !important;font-size:10px !important;font-weight:bold !important;line-height:1 !important;'
+      + 'color:#fff !important;pointer-events:none !important;';
+    const spaKnob = document.createElement('span');
+    spaKnob.setAttribute('data-eac', 'spa-knob');
+    spaKnob.style.cssText =
+      'position:absolute !important;top:2px !important;left:2px !important;width:20px !important;height:20px !important;'
+      + 'border-radius:50% !important;background:#fff !important;margin:0 !important;padding:0 !important;'
+      + 'box-shadow:0 1px 2px rgba(0,0,0,.35) !important;transition:left .15s ease !important;pointer-events:none !important;';
+    spa.appendChild(spaText);
+    spa.appendChild(spaKnob);
+    spa.addEventListener('click', () => { try { window.__eac_spa_toggle(); } catch (e) {} });
+    spaWrap.appendChild(spaLbl);
+    spaWrap.appendChild(spa);
+
     // 手応え表示用オーバーレイ（既定は非表示）。コンテナ内に絶対配置で重ねる。
     const rx = document.createElement('div');
     rx.setAttribute('data-eac', 'react');
@@ -244,14 +385,18 @@ _BADGE_SCRIPT = Template(r"""
     box.appendChild(st);
     box.appendChild(tg);
     box.appendChild(sh);
+    box.appendChild(selWrap);
+    box.appendChild(spaWrap);
     box.appendChild(rx);
     document.body.appendChild(box);
-    apply(!!initOn);   // 取得した現在の記録状態で最初から正しく描画する
+    // 取得した現在の状態（記録中/SPA検知/セレクタ）で最初から正しく描画する。
+    apply(!!(st && st.recording), !!(st && st.spa), (st && st.selector) || '');
     };
+    const fallback = { recording: recording, spa: spaOn, selector: selector };
     if (window.__eac_getstate) {
-      window.__eac_getstate().then(render).catch(() => render(recording));
+      window.__eac_getstate().then(render).catch(() => render(fallback));
     } else {
-      render(recording);
+      render(fallback);
     }
   }
 
@@ -270,6 +415,7 @@ _BADGE_SCRIPT = Template(r"""
 """).substitute(
     ID=_ID_JS, S_ON=_S_ON_JS, S_OFF=_S_OFF_JS,
     L_START=_L_START_JS, L_STOP=_L_STOP_JS, L_SHOT=_L_SHOT_JS,
+    L_SPA=_L_SPA_JS, L_SEL=_L_SEL_JS, PH_SEL=_PH_SEL_JS, TITLE_SEL=_TITLE_SEL_JS,
     R_BUSY=_R_BUSY_JS, R_DONE=_R_DONE_JS,
 )
 
@@ -291,6 +437,43 @@ _BODY_TEXT_JS = Template(r"""
   const t = document.body ? document.body.innerText : '';
   if (prev) b.style.setProperty('display', prev, prio); else b.style.removeProperty('display');
   return t;
+}
+""").substitute(ID=_ID_JS)
+
+# SPA検知用のコンテンツ署名を計算する JS。引数のセレクタに一致する要素群の
+# innerText を連結し、短いハッシュ文字列にして返す（全文ではなくハッシュだけ返し
+# 毎 tick の転送量を抑える）。操作パネルは _BODY_TEXT_JS と同様に「隠す→読む→復帰」を
+# 1回の evaluate 内で同期実行し、パネル文言を署名へ混ぜない・画面をちらつかせない。
+# セレクタ不正/該当なしは空扱い（'0_0'）にして「変化なし」とみなす。
+_SIG_JS = Template(r"""
+(selector) => {
+  const b = document.getElementById($ID);
+  let prev, prio;
+  if (b) {
+    prev = b.style.getPropertyValue('display');
+    prio = b.style.getPropertyPriority('display');
+    b.style.setProperty('display', 'none', 'important');
+  }
+  let text = '';
+  try {
+    if (selector) {
+      const parts = [];
+      document.querySelectorAll(selector).forEach((el) => { parts.push(el.innerText || ''); });
+      text = parts.join('\n');
+    }
+  } catch (e) { text = ''; }
+  if (b) { if (prev) b.style.setProperty('display', prev, prio); else b.style.removeProperty('display'); }
+  // cyrb53 相当の簡易ハッシュ。衝突は実害小。長さ＋ハッシュで実質的に判別する。
+  let h1 = 0xdeadbeef ^ text.length, h2 = 0x41c6ce57 ^ text.length;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  const hash = (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16);
+  return text.length + '_' + hash;
 }
 """).substitute(ID=_ID_JS)
 
@@ -445,7 +628,10 @@ def _step(tag: str, url: str):
         log(f"[skip {tag}] {url}  ({e})")
 
 
-async def capture(page: Page, url: str, config: Config) -> None:
+async def capture(page: Page, url: str, config: Config, selector: str = "") -> None:
+    # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
+    # 実行時に変えられるため、config 固定値ではなく呼び出し時の値を使う
+    #（初期値は config.target_selector）。空なら _part.txt はスキップ。
     # 一意性は「ミリ秒付き日時 + 通し番号」で保証する。URL スラッグは
     # 読みやすさ用の装飾で、切り詰めや正規化で衝突しても実害はない。
     # seq / stem は await より前に確定させ、番号を予約してから保存する。
@@ -479,39 +665,42 @@ async def capture(page: Page, url: str, config: Config) -> None:
         )
 
     # 3) 一部抜き出し（セレクタ設定時のみ）
-    if config.target_selector:
+    if selector:
         with _step("part", url):
             # 広いセレクタ（div / body / * など）だと操作パネルの文言を拾うことがある。
             # 抽出の間だけパネルを display:none にして innerText から除外する。
             await _try_eval(page, _BADGE_HIDE)
             try:
-                parts = await page.locator(config.target_selector).all_inner_texts()
+                parts = await page.locator(selector).all_inner_texts()
             finally:
                 await _try_eval(page, _BADGE_SHOW)
             # 空文字（隠したパネル配下や該当なし要素）は落とす。
             parts = [p for p in parts if p.strip()]
             body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
             (config.output_dir / f"{stem}_part.txt").write_text(
-                f"URL: {url}\nSELECTOR: {config.target_selector}\n\n{body}",
+                f"URL: {url}\nSELECTOR: {selector}\n\n{body}",
                 encoding="utf-8",
             )
 
     log(f"[saved] {stem}.*  <- {url}")
 
 
-def _spawn_capture(page: Page, url: str, config: Config, done_text: str = _REACT_DONE) -> None:
+def _spawn_capture(
+    page: Page, url: str, config: Config, selector: str = "", done_text: str = _REACT_DONE
+) -> None:
     """capture() をバックグラウンドタスクとして起動し、参照を保持する。
 
     撮影の前後にパネル上へ手応え（「保存中…」→ done_text）を表示する。
     done_text は待機中の単発ショットなら「保存しました」、記録中の保存なら
     「記録しました」を渡す。表示はパネル内オーバーレイなので保存物には写り込まない。
+    selector は _part.txt 抜き出しの対象（実行時のバー入力値）を capture() へ渡す。
     タスクを _tasks に入れて GC を防ぎ、完了時に取り除く。
     """
 
     async def _run() -> None:
         await _try_eval(page, "window.__eacReact && window.__eacReact('busy')")
         try:
-            await capture(page, url, config)
+            await capture(page, url, config, selector)
         finally:
             # 完了表示（約1.2秒で自動的に消え、下地の状態表示に戻る）。
             js = "window.__eacReact && window.__eacReact('done', " + json.dumps(done_text) + ")"
@@ -535,14 +724,25 @@ def cleanup_old_profiles() -> None:
 
 @dataclass
 class _RecordingState:
-    """記録中かどうかの実行時状態（JS ボタンのコールバックとループで共有）。"""
+    """実行時状態（JS ボタンのコールバックとループで共有）。
+
+    - on:       記録中か（マスタースイッチ。自動保存は記録ON中のみ走る）
+    - spa_on:   SPA検知（中身の変化を契機に自動保存）を有効にするか
+    - selector: SPA検知の対象／_part.txt 抜き出しの対象 CSS セレクタ（バー入力の実行時値）
+    不変条件: selector が空なら spa_on は必ず False（検知対象が無いため）。
+    """
 
     on: bool = False
+    spa_on: bool = False
+    selector: str = ""
 
 
 async def main(config: Config) -> None:
     seen: "dict[Page, str]" = {}  # page オブジェクト -> 直近のURL
-    state = _RecordingState(on=config.start_recording)
+    # SPA検知用の署名。sig_seen=最後に撮った署名 / sig_prev=前 tick の署名（落ち着き判定用）。
+    sig_seen: "dict[Page, str]" = {}
+    sig_prev: "dict[Page, str]" = {}
+    state = _RecordingState(on=config.start_recording, selector=config.target_selector)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -585,15 +785,34 @@ async def main(config: Config) -> None:
             shutil.rmtree(tmp, ignore_errors=True)
             return
 
-        async def _refresh_all_panels() -> None:
-            """開いている全ページの操作パネルへ現在の記録状態を反映する。
+        async def _reseed_signatures() -> None:
+            """全ページの SPA署名基準を「現在の内容」に取り直す。
 
-            新規タブ（初期は待機表示で描画）や、サイト側の再描画で作り直された
-            パネルも、毎 tick これを呼ぶことで現在の状態に追従する。
+            SPA検知を ON にした瞬間やセレクタを変えた直後に呼ぶ。基準を現状に
+            合わせることで、開始/変更の直後に無駄撮りせず、以後の「変化」だけを契機にする。
+            """
+            for pg in list(context.pages):
+                try:
+                    sig = await pg.evaluate(_SIG_JS, state.selector)
+                except Exception:
+                    continue
+                sig_seen[pg] = sig
+                sig_prev[pg] = sig
+
+        async def _refresh_all_panels() -> None:
+            """開いている全ページの操作パネルへ現在の状態を反映する。
+
+            記録中/SPA検知/セレクタの3つを送る。新規タブ（初期は待機表示で描画）や、
+            サイト側の再描画で作り直されたパネルも、毎 tick これを呼ぶことで追従する。
             """
             flag = "true" if state.on else "false"
+            spa_flag = "true" if state.spa_on else "false"
+            sel = json.dumps(state.selector)  # 日本語/記号を含んでも安全に JS リテラル化
             for pg in list(context.pages):
-                await _try_eval(pg, f"window.__eacApplyState && window.__eacApplyState({flag})")
+                await _try_eval(
+                    pg,
+                    f"window.__eacApplyState && window.__eacApplyState({flag}, {spa_flag}, {sel})",
+                )
 
         async def _on_toggle(source) -> None:
             """「記録開始／停止」ボタン: 記録状態を反転する。
@@ -613,7 +832,7 @@ async def main(config: Config) -> None:
                     if url in config.skip_urls:
                         continue
                     seen[pg] = url
-                    _spawn_capture(pg, url, config, done_text=_REACT_REC)
+                    _spawn_capture(pg, url, config, state.selector, done_text=_REACT_REC)
 
         async def _on_shot(source) -> None:
             """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
@@ -634,25 +853,63 @@ async def main(config: Config) -> None:
             log(f"[手動] {url}")
             # 記録中の手動ショットは「記録しました」、待機中は「保存しました」を表示。
             _spawn_capture(
-                pg, url, config,
+                pg, url, config, state.selector,
                 done_text=_REACT_REC if state.on else _REACT_DONE,
             )
 
-        async def _get_state(source) -> bool:
-            """パネルが描画前に現在の記録状態を問い合わせるためのバインディング。
+        async def _on_spa_toggle(source) -> None:
+            """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
+
+            セレクタ未設定では検知対象が無いので no-op（UI 側でも無効化しているが二重防御）。
+            ON にした瞬間は署名基準を現状に取り直し、開始直後の無駄撮りを避ける。
+            """
+            if not state.selector:
+                return
+            state.spa_on = not state.spa_on
+            log(f"[SPA] {'ON' if state.spa_on else 'OFF'}")
+            if state.spa_on:
+                await _reseed_signatures()
+            await _refresh_all_panels()
+
+        async def _on_set_selector(source, value) -> None:
+            """セレクタ入力欄の変更（入力のたびに呼ばれる）。実行時セレクタを更新する。
+
+            空になったら SPA検知を OFF に落とす（検知対象が無いため）。SPA検知中に
+            対象が変わったら署名基準を取り直す（旧セレクタの署名で誤検知しないため）。
+            """
+            new = (value or "").strip()
+            if new == state.selector:
+                return
+            was_empty = not state.selector
+            state.selector = new
+            if not new:
+                state.spa_on = False
+            elif state.spa_on:
+                await _reseed_signatures()
+            # 空⇔非空 が変わった時だけログ（キーストローク毎の氾濫を避ける）。
+            if was_empty != (not new):
+                log(f"[セレクタ] {'クリア' if not new else repr(new)}")
+            await _refresh_all_panels()
+
+        async def _get_state(source) -> dict:
+            """パネルが描画前に現在の状態を問い合わせるためのバインディング。
 
             ページ遷移直後、新しいドキュメントのパネルはこれを見てから描画するので、
-            記録ON中に別URLへ移動しても一瞬「待機中」を見せずに済む。
+            記録ON中に別URLへ移動しても一瞬「待機中」を見せずに済む。SPA検知の
+            ON/OFF・セレクタ値も同時に返し、遷移後も入力欄・ボタンを正しく初期化する。
             """
-            return state.on
+            return {"recording": state.on, "spa": state.spa_on, "selector": state.selector}
 
         # ページ内ボタン／パネルから呼び出す Python コールバックを公開する。
         # context 単位なので以後開く新規タブにも自動適用される（add_init_script より前に登録）。
         await context.expose_binding("__eac_toggle", _on_toggle)
         await context.expose_binding("__eac_shot", _on_shot)
+        await context.expose_binding("__eac_spa_toggle", _on_spa_toggle)
+        await context.expose_binding("__eac_set_selector", _on_set_selector)
         await context.expose_binding("__eac_getstate", _get_state)
 
-        # 全ページ・全タブの上部に操作パネル（記録状態＋記録開始/停止＋今すぐ1枚）を表示する。
+        # 全ページ・全タブの上部に操作パネル（記録状態＋記録開始/停止＋今すぐ1枚＋
+        # セレクタ入力＋SPA検知トグル）を表示する。
         # add_init_script は以後開くページ／新規タブにも自動適用される。
         await context.add_init_script(_BADGE_SCRIPT)
 
@@ -671,25 +928,30 @@ async def main(config: Config) -> None:
 
             log(
                 f"Edge を起動しました（記録は{'ON' if state.on else 'OFF（待機）'}で開始）。"
-                "ページ上部のパネルで記録開始/停止・今すぐ1枚を操作できます"
-                "（終了するには Edge のウィンドウを閉じてください）"
+                "ページ上部のパネルで記録開始/停止・今すぐ1枚・SPA検知（セレクタ入力時）を"
+                "操作できます（終了するには Edge のウィンドウを閉じてください）"
             )
 
             while not closed.is_set():
                 pages = list(context.pages)
 
-                # 閉じられたページを管理から除去
+                # 閉じられたページを管理から除去（seen と SPA署名の両方）
                 for pg in list(seen):
                     if pg not in pages:
                         del seen[pg]
+                for pg in list(sig_prev):
+                    if pg not in pages:
+                        sig_prev.pop(pg, None)
+                        sig_seen.pop(pg, None)
 
                 # 記録状態を全パネルに反映（新規タブ・再描画にも毎 tick 追従）
                 await _refresh_all_panels()
 
-                # 記録ON の間だけ URL変化 / 新規タブを検知して保存。
+                # 記録ON の間だけ URL変化 / 新規タブ / (SPA検知ON なら)中身の変化を検知して保存。
                 # OFF の間は seen を更新しないので、ON にした瞬間に現在ページが
                 # 「変化」として検知され撮れる（_on_toggle でも即撮りするため通常は先回り）。
                 if state.on:
+                    spa_active = state.spa_on and bool(state.selector)
                     for pg in pages:
                         try:
                             url = pg.url
@@ -697,9 +959,30 @@ async def main(config: Config) -> None:
                             continue
                         if url in config.skip_urls:
                             continue
-                        if seen.get(pg) != url:
+
+                        url_changed = seen.get(pg) != url
+                        if url_changed:
                             seen[pg] = url
-                            _spawn_capture(pg, url, config, done_text=_REACT_REC)
+                            _spawn_capture(pg, url, config, state.selector, done_text=_REACT_REC)
+
+                        # SPA検知: セレクタ要素の中身の変化を契機に保存。
+                        # 「前回撮影時と署名が違う」かつ「前 tick から署名が不変（＝落ち着いた）」
+                        # 時だけ撮る（描画途中の多段レンダを撮らない）。
+                        if spa_active:
+                            try:
+                                sig = await pg.evaluate(_SIG_JS, state.selector)
+                            except Exception:
+                                sig = None
+                            if sig is not None:
+                                if url_changed:
+                                    # 遷移直後は URL 側で撮ったので、その内容を基準にして二重撮り防止。
+                                    sig_seen[pg] = sig
+                                elif sig != sig_seen.get(pg) and sig == sig_prev.get(pg):
+                                    sig_seen[pg] = sig
+                                    _spawn_capture(
+                                        pg, url, config, state.selector, done_text=_REACT_REC
+                                    )
+                                sig_prev[pg] = sig
 
                 await asyncio.sleep(config.poll_interval)
         finally:
