@@ -52,9 +52,9 @@ from playwright.async_api import Page, async_playwright
 import badge
 from capture import (
     Config,
-    _notify_fatal,
-    _spawn_capture,
-    _try_eval,
+    notify_fatal,
+    spawn_capture,
+    try_eval,
     cleanup_old_profiles,
     load_config,
     log,
@@ -141,7 +141,7 @@ class CaptureSession:
         spa_flag = "true" if self.spa_on else "false"
         sel = json.dumps(self.selector)  # 日本語/記号を含んでも安全に JS リテラル化
         for pg in list(self.context.pages):
-            await _try_eval(
+            await try_eval(
                 pg,
                 f"window.__eacApplyState && window.__eacApplyState({flag}, {spa_flag}, {sel})",
             )
@@ -166,14 +166,14 @@ class CaptureSession:
                 if url in self.config.skip_urls:
                     continue
                 self.seen[pg] = url
-                _spawn_capture(pg, url, self.config, self.selector, done_text=badge.REACT_REC)
+                spawn_capture(pg, url, self.config, self.selector, done_text=badge.REACT_REC)
 
     async def on_shot(self, source) -> None:
         """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
 
         seen は触らないので自動キャプチャの判定には影響しない（記録ON中でも
         同一 URL の「撮り直し」として別ファイルにもう1枚保存される）。
-        手応え表示は _spawn_capture が撮影の前後で行う（記録中は「記録しました」、
+        手応え表示は spawn_capture が撮影の前後で行う（記録中は「記録しました」、
         待機中は「保存しました」）。
         """
         pg = source["page"]
@@ -184,7 +184,7 @@ class CaptureSession:
         if url in self.config.skip_urls:
             return
         log(f"[手動] {url}")
-        _spawn_capture(
+        spawn_capture(
             pg, url, self.config, self.selector,
             done_text=badge.REACT_REC if self.on else badge.REACT_DONE,
         )
@@ -289,7 +289,7 @@ class CaptureSession:
                     url_changed = self.seen.get(pg) != url
                     if url_changed:
                         self.seen[pg] = url
-                        _spawn_capture(
+                        spawn_capture(
                             pg, url, self.config, self.selector, done_text=badge.REACT_REC
                         )
 
@@ -307,7 +307,7 @@ class CaptureSession:
                                 self.sig_seen[pg] = sig
                             elif sig != self.sig_seen.get(pg) and sig == self.sig_prev.get(pg):
                                 self.sig_seen[pg] = sig
-                                _spawn_capture(
+                                spawn_capture(
                                     pg, url, self.config, self.selector, done_text=badge.REACT_REC
                                 )
                             self.sig_prev[pg] = sig
@@ -327,7 +327,7 @@ async def main(config: Config) -> None:
                 **_edge_launch_kwargs(config, tmp)
             )
         except Exception as e:
-            _notify_fatal(
+            notify_fatal(
                 f"Edge を起動できませんでした: {e}\n"
                 "Edge がインストールされているか、config.ini の edge_path を確認してください。"
             )

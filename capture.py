@@ -1,8 +1,8 @@
 """設定・保存処理まわり（アプリの土台）。
 
-- 基準フォルダ/ログなどの基盤ユーティリティ（BASE_DIR, log, _try_eval …）
+- 基準フォルダ/ログなどの基盤ユーティリティ（BASE_DIR, log, try_eval …）
 - config.ini の読み込み（Config / load_config）
-- 1 ページ分の保存処理（capture / _spawn_capture）と後始末（cleanup_old_profiles）
+- 1 ページ分の保存処理（capture / spawn_capture）と後始末（cleanup_old_profiles）
 
 ページ側 JS の呼び出し式・文言は badge モジュールに集約してあり、ここから参照する。
 """
@@ -84,13 +84,13 @@ def _message_box(msg: str, title: str = "edge-auto-capture") -> None:
         pass
 
 
-def _notify_fatal(msg: str) -> None:
+def notify_fatal(msg: str) -> None:
     """致命的メッセージをログとダイアログの両方へ出す（終了処理は呼び出し側）。"""
     log(msg)
     _message_box(msg)
 
 
-async def _try_eval(page: Page, js: str) -> None:
+async def try_eval(page: Page, js: str) -> None:
     """ページ側 JS を実行。失敗しても無視する（バッジの表示/非表示など副次処理用）。"""
     try:
         await page.evaluate(js)
@@ -142,7 +142,7 @@ def load_config() -> Config:
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
     """
     if not CONFIG_PATH.exists():
-        _notify_fatal(
+        notify_fatal(
             f"設定ファイルが見つかりません: {CONFIG_PATH}\n"
             "exe と同じフォルダに config.ini を置いてください。"
         )
@@ -177,7 +177,7 @@ def load_config() -> Config:
             start_recording=sec.getboolean("start_recording", defaults.start_recording),
         )
     except (configparser.Error, KeyError, ValueError) as e:
-        _notify_fatal(
+        notify_fatal(
             f"config.ini の読み込みに失敗しました: {e}\n"
             "[capture] セクションと各項目の値を確認してください。"
         )
@@ -224,13 +224,13 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     # 1) フルページ スクリーンショット
     #    操作パネルは撮影の瞬間だけ隠し、保存画像へ写し込まない。
     with _step("png", url):
-        await _try_eval(page, badge.BAR_HIDE)
+        await try_eval(page, badge.BAR_HIDE)
         try:
             await page.screenshot(
                 path=str(config.output_dir / f"{stem}.png"), full_page=True
             )
         finally:
-            await _try_eval(page, badge.BAR_SHOW)
+            await try_eval(page, badge.BAR_SHOW)
 
     # 2) ページ全文テキスト（操作パネルは除外して取得）
     with _step("txt", url):
@@ -244,11 +244,11 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
         with _step("part", url):
             # 広いセレクタ（div / body / * など）だと操作パネルの文言を拾うことがある。
             # 抽出の間だけパネルを display:none にして innerText から除外する。
-            await _try_eval(page, badge.BAR_HIDE)
+            await try_eval(page, badge.BAR_HIDE)
             try:
                 parts = await page.locator(selector).all_inner_texts()
             finally:
-                await _try_eval(page, badge.BAR_SHOW)
+                await try_eval(page, badge.BAR_SHOW)
             # 空文字（隠したパネル配下や該当なし要素）は落とす。
             parts = [p for p in parts if p.strip()]
             body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
@@ -260,7 +260,7 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     log(f"[saved] {stem}.*  <- {url}")
 
 
-def _spawn_capture(
+def spawn_capture(
     page: Page, url: str, config: Config, selector: str = "", done_text: str = badge.REACT_DONE
 ) -> None:
     """capture() をバックグラウンドタスクとして起動し、参照を保持する。
@@ -273,12 +273,12 @@ def _spawn_capture(
     """
 
     async def _run() -> None:
-        await _try_eval(page, badge.react_busy_js())
+        await try_eval(page, badge.react_busy_js())
         try:
             await capture(page, url, config, selector)
         finally:
             # 完了表示（約1.2秒で自動的に消え、下地の状態表示に戻る）。
-            await _try_eval(page, badge.react_done_js(done_text))
+            await try_eval(page, badge.react_done_js(done_text))
 
     task = asyncio.create_task(_run())
     _tasks.add(task)
