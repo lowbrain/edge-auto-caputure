@@ -108,6 +108,12 @@ _TITLE_SEL = (
     "※右クリック → Copy → Copy selector でも取得できますが、長く壊れやすいので、\n"
     "  できるだけ短い #id や .class を指定するのがおすすめです。"
 )
+# SPA検知トグルのホバー説明。無効（セレクタ未設定）でも読めるよう、ラベル/ラッパにも付ける。
+_TITLE_SPA = (
+    "SPA（URL が変わらず中身だけ変わるページ）向けの自動保存を ON/OFF します。\n"
+    "左の CSS セレクタを設定すると操作できます（未設定のときは押せません）。\n"
+    "ON の間は、記録中にその要素の中身が変わるたびに自動保存します。"
+)
 
 # キャプチャ時に、撮れたことを利用者へ知らせるリアクション文言。
 # 待機中の単発ショットは「保存しました」、記録中（記録開始/URL移動の自動保存）は
@@ -127,6 +133,7 @@ _L_SHOT_JS = json.dumps(_LABEL_SHOT)
 _L_SPA_JS = json.dumps(_LABEL_SPA)
 _PH_SEL_JS = json.dumps(_PLACEHOLDER_SEL)
 _TITLE_SEL_JS = json.dumps(_TITLE_SEL)
+_TITLE_SPA_JS = json.dumps(_TITLE_SPA)
 _R_BUSY_JS = json.dumps(_REACT_BUSY)
 _R_DONE_JS = json.dumps(_REACT_DONE)
 
@@ -142,7 +149,7 @@ _BADGE_SCRIPT = Template(r"""
   if (window.top !== window.self) return;
   const ID = $ID;
   const S_ON = $S_ON, S_OFF = $S_OFF, L_START = $L_START, L_STOP = $L_STOP, L_SHOT = $L_SHOT;
-  const L_SPA = $L_SPA, PH_SEL = $PH_SEL, TITLE_SEL = $TITLE_SEL;
+  const L_SPA = $L_SPA, PH_SEL = $PH_SEL, TITLE_SEL = $TITLE_SEL, TITLE_SPA = $TITLE_SPA;
   const R_BUSY = $R_BUSY, R_DONE = $R_DONE;
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
   let spaOn = false;       // 直近に適用された SPA 検知状態
@@ -369,15 +376,20 @@ _BADGE_SCRIPT = Template(r"""
       'box-sizing:border-box !important;flex:0 0 auto !important;display:inline-flex !important;'
       + 'align-items:center !important;gap:8px !important;margin:0 !important;padding:0 !important;'
       + 'pointer-events:auto !important;';
+    // 無効（セレクタ未設定）ではボタン自身のホバーで tooltip が出ないことがあるため、
+    // ラッパ／ラベルにも同じ説明を付け、どこにホバーしても読めるようにする。
+    spaWrap.title = TITLE_SPA;
     const spaLbl = document.createElement('span');
     spaLbl.setAttribute('data-eac', 'spa-label');
     spaLbl.textContent = L_SPA;
+    spaLbl.title = TITLE_SPA;
     spaLbl.style.cssText =
       'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
       + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:bold !important;line-height:1 !important;';
     const spa = document.createElement('button');
     spa.setAttribute('data-eac', 'spa');
     spa.setAttribute('role', 'switch');
+    spa.title = TITLE_SPA;
     spa.style.cssText =
       'box-sizing:border-box !important;position:relative !important;flex:0 0 auto !important;'
       + 'width:50px !important;height:24px !important;margin:0 !important;padding:0 !important;'
@@ -447,7 +459,7 @@ _BADGE_SCRIPT = Template(r"""
 """).substitute(
     ID=_ID_JS, S_ON=_S_ON_JS, S_OFF=_S_OFF_JS,
     L_START=_L_START_JS, L_STOP=_L_STOP_JS, L_SHOT=_L_SHOT_JS,
-    L_SPA=_L_SPA_JS, PH_SEL=_PH_SEL_JS, TITLE_SEL=_TITLE_SEL_JS,
+    L_SPA=_L_SPA_JS, PH_SEL=_PH_SEL_JS, TITLE_SEL=_TITLE_SEL_JS, TITLE_SPA=_TITLE_SPA_JS,
     R_BUSY=_R_BUSY_JS, R_DONE=_R_DONE_JS,
 )
 
