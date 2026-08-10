@@ -192,7 +192,7 @@ _BADGE_SCRIPT = Template(r"""
           selCount.textContent = '一致 ' + n + '件';
           selCount.style.setProperty('color', n > 0 ? 'rgba(255,255,255,.85)' : '#ffd24d', 'important');
         } catch (e) {
-          selCount.textContent = '無効なセレクタ';
+          selCount.textContent = '無効な指定';
           selCount.style.setProperty('color', '#ffd24d', 'important');
         }
       }
@@ -349,10 +349,13 @@ _BADGE_SCRIPT = Template(r"""
     // 確定時（blur / Enter）に最終値をログへ（入力毎の氾濫を避ける）。
     inp.addEventListener('change', () => { try { window.__eac_commit_selector(inp.value); } catch (e) {} });
     // 一致件数の表示（入力欄の右）。文言・色は apply() が現在のセレクタから更新する。
+    // 中身の有無・長短でバーの幅が動かないよう、常に固定幅の枠を確保しておく
+    //（空でも同じ幅を占有＝バー全体の長さが一定になる）。はみ出しは省略記号で丸める。
     const selCount = document.createElement('span');
     selCount.setAttribute('data-eac', 'sel-count');
     selCount.style.cssText =
-      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
+      'flex:0 0 76px !important;width:76px !important;margin:0 !important;padding:0 !important;'
+      + 'white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;'
       + 'color:rgba(255,255,255,.85) !important;font-family:"Segoe UI",sans-serif !important;font-size:11px !important;font-weight:normal !important;line-height:1 !important;';
     selWrap.appendChild(inp);
     selWrap.appendChild(selCount);
