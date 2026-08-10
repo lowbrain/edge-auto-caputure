@@ -1,0 +1,296 @@
+"""設定・保存処理まわり（アプリの土台）。
+
+- 基準フォルダ/ログなどの基盤ユーティリティ（BASE_DIR, log, _try_eval …）
+- config.ini の読み込み（Config / load_config）
+- 1 ページ分の保存処理（capture / _spawn_capture）と後始末（cleanup_old_profiles）
+
+ページ側 JS の呼び出し式・文言は badge モジュールに集約してあり、ここから参照する。
+"""
+
+import asyncio
+import configparser
+import itertools
+import re
+import shutil
+import sys
+import tempfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Tuple
+
+from playwright.async_api import Page
+
+import badge
+
+
+def _base_dir() -> Path:
+    """設定・保存先の基準フォルダを返す。
+
+    PyInstaller で exe 化した場合（sys.frozen）は exe のあるフォルダ、
+    通常の Python 実行時はこのスクリプトのあるフォルダを基準にする。
+    これにより、配布した exe の隣に置いた config.ini を読み、
+    output\\ も exe の隣に作れる（＝第三者が config.ini を編集できる）。
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).parent
+
+
+# 設定・出力の基準フォルダ（通常実行なら本ファイル、exe 実行なら exe と同じ場所）。
+BASE_DIR = _base_dir()
+
+# 設定ファイルのパス（基準フォルダ固定）。
+CONFIG_PATH = BASE_DIR / "config.ini"
+
+# safe_name() がファイル名スラッグを切り詰める最大長。
+NAME_MAX_LEN = 80
+
+# 実行ログの出力先（exe/スクリプトと同じフォルダ）。
+# コンソール無し（windowed exe）で実行しても後から動作を追えるようにする。
+LOG_PATH = BASE_DIR / "log.txt"
+
+
+def log(msg: str) -> None:
+    """メッセージを log.txt へ追記し、可能ならコンソールにも出す。
+
+    windowed exe（コンソール無し）では sys.stdout が None になり得るため、
+    print は失敗しても無視する。ファイルへの記録を主とする。
+    """
+    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+    try:
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception:
+        pass
+    try:
+        print(line)
+    except Exception:
+        pass
+
+
+def _message_box(msg: str, title: str = "edge-auto-capture") -> None:
+    """致命的エラーを Windows のメッセージボックスで通知する（失敗しても無視）。
+
+    コンソールを持たない windowed exe では print が見えないため、
+    起動失敗などはダイアログで利用者に伝える。
+    """
+    try:
+        import ctypes
+
+        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+
+
+def _notify_fatal(msg: str) -> None:
+    """致命的メッセージをログとダイアログの両方へ出す（終了処理は呼び出し側）。"""
+    log(msg)
+    _message_box(msg)
+
+
+async def _try_eval(page: Page, js: str) -> None:
+    """ページ側 JS を実行。失敗しても無視する（バッジの表示/非表示など副次処理用）。"""
+    try:
+        await page.evaluate(js)
+    except Exception:
+        pass
+
+
+# 保存ファイル名の一意性を保証する通し番号（この起動中で連番）。
+# next() は不可分なので、並行する capture() 同士でも番号は重複しない。
+_seq_counter = itertools.count(1)
+
+# 実行中の capture タスクへの強参照を保持する集合。
+# これが無いとイベントループはタスクを弱参照でしか持たず、
+# 実行途中で GC されて消える恐れがある（例外も握り潰される）。
+_tasks: "set[asyncio.Task]" = set()
+
+
+@dataclass
+class Config:
+    """config.ini から読み込む設定値一式。
+
+    各フィールドの初期値が「既定値」を兼ねる: config.ini にその項目行が
+    無い場合、load_config() はここの値へフォールバックする。
+    """
+
+    start_url: str = "about:blank"          # Edge 起動時に最初に開くページ
+    edge_path: str = ""                     # Edge 実行ファイルのパス（空なら channel="msedge"）
+    output_dir: Path = Path("output")       # 保存先フォルダ（png も txt もここ）
+    poll_interval: float = 1.0              # URL変化を確認する間隔（秒）
+    settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
+    load_timeout: int = 5000                # ページ読み込み待ちの上限（ミリ秒）
+    skip_urls: Tuple[str, ...] = ("about:blank", "")   # 撮らないURL
+    target_selector: str = ""               # 一部抜き出しの CSS セレクタ（空ならスキップ）
+    start_recording: bool = False           # 起動直後に記録を開始するか（False=待機状態で起動）
+
+
+def load_config() -> Config:
+    """config.ini を読み込み、Config を返す。
+
+    ファイルが無い / 値が不正な場合はメッセージを表示して終了する。
+
+    既定値まわりの挙動（現状仕様）:
+      - config.ini / [capture] セクションが無い    → メッセージ表示して終了。
+      - 項目の「行そのものが無い」                 → Config の既定値を使う
+        （sec.get / getfloat / getint の第2引数が既定値）。
+      - 数値項目の値だけが空（例: poll_interval =）→ 変換に失敗し終了（ValueError）。
+      - 文字列項目の値だけが空（output_dir / edge_path など）→ 空文字がそのまま入る。
+        ※ output_dir が空だと Path('.') となりカレントフォルダへ保存されるので注意。
+      - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
+    """
+    if not CONFIG_PATH.exists():
+        _notify_fatal(
+            f"設定ファイルが見つかりません: {CONFIG_PATH}\n"
+            "exe と同じフォルダに config.ini を置いてください。"
+        )
+        sys.exit(1)
+
+    # 各 get の第2引数は「その項目行が無い」ときのフォールバック既定値
+    # （項目行はあり値だけ空、の場合は空文字/変換エラー側になる点に注意）。
+    defaults = Config()
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(CONFIG_PATH, encoding="utf-8")
+        sec = parser["capture"]
+
+        # 相対パスは基準フォルダ基準に固定（exe 隣の output\ に確実に保存する）。
+        # 絶対パス指定時はそのまま使う（config.ini で任意の保存先に変更可能）。
+        output_dir = Path(sec.get("output_dir", str(defaults.output_dir)))
+        if not output_dir.is_absolute():
+            output_dir = BASE_DIR / output_dir
+
+        # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
+        urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
+
+        return Config(
+            start_url=sec.get("start_url", defaults.start_url).strip() or "about:blank",
+            edge_path=sec.get("edge_path", "").strip(),
+            output_dir=output_dir,
+            poll_interval=sec.getfloat("poll_interval", defaults.poll_interval),
+            settle_delay=sec.getfloat("settle_delay", defaults.settle_delay),
+            load_timeout=sec.getint("load_timeout", defaults.load_timeout),
+            skip_urls=tuple(urls) + ("",),
+            target_selector=sec.get("target_selector", "").strip(),
+            start_recording=sec.getboolean("start_recording", defaults.start_recording),
+        )
+    except (configparser.Error, KeyError, ValueError) as e:
+        _notify_fatal(
+            f"config.ini の読み込みに失敗しました: {e}\n"
+            "[capture] セクションと各項目の値を確認してください。"
+        )
+        sys.exit(1)
+
+
+def safe_name(url: str) -> str:
+    """URL をファイル名に使える形へ変換（長すぎる場合は先頭 NAME_MAX_LEN 文字）。"""
+    name = re.sub(r"[^\w\-]+", "_", url)[:NAME_MAX_LEN].strip("_")
+    return name or "page"
+
+
+@contextmanager
+def _step(tag: str, url: str):
+    """保存処理 1 ステップ分の共通ラッパ。
+
+    例外が出ても [skip <tag>] を表示して握り、他ステップの続行を妨げない。
+    （png / txt / part の 3 ステップで同じ try/except を書かないための共通化）
+    """
+    try:
+        yield
+    except Exception as e:
+        log(f"[skip {tag}] {url}  ({e})")
+
+
+async def capture(page: Page, url: str, config: Config, selector: str = "") -> None:
+    # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
+    # 実行時に変えられるため、config 固定値ではなく呼び出し時の値を使う
+    #（初期値は config.target_selector）。空なら _part.txt はスキップ。
+    # 一意性は「ミリ秒付き日時 + 通し番号」で保証する。URL スラッグは
+    # 読みやすさ用の装飾で、切り詰めや正規化で衝突しても実害はない。
+    # seq / stem は await より前に確定させ、番号を予約してから保存する。
+    now = datetime.now()
+    ts = now.strftime("%Y%m%d_%H%M%S")
+    ms = now.strftime("%f")[:3]              # マイクロ秒の先頭3桁＝ミリ秒
+    seq = next(_seq_counter)
+    stem = f"{ts}_{ms}_{seq:04d}_{safe_name(url)}"   # 3ファイルで同じ接頭辞を共有
+
+    # 読み込み完了を待つ（タイムアウトしても続行）
+    with _step("load", url):
+        await page.wait_for_load_state("load", timeout=config.load_timeout)
+    await asyncio.sleep(config.settle_delay)
+
+    # 1) フルページ スクリーンショット
+    #    操作パネルは撮影の瞬間だけ隠し、保存画像へ写し込まない。
+    with _step("png", url):
+        await _try_eval(page, badge.BAR_HIDE)
+        try:
+            await page.screenshot(
+                path=str(config.output_dir / f"{stem}.png"), full_page=True
+            )
+        finally:
+            await _try_eval(page, badge.BAR_SHOW)
+
+    # 2) ページ全文テキスト（操作パネルは除外して取得）
+    with _step("txt", url):
+        text = await page.evaluate(badge.BODY_TEXT_CALL)
+        (config.output_dir / f"{stem}.txt").write_text(
+            f"URL: {url}\n\n{text}", encoding="utf-8"
+        )
+
+    # 3) 一部抜き出し（セレクタ設定時のみ）
+    if selector:
+        with _step("part", url):
+            # 広いセレクタ（div / body / * など）だと操作パネルの文言を拾うことがある。
+            # 抽出の間だけパネルを display:none にして innerText から除外する。
+            await _try_eval(page, badge.BAR_HIDE)
+            try:
+                parts = await page.locator(selector).all_inner_texts()
+            finally:
+                await _try_eval(page, badge.BAR_SHOW)
+            # 空文字（隠したパネル配下や該当なし要素）は落とす。
+            parts = [p for p in parts if p.strip()]
+            body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
+            (config.output_dir / f"{stem}_part.txt").write_text(
+                f"URL: {url}\nSELECTOR: {selector}\n\n{body}",
+                encoding="utf-8",
+            )
+
+    log(f"[saved] {stem}.*  <- {url}")
+
+
+def _spawn_capture(
+    page: Page, url: str, config: Config, selector: str = "", done_text: str = badge.REACT_DONE
+) -> None:
+    """capture() をバックグラウンドタスクとして起動し、参照を保持する。
+
+    撮影の前後にパネル上へ手応え（「保存中…」→ done_text）を表示する。
+    done_text は待機中の単発ショットなら「保存しました」、記録中の保存なら
+    「記録しました」を渡す。表示はパネル内オーバーレイなので保存物には写り込まない。
+    selector は _part.txt 抜き出しの対象（実行時のバー入力値）を capture() へ渡す。
+    タスクを _tasks に入れて GC を防ぎ、完了時に取り除く。
+    """
+
+    async def _run() -> None:
+        await _try_eval(page, badge.react_busy_js())
+        try:
+            await capture(page, url, config, selector)
+        finally:
+            # 完了表示（約1.2秒で自動的に消え、下地の状態表示に戻る）。
+            await _try_eval(page, badge.react_done_js(done_text))
+
+    task = asyncio.create_task(_run())
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+def cleanup_old_profiles() -> None:
+    """前回までに残った一時プロファイル（edge-debug-*）を掃除する。
+
+    使用中のフォルダは削除に失敗しても無視する（ignore_errors=True）。
+    """
+    base = Path(tempfile.gettempdir())
+    for d in base.glob("edge-debug-*"):
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)

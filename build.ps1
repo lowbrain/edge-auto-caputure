@@ -14,7 +14,9 @@ if ($LASTEXITCODE -ne 0) { Write-Host "依存のインストールに失敗し�
 Write-Host "[2/3] PyInstaller でビルドします ..."
 # --collect-all playwright : Playwright の node ドライバを同梱（凍結時に必須）
 # --noconsole              : 黒いコンソール窓を出さない（動作ログは log.txt に出力）
-pyinstaller --noconfirm --onedir --noconsole --name edge-auto-capture --collect-all playwright edge_auto_capture.py
+# --add-data "badge.js;."  : 操作バーのページ側 JS を同梱（badge.py が _MEIPASS から読む）
+#   ※ badge.py / capture.py は import から自動で辿られるので指定不要。
+pyinstaller --noconfirm --onedir --noconsole --name edge-auto-capture --collect-all playwright --add-data "badge.js;." edge_auto_capture.py
 if ($LASTEXITCODE -ne 0) { Write-Host "ビルドに失敗しました。上のメッセージを確認してください。" -ForegroundColor Red; exit 1 }
 
 Write-Host "[3/3] config.ini と説明書を配布フォルダへ同梱します ..."
