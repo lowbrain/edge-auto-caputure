@@ -156,6 +156,7 @@ _BADGE_SCRIPT = Template(r"""
     const spaText = box.querySelector('[data-eac="spa-text"]');
     const spaWrap = box.querySelector('[data-eac="spa-wrap"]');
     const inp = box.querySelector('[data-eac="selector"]');
+    const selCount = box.querySelector('[data-eac="sel-count"]');
     if (lbl) lbl.textContent = recording ? S_ON : S_OFF;
     if (dot) {
       // 記録中＝白い丸、待機中＝白い輪郭のみの丸（固定サイズ・同一質感）。
@@ -172,6 +173,24 @@ _BADGE_SCRIPT = Template(r"""
     // セレクタ入力欄はフォーカス中は書き換えない（タイピングを壊さない）。
     // 非フォーカス時のみ現在値と差があれば同期（別タブでの変更を反映）。
     if (inp && document.activeElement !== inp && inp.value !== selector) inp.value = selector;
+    // 一致件数フィードバック。0件/不正はすぐ気づけるよう色を変える。
+    // 操作バー自身の要素は件数から除外する（button/span 等を指定しても紛れないように）。
+    if (selCount) {
+      const s = (selector || '').trim();
+      if (!s) {
+        selCount.textContent = '';
+      } else {
+        try {
+          let n = 0;
+          document.querySelectorAll(s).forEach((el) => { if (!box.contains(el)) n++; });
+          selCount.textContent = '一致 ' + n + '件';
+          selCount.style.setProperty('color', n > 0 ? 'rgba(255,255,255,.85)' : '#ffd24d', 'important');
+        } catch (e) {
+          selCount.textContent = '無効なセレクタ';
+          selCount.style.setProperty('color', '#ffd24d', 'important');
+        }
+      }
+    }
     // SPA検知トグルスイッチ: セレクタ未設定なら無効（灰色・押せない）。設定時のみ切替可。
     // ON=緑・ノブ右・「ON」左寄せ / OFF=半透明白・ノブ左・「OFF」右寄せ。
     const present = (selector || '').trim().length > 0;
@@ -328,8 +347,17 @@ _BADGE_SCRIPT = Template(r"""
       apply(recording, spaOn, inp.value);
       try { window.__eac_set_selector(inp.value); } catch (e) {}
     });
+    // 確定時（blur / Enter）に最終値をログへ（入力毎の氾濫を避ける）。
+    inp.addEventListener('change', () => { try { window.__eac_commit_selector(inp.value); } catch (e) {} });
+    // 一致件数の表示（入力欄の右）。文言・色は apply() が現在のセレクタから更新する。
+    const selCount = document.createElement('span');
+    selCount.setAttribute('data-eac', 'sel-count');
+    selCount.style.cssText =
+      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
+      + 'color:rgba(255,255,255,.85) !important;font-family:"Segoe UI",sans-serif !important;font-size:11px !important;font-weight:normal !important;line-height:1 !important;';
     selWrap.appendChild(selLbl);
     selWrap.appendChild(inp);
+    selWrap.appendChild(selCount);
 
     // SPA検知トグル: 「SPA検知」ラベル＋ピル型スイッチ（ノブがスライドする ON/OFF）。
     // スイッチのトラック(button[data-eac=spa])がクリック対象。見た目は apply() が更新する。
@@ -878,20 +906,26 @@ async def main(config: Config) -> None:
 
             空になったら SPA検知を OFF に落とす（検知対象が無いため）。SPA検知中に
             対象が変わったら署名基準を取り直す（旧セレクタの署名で誤検知しないため）。
+            ログは氾濫を避けるためここでは出さず、確定時（_on_commit_selector）に出す。
             """
             new = (value or "").strip()
             if new == state.selector:
                 return
-            was_empty = not state.selector
             state.selector = new
             if not new:
                 state.spa_on = False
             elif state.spa_on:
                 await _reseed_signatures()
-            # 空⇔非空 が変わった時だけログ（キーストローク毎の氾濫を避ける）。
-            if was_empty != (not new):
-                log(f"[セレクタ] {'クリア' if not new else repr(new)}")
             await _refresh_all_panels()
+
+        async def _on_commit_selector(source, value) -> None:
+            """セレクタ入力の確定（blur / Enter）。最終値をログに残す。
+
+            入力のたびに出すとログが氾濫するため、確定時にだけ実際に使う値を記録する。
+            これにより「どのセレクタで動かしたか」がログと実態で一致する。
+            """
+            new = (value or "").strip()
+            log(f"[セレクタ] {'クリア' if not new else repr(new)}")
 
         async def _get_state(source) -> dict:
             """パネルが描画前に現在の状態を問い合わせるためのバインディング。
@@ -908,6 +942,7 @@ async def main(config: Config) -> None:
         await context.expose_binding("__eac_shot", _on_shot)
         await context.expose_binding("__eac_spa_toggle", _on_spa_toggle)
         await context.expose_binding("__eac_set_selector", _on_set_selector)
+        await context.expose_binding("__eac_commit_selector", _on_commit_selector)
         await context.expose_binding("__eac_getstate", _get_state)
 
         # 全ページ・全タブの上部に操作パネル（記録状態＋記録開始/停止＋今すぐ1枚＋
