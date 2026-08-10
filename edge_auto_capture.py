@@ -230,7 +230,8 @@ _BADGE_SCRIPT = Template(r"""
     if (!document.body || document.getElementById(ID)) return;
     // 遷移直後に誤った状態（待機中）を一瞬見せないよう、先に現在の状態
     //（記録中/SPA検知/セレクタ）を Python へ問い合わせ、分かってから描画する。
-    const render = (st) => {
+    // 引数名は下の status 用 span (const st) と衝突しないよう initState にする。
+    const render = (initState) => {
     if (!document.body || document.getElementById(ID)) return;
     const box = document.createElement('div');
     box.id = ID;
@@ -390,7 +391,8 @@ _BADGE_SCRIPT = Template(r"""
     box.appendChild(rx);
     document.body.appendChild(box);
     // 取得した現在の状態（記録中/SPA検知/セレクタ）で最初から正しく描画する。
-    apply(!!(st && st.recording), !!(st && st.spa), (st && st.selector) || '');
+    apply(!!(initState && initState.recording), !!(initState && initState.spa),
+          (initState && initState.selector) || '');
     };
     const fallback = { recording: recording, spa: spaOn, selector: selector };
     if (window.__eac_getstate) {
