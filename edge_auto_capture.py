@@ -92,13 +92,12 @@ _LABEL_SHOT = "📸 今すぐ1枚"
 # SPA（URLが変わらず中身だけ変わるページ）向けトグルスイッチの横に出すラベル。
 # セレクタ入力に値がある時だけ操作可能。スイッチ内の ON/OFF 表示は JS 側の固定文言。
 _LABEL_SPA = "SPA検知"
-# セレクタ入力欄の意味づけ。左に常時出す短いラベル＋例示プレースホルダ＋ホバー説明(title)。
-# 値を入れるとプレースホルダは消えるため、何の欄かは常時ラベルで示す。
-_LABEL_SEL = "TEXT抽出要素"
-_PLACEHOLDER_SEL = "例: #main, .results"
+# セレクタ入力欄の意味づけ。常時ラベルは置かず、プレースホルダ（透かし文字）で入力を促し、
+# ホバー時の title で具体例を含む詳しい説明を出す。
+_PLACEHOLDER_SEL = "セレクタを入力"
 _TITLE_SEL = (
-    "SPA検知で変化を監視する CSS セレクタ。指定した要素の中身が変わると自動保存します"
-    "（一部抜き出し _part.txt の対象も兼ねます）。例: #main / .results / article"
+    "SPA検知で変化を監視する CSS セレクタを入力します。指定した要素の中身が変わると自動保存"
+    "（一部抜き出し _part.txt の対象も兼ねます）。例: #main / .results / article / .price"
 )
 
 # キャプチャ時に、撮れたことを利用者へ知らせるリアクション文言。
@@ -117,7 +116,6 @@ _L_START_JS = json.dumps(_LABEL_START)
 _L_STOP_JS = json.dumps(_LABEL_STOP)
 _L_SHOT_JS = json.dumps(_LABEL_SHOT)
 _L_SPA_JS = json.dumps(_LABEL_SPA)
-_L_SEL_JS = json.dumps(_LABEL_SEL)
 _PH_SEL_JS = json.dumps(_PLACEHOLDER_SEL)
 _TITLE_SEL_JS = json.dumps(_TITLE_SEL)
 _R_BUSY_JS = json.dumps(_REACT_BUSY)
@@ -135,7 +133,7 @@ _BADGE_SCRIPT = Template(r"""
   if (window.top !== window.self) return;
   const ID = $ID;
   const S_ON = $S_ON, S_OFF = $S_OFF, L_START = $L_START, L_STOP = $L_STOP, L_SHOT = $L_SHOT;
-  const L_SPA = $L_SPA, L_SEL = $L_SEL, PH_SEL = $PH_SEL, TITLE_SEL = $TITLE_SEL;
+  const L_SPA = $L_SPA, PH_SEL = $PH_SEL, TITLE_SEL = $TITLE_SEL;
   const R_BUSY = $R_BUSY, R_DONE = $R_DONE;
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
   let spaOn = false;       // 直近に適用された SPA 検知状態
@@ -313,21 +311,14 @@ _BADGE_SCRIPT = Template(r"""
     sh.style.cssText = bcss;
     sh.addEventListener('click', () => { try { window.__eac_shot(); } catch (e) {} });
 
-    // SPA検知の対象セレクタ入力欄。左に「検知対象」ラベルを添えて何の欄か常時分かるようにし、
-    // プレースホルダで記入例、title でホバー時の詳しい説明を出す。値がある時だけ SPA検知が押せる。
+    // SPA検知の対象セレクタ入力欄。常時ラベルは置かず、透かし文字（placeholder）で入力を促し、
+    // title でホバー時の詳しい説明（具体例つき）を出す。値がある時だけ SPA検知が押せる。
     const selWrap = document.createElement('span');
     selWrap.setAttribute('data-eac', 'sel-wrap');
     selWrap.style.cssText =
       'box-sizing:border-box !important;flex:0 0 auto !important;display:inline-flex !important;'
       + 'align-items:center !important;gap:8px !important;margin:0 !important;padding:0 !important;'
       + 'pointer-events:auto !important;';
-    const selLbl = document.createElement('span');
-    selLbl.setAttribute('data-eac', 'sel-label');
-    selLbl.textContent = L_SEL;
-    selLbl.title = TITLE_SEL;
-    selLbl.style.cssText =
-      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
-      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:bold !important;line-height:1 !important;';
     // サイト側 CSS の影響を排除するため主要プロパティを !important で明示する。
     const inp = document.createElement('input');
     inp.setAttribute('data-eac', 'selector');
@@ -355,7 +346,6 @@ _BADGE_SCRIPT = Template(r"""
     selCount.style.cssText =
       'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
       + 'color:rgba(255,255,255,.85) !important;font-family:"Segoe UI",sans-serif !important;font-size:11px !important;font-weight:normal !important;line-height:1 !important;';
-    selWrap.appendChild(selLbl);
     selWrap.appendChild(inp);
     selWrap.appendChild(selCount);
 
@@ -445,7 +435,7 @@ _BADGE_SCRIPT = Template(r"""
 """).substitute(
     ID=_ID_JS, S_ON=_S_ON_JS, S_OFF=_S_OFF_JS,
     L_START=_L_START_JS, L_STOP=_L_STOP_JS, L_SHOT=_L_SHOT_JS,
-    L_SPA=_L_SPA_JS, L_SEL=_L_SEL_JS, PH_SEL=_PH_SEL_JS, TITLE_SEL=_TITLE_SEL_JS,
+    L_SPA=_L_SPA_JS, PH_SEL=_PH_SEL_JS, TITLE_SEL=_TITLE_SEL_JS,
     R_BUSY=_R_BUSY_JS, R_DONE=_R_DONE_JS,
 )
 
