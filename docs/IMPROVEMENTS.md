@@ -245,16 +245,13 @@ SPA 検知を使っていない利用者にも、閲覧しているだけで恒�
   Edge を起動できないと `SKIP` かつ**終了コード 0** で抜ける。手元での実行には親切だが、
   **CI に載せると「何も検証していないのに緑」**になる。`--strict` オプション
   （Edge 不在なら失敗）を足し、CI ではそちらを使う。上の「CI がない」とセット。
-- **`ruff --fix` が Python 3.8 互換を壊す（罠）** — `ruff check` は
-  `capture.py:84` `capture.py:92` `edge_auto_capture.py:117` の文字列注釈に
-  **UP037「Remove quotes from type annotation」を出す**（3 件・自動修正可）。
-  しかしこの引用符は**意図的**で、外すと `dict[Page, str]` が実行時評価され
-  Python 3.8 起動時に `TypeError` になる（各所のコメント参照）。
-  `ruff check --fix` を実行すると**黙って 3.8 互換が壊れる**。
-  `[tool.ruff.lint]` の `ignore` に `UP037` を足すか、各行に `# noqa: UP037` を付けて、
-  自動修正で消えないようにすべき。CI に `--fix` を載せる場合は必須。
+- ~~**`ruff --fix` が Python 3.8 互換を壊す（罠）**~~ 〔**解消済み**〕 —
+  `capture.py` / `edge_auto_capture.py` の文字列注釈に UP037 が出ていたが、
+  この引用符は Python 3.8 で `dict[Page, str]` が実行時評価されるのを避けるための
+  **意図的**なもので、`ruff check --fix` すると黙って 3.8 互換が壊れる状態だった。
+  **`requires-python` を `>=3.9` へ上げて根治した**（引用符が不要になった）。
+  この対応で `ruff check` が初めて緑（終了コード 0）になり、CI 導入の障害が消えている。
 - **型チェッカーが未導入** — `ruff` は入っているが型検査はしていない。
-  `Optional[str]` の扱いや Python 3.8 互換の注釈（文字列注釈の徹底、`3-2` 参照）は
   `mypy` / `pyright` があれば機械的に守れる。規模も小さく導入コストは低い。
 
 ---

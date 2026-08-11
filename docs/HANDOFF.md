@@ -265,11 +265,16 @@ parser.read(CONFIG_PATH, encoding="utf-8-sig")
    （`$CONFIG` と衝突しうるため、現状は意図的に避けてある）。
    CSS の時間と JS の定数も、この制約ゆえ手動で整合を取っている（`badge.js:44` のコメント参照）。
 
-2. **Python 3.8 互換** — `pyproject.toml` の `requires-python = ">=3.8"`。
-   `edge_auto_capture.py:117` の `self.seen: "dict[Page, str]" = {}` のように、
-   **インスタンス属性の注釈は文字列で書く**こと（素の `dict[...]` は 3.8 で実行時 TypeError）。
-   関数ローカル変数の注釈は評価されないので素で書いてよい。
-   S-1 で `Optional[Path]` を使うなら `typing` から import すること。
+2. **Python は 3.9+**（`pyproject.toml` の `requires-python = ">=3.9"`、`target-version = "py39"`）。
+   PEP 585 の `dict[...]` / `set[...]` / `tuple[...]` を**素で書いてよい**
+   （インスタンス属性・dataclass フィールドの注釈も実行時評価が通る）。
+   ただし `X | Y` 記法は 3.10 以降なので使わないこと。
+   `Optional[Path]` を使うなら `typing` から import する。
+
+   > **かつては 3.8 だったため、注釈を文字列で書く決まりがあった。**
+   > `ruff --fix` がその引用符を外して黙って互換を壊す罠になっていたので、
+   > 3.9 へ上げて根治した。**古いコミットのコメントに「文字列で書くこと」と
+   > 書いてあっても、もう従わなくてよい。**
 
 3. **例外の握り潰しは意図的** — `try_eval` / `_step` / `infra` の各 `except: pass` は
    堅牢性のための設計で、各所にコメントがある。
@@ -296,10 +301,8 @@ parser.read(CONFIG_PATH, encoding="utf-8-sig")
      サイト側が差し替えた関数へ token を渡してしまう
    - `mode: 'open'` に戻すとスモークテストが失敗する（回帰チェックを入れてある）
 
-7. **`ruff check --fix` を実行しないこと** — `capture.py:84` `capture.py:92`
-   `edge_auto_capture.py:117` の文字列注釈に UP037 が出るが、この引用符は
-   上記 2 のとおり**意図的**。`--fix` すると**黙って Python 3.8 互換が壊れる**。
-   `ruff check`（`--fix` なし）で 3 件出るのが正常な状態。
+7. **`ruff check` は緑（終了コード 0）が正常** — 以前は UP037 が 3 件出る状態だったが、
+   Python 3.9 化で解消済み。**指摘が出たらそれは新しく入れた問題**なので直すこと。
 
 ---
 
@@ -334,4 +337,3 @@ python tests/smoke_badge.py   # Edge があれば。SKIP されたら「未検�
 | `B-6` | MutationObserver 常時稼働（`ROADMAP.md` 11 位）。`badge.js` の小変更で全利用者の負荷が下がる |
 | `E-4` | ダウンロード消失（`ROADMAP.md` 5 位）。**実機検証が先** |
 | `D-A3` | プライバシー注意書き（`ROADMAP.md` 6 位）。文面は法務確認が要るかもしれない |
-| UP037 | `ruff` の `ignore` へ追加するか `# noqa` を付けるか（落とし穴 7）|

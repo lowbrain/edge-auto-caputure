@@ -8,7 +8,6 @@ import configparser
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
 
 from infra import BASE_DIR, log, notify_fatal, set_log_dir
 
@@ -30,7 +29,7 @@ class Config:
     poll_interval: float = 1.0              # URL変化を確認する間隔（秒）
     settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
     load_timeout: int = 5000                # ページ読み込み待ちの上限（ミリ秒）
-    skip_urls: Tuple[str, ...] = ("about:blank", "")   # 撮らないURL
+    skip_urls: tuple[str, ...] = ("about:blank", "")   # 撮らないURL
     target_selector: str = ""               # 一部抜き出しの CSS セレクタ（空ならスキップ）
     start_recording: bool = False           # 起動直後に記録を開始するか（False=待機状態で起動）
 

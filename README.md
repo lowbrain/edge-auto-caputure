@@ -31,7 +31,7 @@ Microsoft Edge で開いたページを、**記録ONの間だけ**、フルペ�
 
 - Windows
 - Microsoft Edge がインストール済み（`channel="msedge"` でシステムの Edge を使う）
-- 開発・ビルド時のみ Python 3.8+（配布した exe の実行に Python は不要）
+- 開発・ビルド時のみ Python 3.9+（配布した exe の実行に Python は不要）
 
 ## リポジトリ構成
 
