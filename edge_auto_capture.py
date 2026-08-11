@@ -46,6 +46,7 @@ import json
 import secrets
 import shutil
 import tempfile
+from typing import Optional
 
 from playwright.async_api import Page, async_playwright
 
@@ -147,6 +148,21 @@ class CaptureSession:
         """操作バーからの正規の呼び出しか（合言葉が一致するか）を判定する。"""
         return isinstance(token, str) and secrets.compare_digest(token, self.token)
 
+    def _shoot(self, pg) -> Optional[str]:
+        """1ページを撮る。url 取得失敗と skip_urls を弾き、撮れば url を返す（弾けば None）。
+
+        「url 取得 → skip 判定 → spawn_capture」の定型を1か所に集約する（各コールバックと監視
+        ループで同じ並びを書かないため）。記録状態のゲートは呼び出し側の責務（ここでは見ない）。
+        """
+        try:
+            url = pg.url
+        except Exception:
+            return None
+        if url in self.config.skip_urls:
+            return None
+        spawn_capture(pg, url, self.config, self.selector)
+        return url
+
     async def on_toggle(self, source, token=None) -> None:
         """「記録開始／停止」ボタン: 記録状態を反転する。
 
@@ -160,14 +176,9 @@ class CaptureSession:
         await self.refresh_panels()
         if self.on:
             for pg in list(self.context.pages):
-                try:
-                    url = pg.url
-                except Exception:
-                    continue
-                if url in self.config.skip_urls:
-                    continue
-                self.seen[pg] = url
-                spawn_capture(pg, url, self.config, self.selector)
+                url = self._shoot(pg)
+                if url is not None:
+                    self.seen[pg] = url
 
     async def on_shot(self, source, token=None) -> None:
         """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
@@ -178,15 +189,9 @@ class CaptureSession:
         """
         if not self._authorized(token):
             return
-        pg = source["page"]
-        try:
-            url = pg.url
-        except Exception:
-            return
-        if url in self.config.skip_urls:
-            return
-        log(f"[手動] {url}")
-        spawn_capture(pg, url, self.config, self.selector)
+        url = self._shoot(source["page"])
+        if url is not None:
+            log(f"[手動] {url}")
 
     async def on_spa_toggle(self, source, token=None) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
@@ -227,15 +232,9 @@ class CaptureSession:
             return
         if not (self.on and self.spa_on):
             return
-        pg = source["page"]
-        try:
-            url = pg.url
-        except Exception:
-            return
-        if url in self.config.skip_urls:
-            return
-        log(f"[SPA変化] {url}")
-        spawn_capture(pg, url, self.config, self.selector)
+        url = self._shoot(source["page"])
+        if url is not None:
+            log(f"[SPA変化] {url}")
 
     async def on_commit_selector(self, source, token=None, value="") -> None:
         """セレクタ入力の確定（blur / Enter）。最終値をログに残す。

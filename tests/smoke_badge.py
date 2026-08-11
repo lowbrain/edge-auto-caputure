@@ -97,7 +97,7 @@ def run() -> int:
             # 6) SPA検知のイベント駆動監視が通しで動くか。
             #    記録側の通知バインディング（__eac_spa_changed）をテスト用のコレクタに差し替え、
             #    SPA検知を ON（セレクタ空＝既定ルート監視）にしてから本文を書き換える。デバウンス
-            #    確定後にコレクタが呼ばれれば、MutationObserver→落ち着き判定→通知の一連が動いている。
+            #    確定後にコレクタが呼ばれれば、MutationObserver→落ち着き→通知の一連が動いている。
             page.evaluate(
                 "window.__spaCalls = [];"
                 "window.__eac_spa_changed = (tok, sig) => { window.__spaCalls.push(sig); };"

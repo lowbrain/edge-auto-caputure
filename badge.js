@@ -424,11 +424,14 @@
     return hashText(text);
   }
 
-  // 監視中(spaOn && recording)へ切り替わった直後、またはセレクタが変わった直後は、現在の
-  // 内容を「基準」に取り直す（開始/変更の直後に無駄撮りしないため）。Python 側で行っていた
+  // SPA検知が実際に動く条件（記録ON かつ SPA検知ON）。監視の各所で参照する。
+  function spaActive() { return spaOn && recording; }
+
+  // 監視中(spaActive)へ切り替わった直後、またはセレクタが変わった直後は、現在の内容を
+  // 「基準」に取り直す（開始/変更の直後に無駄撮りしないため）。Python 側で行っていた
   // reseed 相当をページ側で行う。apply から毎回呼ぶが、基準の再計算は遷移時だけ走る。
   function spaSyncBaseline() {
-    const nowActive = spaOn && recording;
+    const nowActive = spaActive();
     const sel = (selector || '').trim();
     const selChanged = sel !== spaPrevSelector;
     if (nowActive && (!spaPrevActive || selChanged)) {
@@ -443,7 +446,7 @@
   // 変化を1件受けてデバウンスタイマーを張り直す。ただし連続変化が SPA_MAX_WAIT_MS を超えたら
   // 張り直さず、いま動いているタイマーで確定させる（動き続けるページで永遠に確定しないのを防ぐ）。
   function spaSchedule() {
-    if (!(spaOn && recording)) return;
+    if (!spaActive()) return;
     const now = Date.now();
     if (spaTimer) {
       if (now - spaFirstAt >= SPA_MAX_WAIT_MS) return;   // 上限到達: 現タイマーで確定させる
@@ -458,7 +461,7 @@
   // 遷移直後（spaNavPending）は通知せず基準の取り直しだけ行う（URL変化側で1枚撮るため二重撮り回避）。
   function spaFire() {
     spaTimer = null;
-    if (!(spaOn && recording)) return;
+    if (!spaActive()) return;
     const sig = spaSignature();
     if (spaNavPending) { spaNavPending = false; spaLastSig = sig; return; }
     if (sig !== spaLastSig) {
@@ -471,7 +474,7 @@
   // 通知せず基準を取り直すためにフラグを立て、遷移後の再描画を「変化」と誤検知して二重に
   // 撮らないようにする（遷移後の中身変化は次回以降で拾う）。
   function onRoute() {
-    if (!(spaOn && recording)) return;
+    if (!spaActive()) return;
     spaNavPending = true;
     spaSchedule();
   }
@@ -501,10 +504,12 @@
     .observe(_root, { childList: true, subtree: true, characterData: true });
   // ルート変化（SPA の画面遷移）のフック。pushState / replaceState を包み、popstate /
   // hashchange も拾う。いずれも onRoute（基準取り直し）へ回す。
-  const _pushState = history.pushState;
-  history.pushState = function () { const ret = _pushState.apply(this, arguments); onRoute(); return ret; };
-  const _replaceState = history.replaceState;
-  history.replaceState = function () { const ret = _replaceState.apply(this, arguments); onRoute(); return ret; };
+  const hookHistory = (name) => {
+    const orig = history[name];
+    history[name] = function () { const ret = orig.apply(this, arguments); onRoute(); return ret; };
+  };
+  hookHistory('pushState');
+  hookHistory('replaceState');
   window.addEventListener('popstate', onRoute);
   window.addEventListener('hashchange', onRoute);
 })();
