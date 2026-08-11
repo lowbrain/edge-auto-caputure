@@ -56,6 +56,17 @@ from config import Config, load_config
 from infra import cleanup_old_profiles, log, notify_fatal
 
 
+def _url_key(url: str) -> str:
+    """URL変化の「同じページか」判定に使う比較キー。フラグメント（#...）を除く。
+
+    多くのドキュメントSPA（例: Vuetify）は scroll-spy で、スクロールに追従して URL の
+    ハッシュ（#見出し）だけを書き換える。ハッシュ違いは同じドキュメントなので、#以降を
+    落として「同じページ」とみなし、スクロールのたびの二重撮りを防ぐ。ハッシュルーティング
+    型SPAの本当の中身変化は SPA検知（本文署名）が担うため、ここで落としても取りこぼさない。
+    """
+    return url.split("#", 1)[0]
+
+
 def _edge_launch_kwargs(config: Config, user_data_dir: str) -> dict:
     """launch_persistent_context に渡す Edge 起動オプションを組み立てる。"""
     edge_args = [
@@ -174,7 +185,7 @@ class CaptureSession:
             for pg in list(self.context.pages):
                 url = self._shoot(pg)
                 if url is not None:
-                    self.seen[pg] = url
+                    self.seen[pg] = _url_key(url)
 
     async def on_shot(self, source, token=None) -> None:
         """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
@@ -310,8 +321,11 @@ class CaptureSession:
                     if url in self.config.skip_urls:
                         continue
 
-                    if self.seen.get(pg) != url:
-                        self.seen[pg] = url
+                    # フラグメント（#...）を除いたキーで「同じページか」を判定する。
+                    # scroll-spy によるハッシュだけの変化では撮り直さない。
+                    key = _url_key(url)
+                    if self.seen.get(pg) != key:
+                        self.seen[pg] = key
                         self.runner.spawn(pg, url, self.config, self.selector)
 
             await asyncio.sleep(self.config.poll_interval)

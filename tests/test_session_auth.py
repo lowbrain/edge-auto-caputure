@@ -12,7 +12,7 @@ import asyncio
 import pytest
 
 from config import Config
-from edge_auto_capture import CaptureSession
+from edge_auto_capture import CaptureSession, _url_key
 
 
 def _session() -> CaptureSession:
@@ -80,3 +80,25 @@ def test_get_state_returns_real_state_with_token():
     s.selector = ".ok"
     state = asyncio.run(s.get_state(None, token=s.token))
     assert state == {"recording": True, "spa": False, "selector": ".ok"}
+
+
+# --------------------------------------------------------------------------- #
+# _url_key … URL変化の「同じページか」判定キー（フラグメント #... を除く）
+# --------------------------------------------------------------------------- #
+
+
+def test_url_key_strips_fragment():
+    # scroll-spy で付くハッシュ違いは同じページとみなす（Vuetify等の二重撮り防止）。
+    base = "https://vuetifyjs.com/ja/getting-started/installation/"
+    assert _url_key(base) == base
+    assert _url_key(base + "#vite309") == base
+    assert _url_key(base + "#section-624b") == base
+    # ハッシュだけ違う2URLは同一キーになる（＝撮り直さない）。
+    assert _url_key(base + "#nuxt") == _url_key(base + "#vite")
+
+
+def test_url_key_keeps_path_and_query():
+    # パスやクエリの違いは別ページとして残す（#以降だけを落とす）。
+    assert _url_key("https://a.com/p?q=1#frag") == "https://a.com/p?q=1"
+    assert _url_key("https://a.com/x") != _url_key("https://a.com/y")
+    assert _url_key("about:blank") == "about:blank"
