@@ -113,6 +113,18 @@ def build_badge_script(token: str = "", settle_ms: int = 300) -> str:
 # 公開せず見た目だけ確認する用途向け。実運用では build_badge_script(token) を使う。
 BADGE_SCRIPT = build_badge_script()
 
+# --- expose_binding で公開するバインディング名（ページ側 → Python の呼び出し口）---
+# badge.js 内の window.__eac_* 呼び出し名と 1:1 で一致させること。言語境界をまたぐため
+# 完全な一元化はできないが、Python 側の名前をここへ集約して「唯一の一覧」を持つ
+# （綴りずれは JS 側 try/catch で無言失敗するので、実発火はスモークテストで確認している）。
+BIND_TOGGLE = "__eac_toggle"                  # 記録開始/停止
+BIND_SHOT = "__eac_shot"                       # 今すぐ1枚
+BIND_SPA_TOGGLE = "__eac_spa_toggle"           # SPA検知 ON/OFF
+BIND_SET_SELECTOR = "__eac_set_selector"       # セレクタ入力（変更のたび）
+BIND_COMMIT_SELECTOR = "__eac_commit_selector" # セレクタ確定（blur/Enter）
+BIND_SPA_CHANGED = "__eac_spa_changed"         # SPA検知の変化通知
+BIND_GETSTATE = "__eac_getstate"               # 描画前の状態問い合わせ
+
 # --- capture 側が page.evaluate で呼ぶ、ページ側ヘルパの呼び出し式 ---
 # いずれも window.__eac_* が未定義でも落ちないよう、存在チェック付きの式にしてある。
 

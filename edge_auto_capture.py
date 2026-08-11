@@ -51,15 +51,9 @@ from typing import Optional
 from playwright.async_api import Page, async_playwright
 
 import badge
-from capture import (
-    Config,
-    cleanup_old_profiles,
-    load_config,
-    log,
-    notify_fatal,
-    spawn_capture,
-    try_eval,
-)
+from capture import CaptureRunner, try_eval
+from config import Config, load_config
+from infra import cleanup_old_profiles, log, notify_fatal
 
 
 def _edge_launch_kwargs(config: Config, user_data_dir: str) -> dict:
@@ -110,6 +104,8 @@ class CaptureSession:
         # 生成して badge.js へ埋め込む。閲覧中サイトのスクリプトが token を知らずに記録操作・
         # 連写・セレクタ書き換えを試みても、下の各コールバックが token 不一致で無視する。
         self.token = secrets.token_hex(16)
+        # 撮影の実行器（実行中タスク・ページ単位ロックを own する）。1 セッションに 1 個。
+        self.runner = CaptureRunner()
         # --- 実行時状態 ---
         self.on = config.start_recording          # 記録中か（自動保存のマスタースイッチ）
         self.spa_on = False                       # SPA検知（中身変化を契機に保存）
@@ -151,7 +147,7 @@ class CaptureSession:
     def _shoot(self, pg) -> Optional[str]:
         """1ページを撮る。url 取得失敗と skip_urls を弾き、撮れば url を返す（弾けば None）。
 
-        「url 取得 → skip 判定 → spawn_capture」の定型を1か所に集約する（各コールバックと監視
+        「url 取得 → skip 判定 → runner.spawn」の定型を1か所に集約する（各コールバックと監視
         ループで同じ並びを書かないため）。記録状態のゲートは呼び出し側の責務（ここでは見ない）。
         """
         try:
@@ -160,7 +156,7 @@ class CaptureSession:
             return None
         if url in self.config.skip_urls:
             return None
-        spawn_capture(pg, url, self.config, self.selector)
+        self.runner.spawn(pg, url, self.config, self.selector)
         return url
 
     async def on_toggle(self, source, token=None) -> None:
@@ -269,13 +265,14 @@ class CaptureSession:
         context 単位なので以後開く新規タブにも自動適用される
         （expose_binding は add_init_script より前に登録する）。
         """
-        await self.context.expose_binding("__eac_toggle", self.on_toggle)
-        await self.context.expose_binding("__eac_shot", self.on_shot)
-        await self.context.expose_binding("__eac_spa_toggle", self.on_spa_toggle)
-        await self.context.expose_binding("__eac_set_selector", self.on_set_selector)
-        await self.context.expose_binding("__eac_commit_selector", self.on_commit_selector)
-        await self.context.expose_binding("__eac_spa_changed", self.on_spa_changed)
-        await self.context.expose_binding("__eac_getstate", self.get_state)
+        # バインディング名は badge.py の BIND_* に集約（badge.js 側の呼び出し名と一致）。
+        await self.context.expose_binding(badge.BIND_TOGGLE, self.on_toggle)
+        await self.context.expose_binding(badge.BIND_SHOT, self.on_shot)
+        await self.context.expose_binding(badge.BIND_SPA_TOGGLE, self.on_spa_toggle)
+        await self.context.expose_binding(badge.BIND_SET_SELECTOR, self.on_set_selector)
+        await self.context.expose_binding(badge.BIND_COMMIT_SELECTOR, self.on_commit_selector)
+        await self.context.expose_binding(badge.BIND_SPA_CHANGED, self.on_spa_changed)
+        await self.context.expose_binding(badge.BIND_GETSTATE, self.get_state)
         # badge.js には今回の合言葉（token）と SPA検知のデバウンス時間（settle_delay をミリ秒へ）を
         # 埋め込む。token は各バインディング呼び出しの照合、settle は落ち着き判定に使う。
         settle_ms = int(self.config.settle_delay * 1000)
@@ -315,7 +312,7 @@ class CaptureSession:
 
                     if self.seen.get(pg) != url:
                         self.seen[pg] = url
-                        spawn_capture(pg, url, self.config, self.selector)
+                        self.runner.spawn(pg, url, self.config, self.selector)
 
             await asyncio.sleep(self.config.poll_interval)
 

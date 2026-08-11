@@ -35,19 +35,22 @@ Microsoft Edge で開いたページを、**記録ONの間だけ**、フルペ�
 
 ## リポジトリ構成
 
-役割ごとに分割している。依存方向は `edge_auto_capture → capture → badge` の一方向で、
-`badge` はローカル依存を持たない（循環なし）。ページ側 JS は実ファイル `badge.js` に置き、
-エディタ/リンタで構文検査できるようにしてある。
+役割ごとに分割している。依存方向は下向きの一方向で循環なし:
+`edge_auto_capture →（capture / config）→ infra`、`capture → badge`、`config → infra`。
+`infra` は Playwright 非依存で、`config`（設定読み込み）も同様なので実 Edge 無しでテストできる。
+ページ側 JS は実ファイル `badge.js` に置き、エディタ/リンタで構文検査できるようにしてある。
 
 ```
 edge-auto-capture/
 ├─ edge_auto_capture.py   エントリ＋監視セッション（CaptureSession）
-├─ capture.py             設定読み込み・1ページ分の保存処理・基盤ユーティリティ
-├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG に集約）
+├─ capture.py             1ページ分の保存処理（撮影実行器 CaptureRunner）・ページ操作ヘルパ
+├─ config.py              設定（Config / config.ini の load_config）
+├─ infra.py               基盤ユーティリティ（パス・ログ・致命エラー通知・一時プロファイル掃除）
+├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG／バインディング名）
 ├─ badge.js               操作バーのページ側JS本体（実ファイル）
 ├─ tests/
 │  ├─ smoke_badge.py         操作バーJS＋SPA検知監視のスモークテスト（Edge headless）
-│  ├─ test_capture.py        純粋関数・設定読み込みのユニットテスト（pytest）
+│  ├─ test_capture.py        純粋関数（capture）・設定読み込み（config）のユニットテスト（pytest）
 │  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
 │  └─ conftest.py            pytest 共通設定
 ├─ config.ini             既定の設定ファイル

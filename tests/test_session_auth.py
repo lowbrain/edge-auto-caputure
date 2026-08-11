@@ -11,7 +11,7 @@ import asyncio
 
 import pytest
 
-from capture import Config
+from config import Config
 from edge_auto_capture import CaptureSession
 
 
