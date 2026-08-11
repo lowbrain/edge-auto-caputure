@@ -36,7 +36,7 @@ SPA（URLが変わらず中身だけ変わるページ）向けに、パネル�
 設定はソースではなく、同じフォルダの config.ini を編集して変更する。
 停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C
 も使える）。停止すると、このスクリプトが起動した Edge の終了と一時プロファイル
-の削除まで行う。動作ログは exe/スクリプトと同じフォルダの log.txt に残る。
+の削除まで行う。動作ログは保存先（output_dir）フォルダの log.txt に残る。
 各ページの上部には操作パネル（記録中/待機中の表示＋「記録開始/停止」＋「今すぐ1枚」＋
 セレクタ入力欄＋「SPA検知」トグル）を表示する
 （保存するスクリーンショットにも、抽出する txt / part テキストにも含めない）。
@@ -360,10 +360,12 @@ async def main(config: Config) -> None:
 
 
 if __name__ == "__main__":
+    # 先に設定を読み、ログの出力先を保存先（output_dir）へ切り替えてから記録を始める。
+    # （load_config が output_dir 確定時に set_log_dir を呼ぶ。以後のログはそこへ残る）
+    config = load_config()
+
     # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
     log("=== edge-auto-capture 起動 ===")
-
-    config = load_config()
     try:
         asyncio.run(main(config))
     except KeyboardInterrupt:

@@ -47,9 +47,25 @@ CONFIG_PATH = BASE_DIR / "config.ini"
 # safe_name() がファイル名スラッグを切り詰める最大長。
 NAME_MAX_LEN = 80
 
-# 実行ログの出力先（exe/スクリプトと同じフォルダ）。
-# コンソール無し（windowed exe）で実行しても後から動作を追えるようにする。
+# 実行ログの出力先。コンソール無し（windowed exe）で実行しても後から動作を追える
+# ようにする。既定は基準フォルダだが、設定読み込み後に PNG などと同じ保存先
+# （output_dir）へ切り替える（set_log_dir）。設定を読む前の初期ログはここへ出る。
 LOG_PATH = BASE_DIR / "log.txt"
+
+
+def set_log_dir(directory: Path) -> None:
+    """ログの出力先フォルダを PNG などの保存先（output_dir）へ寄せる。
+
+    設定読み込みで output_dir が確定した直後に呼ぶ。以後の log() は
+    <output_dir>\\log.txt へ追記する。まだ無ければフォルダを作る
+    （直後の書き込みで取りこぼさないため）。
+    """
+    global LOG_PATH
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    LOG_PATH = directory / "log.txt"
 
 
 def log(msg: str) -> None:
@@ -118,7 +134,7 @@ class Config:
 
     start_url: str = "about:blank"          # Edge 起動時に最初に開くページ
     edge_path: str = ""                     # Edge 実行ファイルのパス（空なら channel="msedge"）
-    output_dir: Path = Path("output")       # 保存先フォルダ（png も txt もここ）
+    output_dir: Path = Path("output")       # 保存先フォルダ（png / txt / log.txt もここ）
     poll_interval: float = 1.0              # URL変化を確認する間隔（秒）
     settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
     load_timeout: int = 5000                # ページ読み込み待ちの上限（ミリ秒）
@@ -161,6 +177,9 @@ def load_config() -> Config:
         output_dir = Path(sec.get("output_dir", str(defaults.output_dir)))
         if not output_dir.is_absolute():
             output_dir = BASE_DIR / output_dir
+
+        # ログも PNG などと同じ保存先へ寄せる（保存先が確定したこの時点で切り替え）。
+        set_log_dir(output_dir)
 
         # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
         urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
