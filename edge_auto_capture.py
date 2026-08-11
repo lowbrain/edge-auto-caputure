@@ -57,6 +57,7 @@ from capture import (
     load_config,
     log,
     notify_fatal,
+    spa_capture_decision,
     spawn_capture,
     try_eval,
 )
@@ -320,20 +321,19 @@ class CaptureSession:
                         self.seen[pg] = url
                         spawn_capture(pg, url, self.config, self.selector)
 
-                    # SPA検知: セレクタ要素の中身の変化を契機に保存。
-                    # 「前回撮影時と署名が違う」かつ「前 tick から署名が不変（＝落ち着いた）」
-                    # 時だけ撮る（描画途中の多段レンダを撮らない）。
+                    # SPA検知: セレクタ要素の中身の変化を契機に保存。撮るべきかの判定は
+                    # spa_capture_decision（純粋関数）に委譲する（落ち着き判定の詳細はそちら）。
                     if spa_active:
                         try:
                             sig = await self._sig(pg)
                         except Exception:
                             sig = None
                         if sig is not None:
-                            if url_changed:
-                                # 遷移直後は URL 側で撮ったので、その内容を基準にして二重撮り防止。
-                                self.sig_seen[pg] = sig
-                            elif sig != self.sig_seen.get(pg) and sig == self.sig_prev.get(pg):
-                                self.sig_seen[pg] = sig
+                            decision = spa_capture_decision(
+                                sig, url_changed, self.sig_seen.get(pg), self.sig_prev.get(pg)
+                            )
+                            self.sig_seen[pg] = decision.sig_seen
+                            if decision.capture:
                                 spawn_capture(pg, url, self.config, self.selector)
                             self.sig_prev[pg] = sig
 

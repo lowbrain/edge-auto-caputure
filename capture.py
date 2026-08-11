@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Tuple
+from typing import NamedTuple, Optional, Tuple
 
 from playwright.async_api import Page
 
@@ -256,6 +256,51 @@ def page_label(title: str, url: str) -> str:
         return safe_name(title)
     cleaned = re.sub(r"^\w+://(www\.)?", "", url)   # https:// や www. の定型頭を除去
     return safe_name(cleaned)
+
+
+class SpaDecision(NamedTuple):
+    """spa_capture_decision の結果。
+
+    - capture:  この tick で撮影すべきか。
+    - sig_seen: 「最後に撮った署名」の更新後の値（呼び出し側はこれで sig_seen を上書きする）。
+    """
+
+    capture: bool
+    sig_seen: Optional[str]
+
+
+def spa_capture_decision(
+    sig: str,
+    url_changed: bool,
+    sig_seen: Optional[str],
+    sig_prev: Optional[str],
+) -> SpaDecision:
+    """SPA検知で「今撮るべきか」と、更新後の sig_seen を決める純粋関数。
+
+    監視ループ（CaptureSession.run）内にあった、最も間違えやすい分岐をここへ切り出して
+    実 Edge 無しで回帰テストできるようにしたもの。挙動は従来と等価。
+
+    引数:
+      - sig:         現在の（この tick の）コンテンツ署名。
+      - url_changed: この tick で URL が変わったか。
+      - sig_seen:    このページで最後に撮影したときの署名（未撮影なら None）。
+      - sig_prev:    前 tick の署名（初回なら None）。
+
+    判定規則:
+      - URL変化した tick では撮らない（URL変化側で既に1枚撮っているため）。ただし現署名を
+        基準(sig_seen)へ取り直し、遷移直後の内容を「変化」と誤検知して二重に撮らないようにする。
+      - URL変化なしなら、「前回撮影時と署名が違う（＝中身が変わった）」かつ「前 tick と署名が
+        同じ（＝描画が落ち着いた）」ときだけ撮る。多段レンダの途中を撮らないための落ち着き判定。
+      - それ以外は撮らず、sig_seen も据え置く。
+
+    ※ sig_prev（前 tick の署名）は常に現署名へ更新する。これは撮影可否に関わらないので
+      呼び出し側で行う（この関数は sig_seen の遷移だけを扱う）。
+    """
+    if url_changed:
+        return SpaDecision(False, sig)
+    if sig != sig_seen and sig == sig_prev:
+        return SpaDecision(True, sig)
+    return SpaDecision(False, sig_seen)
 
 
 @contextmanager
