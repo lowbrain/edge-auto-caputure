@@ -107,7 +107,7 @@ def notify_fatal(msg: str) -> None:
 
 
 async def try_eval(page: Page, js: str) -> None:
-    """ページ側 JS を実行。失敗しても無視する（バッジの表示/非表示など副次処理用）。"""
+    """ページ側 JS を実行。失敗しても無視する（操作バーの表示/非表示など副次処理用）。"""
     try:
         await page.evaluate(js)
     except Exception:
@@ -339,11 +339,10 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     stem = f"{ts}_{page_label(title, url)}"              # 3ファイルで同じ接頭辞を共有
 
     # 1) フルページ スクリーンショット
-    #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、
-    #    撮影後にシャッターフラッシュ＋バー復帰。captureEnd は撮影が失敗しても必ず呼ぶ
-    #    （でないとバーが退避したまま戻らないため finally で実行）。
-    #    同一ページで撮影が重なるとバーの退避/復帰が競合して写り込むため、page 単位の
-    #    ロックでこの区間だけ直列化する（別ページ同士は別ロックなので並行できる）。
+    #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、撮影後に
+    #    シャッターフラッシュ＋バー復帰。captureEnd は失敗時もバーを戻すため finally で必ず呼ぶ。
+    #    同一ページでの撮影重なりによる写り込みを防ぐため、この区間を page 単位のロックで直列化
+    #    する（_page_lock 参照。別ページ同士は別ロックなので並行できる）。
     async with _page_lock(page):
         with _step("png", url):
             try:
@@ -354,7 +353,7 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
             finally:
                 await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
 
-    # 2) ページ全文テキスト（操作パネルは除外して取得）
+    # 2) ページ全文テキスト（操作バーは除外して取得）
     with _step("txt", url):
         text = await page.evaluate(badge.BODY_TEXT_CALL)
         (config.output_dir / f"{stem}.txt").write_text(
@@ -364,8 +363,8 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     # 3) 一部抜き出し（セレクタ設定時のみ）
     if selector:
         with _step("part", url):
-            # 操作パネルはシャドウ内にあり locator（querySelector 相当）は境界を越えない。
-            # 広いセレクタ（div / body / * など）でもパネルの文言は拾わないので隠す必要はない。
+            # 操作バーはシャドウ内にあり locator（querySelector 相当）は境界を越えない。
+            # 広いセレクタ（div / body / * など）でもバーの文言は拾わないので隠す必要はない。
             parts = await page.locator(selector).all_inner_texts()
             # 空文字（該当なし要素）は落とす。
             parts = [p for p in parts if p.strip()]

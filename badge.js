@@ -7,7 +7,7 @@
 // バーは Shadow DOM の中に作る。サイト側 CSS はシャドウ境界を越えて中の要素に当たらない
 // ため、隔離用の !important を各要素へ付ける必要がなく、見た目は下の <style> 1 枚に集約できる。
 // また document.querySelectorAll はシャドウ境界を越えないので、SPA署名・_part.txt 抽出・
-// 一致件数の計算にパネル要素が紛れ込まない（＝そのための「隠す/戻す」処理も不要）。
+// 一致件数の計算にバー要素が紛れ込まない（＝そのための「隠す/戻す」処理も不要）。
 //
 // 撮影の合図（captureStart/captureEnd）: スクショにはバーが写るので、撮影時は
 // バーを上へスライドさせて画面外へ退避してから撮る（意図した動作に見せる）。撮影が
@@ -25,7 +25,7 @@
 //     第1引数の tok は合言葉（$CONFIG の tok）。Python 側が照合し、一致しない呼び出しは無視する。
 (() => {
   // add_init_script は各 iframe にも注入される。最上位フレーム以外では
-  // 何もしない（iframe の数だけパネルが重複表示されるのを防ぐ）。
+  // 何もしない（iframe の数だけバーが重複表示されるのを防ぐ）。
   if (window.top !== window.self) return;
   // 表示文言などの設定は Python 側で定義し、$CONFIG（1個の JSON）でまとめて渡す。
   const C = $CONFIG;
@@ -217,7 +217,7 @@
   }
 
   // セレクタ一致件数の表示を更新する。0件/不正はすぐ気づけるよう色を変える（warn クラス）。
-  // パネルはシャドウ内なので querySelectorAll には紛れ込まない（除外処理は不要）。
+  // バーはシャドウ内なので querySelectorAll には紛れ込まない（除外処理は不要）。
   function updateMatchCount(s2) {
     if (!els) return;
     if (!s2) {
@@ -336,7 +336,7 @@
       els.sel.addEventListener('change', () => { try { window.__eac_commit_selector(TOK, els.sel.value); } catch (e) {} });
 
       document.body.appendChild(host);
-      // 作り直したパネルでは件数を必ず数え直させる（同じセレクタでも新しい要素は空のため）。
+      // 作り直したバーでは件数を必ず数え直させる（同じセレクタでも新しい要素は空のため）。
       countedSel = null;
       // 取得した現在の状態で最初から正しく描画する。
       apply(!!(state && state.recording), !!(state && state.spa), (state && state.selector) || '');
@@ -364,7 +364,7 @@
   }
 
   // SPA検知用のコンテンツ署名。セレクタ一致要素の innerText を連結して短いハッシュにする
-  //（全文ではなくハッシュだけ返し、毎 tick の転送量を抑える）。パネルはシャドウ内なので
+  //（全文ではなくハッシュだけ返し、毎 tick の転送量を抑える）。バーはシャドウ内なので
   // querySelectorAll には紛れ込まず、隠す/戻す処理は不要。
   // セレクタ不正/該当なしは長さ 0 のハッシュ（＝「変化なし」とみなせる固定値）。
   function signature(sel) {
@@ -400,7 +400,7 @@
   } else {
     build();
   }
-  // サイト側の再描画でパネルが消えても付け直す。
+  // サイト側の再描画でバーが消えても付け直す。
   // 注入直後は documentElement がまだ無いページ（about:blank 等）があるため、
   // 監視対象は documentElement → document の順でフォールバックする（常に有効な Node）。
   const _root = document.documentElement || document;

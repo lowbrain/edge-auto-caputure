@@ -4,17 +4,19 @@
   - ページ全文テキスト              (.txt)
   - ページ内の指定した一部だけ      (_part.txt)   ※セレクタ設定時のみ
 
-キャプチャのタイミングは利用者が操作する。各ページ上部の操作パネルで
-「記録開始／停止」で記録期間を制御でき、「今すぐ1枚」で今のページを1回だけ撮れる。
-既定は記録OFF（待機）で起動する（config.ini の start_recording で変更可）。
+撮影のタイミングは利用者が操作する。各ページ上部の操作バーで「記録開始／停止」により
+記録期間を制御し、「今すぐ1枚」で今のページを1回だけ撮れる。既定は記録OFF（待機）で
+起動する（config.ini の start_recording で変更可）。操作バーには記録中/待機中の表示に
+加え、上記ボタン・セレクタ入力欄・「SPA検知」トグル・バーを半透明にする「透過」トグルが
+並ぶ（保存する png / txt / part のいずれにも写し込まない）。
 
-SPA（URLが変わらず中身だけ変わるページ）向けに、パネルの入力欄へ CSS セレクタを
-入れて「SPA検知」を ON にすると、記録ON中はそのセレクタ要素の中身が変わるたびに
-自動保存する（同じ内容は署名比較で撮らない）。セレクタ入力が空だと SPA検知は使えない。
-このセレクタは _part.txt の抜き出し対象も兼ねる（初期値は config.ini の target_selector）。
+SPA（URLが変わらず中身だけ変わるページ）向けに、入力欄へ CSS セレクタを入れて「SPA検知」を
+ON にすると、記録ON中はそのセレクタ要素の中身が変わるたびに自動保存する（同じ内容は署名
+比較で撮らない）。セレクタが空だと SPA検知は使えない。このセレクタは _part.txt の抜き出し
+対象も兼ねる（初期値は config.ini の target_selector）。
 
-このスクリプトが Edge の起動・監視・後始末までを一括で行う（Playwright が
-毎回まっさらな一時プロファイルで Edge を起動し、終了時に自動で掃除する）。
+Edge の起動・監視・後始末はこのスクリプトが一括で行う（Playwright が毎回まっさらな一時
+プロファイルで Edge を起動し、終了時に自動で掃除する）。
 
 構成（役割ごとにモジュール分割）:
   - edge_auto_capture.py … 本ファイル。エントリと監視セッション（CaptureSession）。
@@ -23,23 +25,18 @@ SPA（URLが変わらず中身だけ変わるページ）向けに、パネル�
 
 事前準備:
   pip install -e .          （または pip install playwright）
-  ※ システムにインストール済みの Edge をそのまま使うため、
-    playwright install（ブラウザ同梱バイナリの取得）は不要。
+  ※ インストール済みの Edge をそのまま使うため、playwright install は不要。
 
 起動方法:
   - python edge_auto_capture.py（開発時）、または
   - ビルドした edge-auto-capture.exe をダブルクリック（配布時）
-  最初に開くページ・保存先などは同じフォルダの config.ini で指定する
-  （起動ページは start_url。空なら about:blank）。開いた Edge で普通に
-  閲覧し、記録ONの間だけ URL/タブの変化ごとに output\\ へ自動保存される。
+  設定は同じフォルダの config.ini で変更する（起動ページ start_url、保存先など。
+  start_url が空なら about:blank）。開いた Edge で普通に閲覧すれば、記録ONの間だけ
+  URL/タブの変化ごとに output\\ へ自動保存される。
 
-設定はソースではなく、同じフォルダの config.ini を編集して変更する。
-停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C
-も使える）。停止すると、このスクリプトが起動した Edge の終了と一時プロファイル
-の削除まで行う。動作ログは保存先（output_dir）フォルダの log.txt に残る。
-各ページの上部には操作パネル（記録中/待機中の表示＋「記録開始/停止」＋「今すぐ1枚」＋
-セレクタ入力欄＋「SPA検知」トグル＋パネルを半透明にする「透過」トグル）を表示する
-（保存するスクリーンショットにも、抽出する txt / part テキストにも含めない）。
+停止は「Edge のウィンドウを閉じる」だけでよい（コンソール実行時は Ctrl + C も使える）。
+停止時に、起動した Edge の終了と一時プロファイルの削除まで行う。動作ログは保存先
+（output_dir）フォルダの log.txt に残る。
 """
 
 import asyncio
@@ -80,7 +77,7 @@ def _edge_launch_kwargs(config: Config, user_data_dir: str) -> dict:
         headless=False,
         args=edge_args,
         # Playwright は既定で --no-sandbox を付け、Edge が黄色い警告バナーを出す。
-        # サンドボックスを有効化してバナーを消す（キャプチャ画像への映り込みも防ぐ）。
+        # サンドボックスを有効化してバナーを消す（撮影画像への映り込みも防ぐ）。
         chromium_sandbox=True,
         # 固定ビューポートのエミュレーションを外し、ウィンドウサイズにページを
         # 追従させる（--start-maximized も no_viewport でないと効かない）。
@@ -105,7 +102,7 @@ class CaptureSession:
         self.context = context
         self.config = config
         # ページ側から公開バインディング（__eac_* 群）を呼ぶときの合言葉。起動ごとにランダム
-        # 生成し、バッジJSへ埋め込む。閲覧中サイトのスクリプトが token を知らずに記録操作・
+        # 生成して badge.js へ埋め込む。閲覧中サイトのスクリプトが token を知らずに記録操作・
         # 連写・セレクタ書き換えを試みても、下の各コールバックが token 不一致で無視する。
         self.token = secrets.token_hex(16)
         # --- 実行時状態 ---
@@ -141,10 +138,10 @@ class CaptureSession:
             self.sig_prev[pg] = sig
 
     async def refresh_panels(self) -> None:
-        """開いている全ページの操作パネルへ現在の状態を反映する。
+        """開いている全ページの操作バーへ現在の状態（記録中/SPA検知/セレクタ）を反映する。
 
-        記録中/SPA検知/セレクタの3つを送る。新規タブ（初期は待機表示で描画）や、
-        サイト側の再描画で作り直されたパネルも、毎 tick これを呼ぶことで追従する。
+        新規タブ（初期は待機表示で描画）や、サイト側の再描画で作り直されたバーも、
+        毎 tick これを呼ぶことで追従する。
         """
         flag = "true" if self.on else "false"
         spa_flag = "true" if self.spa_on else "false"
@@ -158,18 +155,18 @@ class CaptureSession:
     # ---- expose_binding で公開するコールバック ----
     #
     # これらは全ページの window に公開されるため、閲覧中サイトのスクリプトからも呼べてしまう。
-    # 各コールバックは第1引数 token を self.token と照合し、一致しない呼び出し（＝バッジUI以外）
+    # 各コールバックは第1引数 token を self.token と照合し、一致しない呼び出し（＝操作バー以外）
     # は黙って無視する（ログも出さない: 不一致呼び出しを連打されてもログを氾濫させないため）。
     # 引数には既定値を与え、任意個数/不正な引数で呼ばれても TypeError で落ちないようにする。
 
     def _authorized(self, token) -> bool:
-        """バッジUIからの正規の呼び出しか（合言葉が一致するか）を判定する。"""
+        """操作バーからの正規の呼び出しか（合言葉が一致するか）を判定する。"""
         return isinstance(token, str) and secrets.compare_digest(token, self.token)
 
     async def on_toggle(self, source, token=None) -> None:
         """「記録開始／停止」ボタン: 記録状態を反転する。
 
-        ON にした瞬間は現在開いている全ページを即キャプチャし、seen を現在 URL に
+        ON にした瞬間は現在開いている全ページを即撮影し、seen を現在 URL に
         そろえる（撮り始めの体感を良くしつつ、直後のループでの二重取りも防ぐ）。
         """
         if not self._authorized(token):
@@ -191,9 +188,9 @@ class CaptureSession:
     async def on_shot(self, source, token=None) -> None:
         """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
 
-        seen は触らないので自動キャプチャの判定には影響しない（記録ON中でも
-        同一 URL の「撮り直し」として別ファイルにもう1枚保存される）。
-        保存が終わると spawn_capture がパネルを一瞬フラッシュして知らせる。
+        seen は触らないので自動保存の判定には影響しない（記録ON中でも同一 URL の
+        「撮り直し」として別ファイルにもう1枚保存される）。撮影後はシャッター
+        フラッシュで知らせる。
         """
         if not self._authorized(token):
             return
@@ -254,13 +251,13 @@ class CaptureSession:
         log(f"[セレクタ] {'クリア' if not new else repr(new)}")
 
     async def get_state(self, source, token=None) -> dict:
-        """パネルが描画前に現在の状態を問い合わせるためのバインディング。
+        """操作バーが描画前に現在の状態を問い合わせるためのバインディング。
 
-        ページ遷移直後、新しいドキュメントのパネルはこれを見てから描画するので、
+        ページ遷移直後、新しいドキュメントのバーはこれを見てから描画するので、
         記録ON中に別URLへ移動しても一瞬「待機中」を見せずに済む。SPA検知の
         ON/OFF・セレクタ値も同時に返し、遷移後も入力欄・ボタンを正しく初期化する。
 
-        token 不一致（バッジUI以外からの問い合わせ）には既定状態を返し、実際の
+        token 不一致（操作バー以外からの問い合わせ）には既定状態を返し、実際の
         記録状態やセレクタ値を外部スクリプトへ漏らさない。
         """
         if not self._authorized(token):
@@ -281,7 +278,7 @@ class CaptureSession:
         await self.context.expose_binding("__eac_set_selector", self.on_set_selector)
         await self.context.expose_binding("__eac_commit_selector", self.on_commit_selector)
         await self.context.expose_binding("__eac_getstate", self.get_state)
-        # バッジJSには今回の合言葉（token）を埋め込む。各バインディング呼び出しの照合に使う。
+        # badge.js には今回の合言葉（token）を埋め込む。各バインディング呼び出しの照合に使う。
         await self.context.add_init_script(badge.build_badge_script(self.token))
 
     def _prune(self, pages) -> None:
@@ -303,7 +300,7 @@ class CaptureSession:
             pages = list(self.context.pages)
             self._prune(pages)
 
-            # 記録状態を全パネルに反映（新規タブ・再描画にも毎 tick 追従）
+            # 記録状態を全バーに反映（新規タブ・再描画にも毎 tick 追従）
             await self.refresh_panels()
 
             # 記録ON の間だけ検知して保存。OFF の間は seen を更新しないので、
@@ -380,7 +377,7 @@ async def main(config: Config) -> None:
 
             log(
                 f"Edge を起動しました（記録は{'ON' if session.on else 'OFF（待機）'}で開始）。"
-                "ページ上部のパネルで記録開始/停止・今すぐ1枚・SPA検知（セレクタ入力時）を"
+                "ページ上部の操作バーで記録開始/停止・今すぐ1枚・SPA検知（セレクタ入力時）を"
                 "操作できます（終了するには Edge のウィンドウを閉じてください）"
             )
 
