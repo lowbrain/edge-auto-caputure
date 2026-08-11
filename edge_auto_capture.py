@@ -113,9 +113,12 @@ class CaptureSession:
         self.spa_on = False                       # SPA検知（中身変化を契機に保存）
         self.selector = config.target_selector    # 検知/抜き出しの対象 CSS セレクタ
         # --- ページごとの追跡情報 ---
-        self.seen: dict[Page, str] = {}         # page -> 直近のURL
-        self.sig_seen: dict[Page, str] = {}     # page -> 最後に撮った署名
-        self.sig_prev: dict[Page, str] = {}     # page -> 前 tick の署名（落ち着き判定用）
+        # 注釈は文字列で書く（実行時に評価させない）。dict[...] の下付き（PEP 585）は
+        # Python 3.9+ の機能で、インスタンス属性への注釈は関数スコープでも実行時評価される
+        # ため、素で書くと 3.8 起動時に TypeError になる（requires-python >=3.8 と整合させる）。
+        self.seen: "dict[Page, str]" = {}         # page -> 直近のURL
+        self.sig_seen: "dict[Page, str]" = {}     # page -> 最後に撮った署名
+        self.sig_prev: "dict[Page, str]" = {}     # page -> 前 tick の署名（落ち着き判定用）
 
     # ---- ページ側とのやり取り ----
 
