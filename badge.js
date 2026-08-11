@@ -4,11 +4,16 @@
 // このファイルは badge.py が読み込み、$CONFIG を 1 個の JSON（表示文言などの設定）へ
 // 置換してから add_init_script に渡す。実ファイルなのでエディタ/リンタで構文検査できる。
 //
+// バーは Shadow DOM の中に作る。サイト側 CSS はシャドウ境界を越えて中の要素に当たらない
+// ため、隔離用の !important を各要素へ付ける必要がなく、見た目は下の <style> 1 枚に集約できる。
+// また document.querySelectorAll はシャドウ境界を越えないので、SPA署名・_part.txt 抽出・
+// 一致件数の計算にパネル要素が紛れ込まない（＝そのための「隠す/戻す」処理も不要）。
+//
 // Python から使う API:
 //   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
-//   - window.__eacReact('busy'|'done'[, text])           : キャプチャの手応え表示
+//   - window.__eacFlash()                                 : 保存完了の合図（パネルを一瞬フラッシュ）
 //   - window.__eac_getstate()（expose_binding）           : 描画前に現在状態を取得
-//   - window.__eac_barDisplay(show)                       : 保存/抽出中にバーを隠す/戻す
+//   - window.__eac_barDisplay(show)                       : スクショ撮影中にバーを隠す/戻す
 //   - window.__eac_bodyText()                             : バー除外の本文 innerText
 //   - window.__eac_signature(selector)                   : SPA検知用のコンテンツ署名
 //   - ボタン類は window.__eac_toggle()/__eac_shot()/__eac_spa_toggle()/
@@ -22,332 +27,222 @@
   const ID = C.id;
   const S_ON = C.sOn, S_OFF = C.sOff, L_START = C.lStart, L_STOP = C.lStop, L_SHOT = C.lShot;
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
-  const R_BUSY = C.rBusy, R_DONE = C.rDone;
+
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
-  let rxTimer = null;      // 「保存しました」を自動で消すためのタイマー
+  let flashTimer = null;   // フラッシュを元へ戻すためのタイマー
 
+  let host = null;         // ページ側 DOM に置くシャドウホスト（撮影時の非表示もこれを操作）
+  let shadow = null;       // host.shadowRoot（フォーカス判定・要素取得に使う）
+  let els = null;          // シャドウ内の主要要素をまとめた参照
+
+  // シャドウホストの最小限のスタイル。位置と重なり順、当たり判定の透過だけを
+  // インライン !important で固定する（サイト側 CSS に負けない）。見た目そのものは
+  // シャドウ内の <style> が受け持つ（境界の内側なのでサイト CSS の影響を受けない）。
+  const HOST_CSS =
+    'position:fixed !important;top:8px !important;left:50% !important;transform:translateX(-50%) !important;'
+    + 'z-index:2147483647 !important;margin:0 !important;padding:0 !important;border:0 !important;'
+    + 'pointer-events:none !important;display:block !important;';
+
+  // シャドウ内のスタイルと構造。境界で隔離されるので通常の CSS クラスで書ける。
+  // 文言（ラベル/プレースホルダ/title）は textContent/属性で後から入れる（HTML へ
+  // 直接埋め込まず、日本語・絵文字・引用符のエスケープを気にせずに済ませる）。
+  const TEMPLATE =
+    '<style>'
+    + '.bar{box-sizing:border-box;height:36px;display:flex;align-items:center;gap:14px;'
+    + 'margin:0;padding:0 16px;border-radius:8px;pointer-events:none;white-space:nowrap;'
+    + 'color:#fff;font-family:"Segoe UI",sans-serif;font-size:13px;font-weight:bold;line-height:1;'
+    + 'box-shadow:0 2px 8px rgba(0,0,0,.4);background:rgba(90,90,90,.92);}'
+    + '.bar.rec{background:rgba(200,0,0,.92);}'
+    + '.bar.idle{background:rgba(90,90,90,.92);}'
+    + '.status{box-sizing:border-box;flex:0 0 auto;width:84px;height:36px;'
+    + 'display:inline-flex;align-items:center;justify-content:center;gap:6px;}'
+    + '.dot{box-sizing:border-box;flex:0 0 auto;width:9px;height:9px;border-radius:50%;}'
+    + '.dot.rec{background:#fff;border:0;}'
+    + '.dot.idle{background:transparent;border:2px solid rgba(255,255,255,.85);}'
+    + '.label{flex:0 0 auto;}'
+    + '.btn{box-sizing:border-box;flex:0 0 auto;height:26px;display:inline-flex;align-items:center;'
+    + 'justify-content:center;white-space:nowrap;margin:0;padding:0 12px;pointer-events:auto;cursor:pointer;'
+    + 'border:0;border-radius:5px;background:#fff;color:#b00;'
+    + 'font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;'
+    + 'appearance:none;-webkit-appearance:none;}'
+    + '.sel-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}'
+    + '.sel{box-sizing:border-box;flex:0 0 auto;width:180px;height:26px;margin:0;padding:0 8px;pointer-events:auto;'
+    + 'border:1px solid rgba(255,255,255,.6);border-radius:5px;background:#fff;color:#111;'
+    + 'font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:normal;line-height:1;'
+    + 'appearance:none;-webkit-appearance:none;}'
+    + '.sel-count{flex:0 0 76px;width:76px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
+    + 'color:rgba(255,255,255,.85);font-family:"Segoe UI",sans-serif;font-size:11px;font-weight:normal;line-height:1;}'
+    + '.sel-count.warn{color:#ffd24d;}'
+    + '.spa-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}'
+    + '.spa-wrap.disabled{opacity:.45;}'
+    + '.spa-label{flex:0 0 auto;white-space:nowrap;color:#fff;'
+    + 'font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;}'
+    + '.spa{box-sizing:border-box;position:relative;flex:0 0 auto;width:50px;height:24px;margin:0;padding:0;'
+    + 'border:0;border-radius:12px;pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.35);'
+    + 'appearance:none;-webkit-appearance:none;transition:background .15s ease;}'
+    + '.spa.on{background:#7cc243;}'
+    + '.spa.off{background:rgba(255,255,255,.35);}'
+    + '.spa:disabled{background:rgba(255,255,255,.2);cursor:not-allowed;}'
+    + '.spa-text{position:absolute;top:0;height:24px;display:flex;align-items:center;'
+    + 'color:#fff;font-family:"Segoe UI",sans-serif;font-size:10px;font-weight:bold;line-height:1;pointer-events:none;}'
+    + '.spa.on .spa-text{left:8px;right:auto;}'
+    + '.spa.off .spa-text{right:7px;left:auto;}'
+    + '.spa-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;'
+    + 'box-shadow:0 1px 2px rgba(0,0,0,.35);transition:left .15s ease;pointer-events:none;}'
+    + '.spa.on .spa-knob{left:28px;}'
+    + '.spa.off .spa-knob{left:2px;}'
+    + '</style>'
+    + '<div class="bar idle" data-eac="bar">'
+    + '<span class="status"><span class="dot idle" data-eac="dot"></span><span class="label" data-eac="label"></span></span>'
+    + '<button class="btn" data-eac="toggle"></button>'
+    + '<button class="btn" data-eac="shot"></button>'
+    + '<span class="sel-wrap"><input class="sel" type="text" data-eac="selector"><span class="sel-count" data-eac="sel-count"></span></span>'
+    + '<span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>'
+    + '<button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>'
+    + '<span class="spa-knob"></span></button></span>'
+    + '</div>';
+
+  // 現在状態（記録中/SPA検知/セレクタ）をバーの見た目へ反映する。
+  // 見た目の切り替えはすべて CSS クラス（rec/idle・on/off・warn・disabled）の付け外しで行う。
   function apply(r, s, sel) {
     recording = !!r;
     spaOn = !!s;
     if (sel !== undefined && sel !== null) selector = String(sel);
-    const box = document.getElementById(ID);
-    if (!box) return;
-    const lbl = box.querySelector('[data-eac="label"]');
-    const dot = box.querySelector('[data-eac="dot"]');
-    const tg = box.querySelector('[data-eac="toggle"]');
-    const spa = box.querySelector('[data-eac="spa"]');        // トグルスイッチのトラック
-    const spaKnob = box.querySelector('[data-eac="spa-knob"]');
-    const spaText = box.querySelector('[data-eac="spa-text"]');
-    const spaWrap = box.querySelector('[data-eac="spa-wrap"]');
-    const inp = box.querySelector('[data-eac="selector"]');
-    const selCount = box.querySelector('[data-eac="sel-count"]');
-    if (lbl) lbl.textContent = recording ? S_ON : S_OFF;
-    if (dot) {
-      // 記録中＝白い丸、待機中＝白い輪郭のみの丸（固定サイズ・同一質感）。
-      if (recording) {
-        dot.style.setProperty('background', '#fff', 'important');
-        dot.style.setProperty('border', '0', 'important');
-      } else {
-        dot.style.setProperty('background', 'transparent', 'important');
-        dot.style.setProperty('border', '2px solid rgba(255,255,255,.85)', 'important');
-      }
-    }
-    if (tg) tg.textContent = recording ? L_STOP : L_START;
-    box.style.setProperty('background', recording ? 'rgba(200,0,0,.92)' : 'rgba(90,90,90,.92)', 'important');
+    if (!els) return;
+    const present = (selector || '').trim().length > 0;
+
+    // 記録中＝赤バー・白丸／待機中＝灰バー・白輪郭の丸。
+    els.bar.classList.toggle('rec', recording);
+    els.bar.classList.toggle('idle', !recording);
+    els.dot.classList.toggle('rec', recording);
+    els.dot.classList.toggle('idle', !recording);
+    els.label.textContent = recording ? S_ON : S_OFF;
+    els.toggle.textContent = recording ? L_STOP : L_START;
+
     // セレクタ入力欄はフォーカス中は書き換えない（タイピングを壊さない）。
     // 非フォーカス時のみ現在値と差があれば同期（別タブでの変更を反映）。
-    if (inp && document.activeElement !== inp && inp.value !== selector) inp.value = selector;
-    // 一致件数フィードバック。0件/不正はすぐ気づけるよう色を変える。
-    // 操作バー自身の要素は件数から除外する（button/span 等を指定しても紛れないように）。
-    if (selCount) {
-      const s2 = (selector || '').trim();
-      if (!s2) {
-        selCount.textContent = '';
-      } else {
-        try {
-          let n = 0;
-          document.querySelectorAll(s2).forEach((el) => { if (!box.contains(el)) n++; });
-          selCount.textContent = '一致 ' + n + '件';
-          selCount.style.setProperty('color', n > 0 ? 'rgba(255,255,255,.85)' : '#ffd24d', 'important');
-        } catch (e) {
-          selCount.textContent = '無効な指定';
-          selCount.style.setProperty('color', '#ffd24d', 'important');
-        }
+    if (shadow.activeElement !== els.sel && els.sel.value !== selector) els.sel.value = selector;
+
+    // 一致件数フィードバック。0件/不正はすぐ気づけるよう色を変える（warn クラス）。
+    // パネルはシャドウ内なので querySelectorAll には紛れ込まない（除外処理は不要）。
+    const s2 = (selector || '').trim();
+    if (!s2) {
+      els.selCount.textContent = '';
+      els.selCount.classList.remove('warn');
+    } else {
+      try {
+        const n = document.querySelectorAll(s2).length;
+        els.selCount.textContent = '一致 ' + n + '件';
+        els.selCount.classList.toggle('warn', n === 0);
+      } catch (e) {
+        els.selCount.textContent = '無効な指定';
+        els.selCount.classList.add('warn');
       }
     }
-    // SPA検知トグルスイッチ: セレクタ未設定なら無効（灰色・押せない）。設定時のみ切替可。
-    // ON=緑・ノブ右・「ON」左寄せ / OFF=半透明白・ノブ左・「OFF」右寄せ。
-    const present = (selector || '').trim().length > 0;
-    if (spa) {
-      spa.disabled = !present;
-      if (!present) {
-        spa.style.setProperty('background', 'rgba(255,255,255,.2)', 'important');
-        spa.style.setProperty('cursor', 'not-allowed', 'important');
-        if (spaWrap) spaWrap.style.setProperty('opacity', '.45', 'important');
-      } else {
-        spa.style.setProperty('background', spaOn ? '#7cc243' : 'rgba(255,255,255,.35)', 'important');
-        spa.style.setProperty('cursor', 'pointer', 'important');
-        if (spaWrap) spaWrap.style.setProperty('opacity', '1', 'important');
-      }
-      // ノブ位置（トラック50px・ノブ20px → 右端は left:28px）。
-      if (spaKnob) spaKnob.style.setProperty('left', spaOn ? '28px' : '2px', 'important');
-      // ON/OFF 文言はノブと反対側へ寄せる。
-      if (spaText) {
-        spaText.textContent = spaOn ? 'ON' : 'OFF';
-        if (spaOn) {
-          spaText.style.setProperty('left', '8px', 'important');
-          spaText.style.setProperty('right', 'auto', 'important');
-        } else {
-          spaText.style.setProperty('right', '7px', 'important');
-          spaText.style.setProperty('left', 'auto', 'important');
-        }
-      }
-    }
+
+    // SPA検知トグル: セレクタ未設定なら無効（灰色・押せない）。設定時のみ切替可。
+    const active = present && spaOn;
+    els.spa.disabled = !present;
+    els.spaWrap.classList.toggle('disabled', !present);
+    els.spa.classList.toggle('on', active);
+    els.spa.classList.toggle('off', !active);
+    els.spaText.textContent = active ? 'ON' : 'OFF';
   }
 
-  // キャプチャの手応え（保存中→保存しました/記録しました）。パネルコンテナ内の
-  // オーバーレイに重ねるので、撮影中は他のパネル要素と一緒に隠れ、保存物
-  // （png/txt/part）には写り込まない。position:absolute なのでパネル幅（ボタン位置）
-  // には影響しない。text を渡すと done の文言を差し替えられる（既定は「保存しました」）。
-  function react(kind, text) {
-    const box = document.getElementById(ID);
-    if (!box) return;
-    const rx = box.querySelector('[data-eac="react"]');
-    if (!rx) return;
-    if (rxTimer) { clearTimeout(rxTimer); rxTimer = null; }
-    if (kind === 'busy') {
-      rx.textContent = text || R_BUSY;
-      rx.style.setProperty('background', 'rgba(70,70,70,.96)', 'important');
-      rx.style.setProperty('display', 'flex', 'important');
-    } else if (kind === 'done') {
-      rx.textContent = text || R_DONE;   // text 未指定なら「保存しました」
-      rx.style.setProperty('background', 'rgba(0,150,60,.96)', 'important');
-      rx.style.setProperty('display', 'flex', 'important');
-      rxTimer = setTimeout(() => { rx.style.setProperty('display', 'none', 'important'); rxTimer = null; }, 1200);
-    } else {
-      rx.style.setProperty('display', 'none', 'important');
-    }
+  // 保存完了の合図。パネル背景を一瞬だけ緑にして戻す（オーバーレイを使わないので
+  // 保存物への写り込みもない）。背景はインラインで一時上書きし、約0.6秒後に取り除くと
+  // 下地の CSS クラス（rec/idle）の色へ戻る。
+  function flash() {
+    if (!els) return;
+    els.bar.style.setProperty('background', 'rgba(0,150,60,.96)', 'important');
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => {
+      els.bar.style.removeProperty('background');
+      flashTimer = null;
+    }, 600);
   }
 
   function build() {
     if (!document.body || document.getElementById(ID)) return;
     // 遷移直後に誤った状態（待機中）を一瞬見せないよう、先に現在の状態
     //（記録中/SPA検知/セレクタ）を Python へ問い合わせ、分かってから描画する。
-    // 引数名は下の status 用 span (const st) と衝突しないよう initState にする。
-    const render = (initState) => {
-    if (!document.body || document.getElementById(ID)) return;
-    const box = document.createElement('div');
-    box.id = ID;
-    // コンテナは pointer-events:none（下のページ操作を妨げない。ボタンだけ後で
-    // pointer-events:auto に戻す）。全プロパティを !important で明示して、サイト側
-    // CSS（!important 含む）の影響を完全に遮断し、どのページでもバーの高さ・幅・
-    // 余白を一定に保つ。要素間の余白は gap で確保する。
-    box.style.cssText =
-      'position:fixed !important;top:8px !important;left:50% !important;transform:translateX(-50%) !important;'
-      + 'z-index:2147483647 !important;box-sizing:border-box !important;height:36px !important;'
-      + 'display:flex !important;align-items:center !important;gap:14px !important;margin:0 !important;padding:0 16px !important;'
-      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:13px !important;font-weight:bold !important;line-height:1 !important;'
-      + 'border-radius:8px !important;pointer-events:none !important;'
-      + 'box-shadow:0 2px 8px rgba(0,0,0,.4) !important;white-space:nowrap !important;';
+    const finish = (state) => {
+      if (!document.body || document.getElementById(ID)) return;
+      host = document.createElement('div');
+      host.id = ID;
+      host.style.cssText = HOST_CSS;
+      shadow = host.attachShadow({ mode: 'open' });
+      shadow.innerHTML = TEMPLATE;
 
-    const st = document.createElement('span');
-    st.setAttribute('data-eac', 'status');
-    // 幅固定でボタンが左右に動かないようにしつつ、高さ 36px の flex 中央寄せで
-    // 上下均等に中央へ。中身は CSS 描画の丸（dot）＋ラベルで、状態間で見た目を統一。
-    st.style.cssText =
-      'box-sizing:border-box !important;flex:0 0 auto !important;width:84px !important;height:36px !important;'
-      + 'display:inline-flex !important;align-items:center !important;justify-content:center !important;gap:6px !important;'
-      + 'line-height:1 !important;margin:0 !important;padding:0 !important;'
-      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:13px !important;font-weight:bold !important;';
-    // 状態インジケータ（CSS 描画の丸）。絵文字を使わないので記録中/待機中で
-    // アイコンの質感・大きさが揃う。塗り/輪郭の違いは apply() で切り替える。
-    const dot = document.createElement('span');
-    dot.setAttribute('data-eac', 'dot');
-    dot.style.cssText =
-      'box-sizing:border-box !important;flex:0 0 auto !important;width:9px !important;height:9px !important;'
-      + 'border-radius:50% !important;margin:0 !important;padding:0 !important;';
-    const lbl = document.createElement('span');
-    lbl.setAttribute('data-eac', 'label');
-    lbl.style.cssText =
-      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;'
-      + 'font-family:"Segoe UI",sans-serif !important;font-size:13px !important;font-weight:bold !important;line-height:1 !important;';
-    st.appendChild(dot);
-    st.appendChild(lbl);
+      const q = (name) => shadow.querySelector('[data-eac="' + name + '"]');
+      els = {
+        bar: q('bar'), dot: q('dot'), label: q('label'),
+        toggle: q('toggle'), shot: q('shot'),
+        sel: q('selector'), selCount: q('sel-count'),
+        spaWrap: q('spa-wrap'), spaLabel: q('spa-label'), spa: q('spa'), spaText: q('spa-text'),
+      };
 
-    // ボタン共通スタイル。高さは固定するが幅は中身ぴったり（width 固定しない）。
-    // 幅を固定すると絵文字/文字が枠からはみ出して隣との隙間を潰すことがあるため、
-    // flex:0 0 auto で内容ぴったりにし、gap:14px が常に効くようにする。
-    // appearance 等も !important で明示してサイト側 button スタイルを排除する。
-    const bcss =
-      'box-sizing:border-box !important;flex:0 0 auto !important;width:auto !important;'
-      + 'min-width:0 !important;max-width:none !important;height:26px !important;'
-      + 'display:inline-flex !important;align-items:center !important;justify-content:center !important;'
-      + 'white-space:nowrap !important;overflow:visible !important;'
-      + 'margin:0 !important;padding:0 12px !important;pointer-events:auto !important;cursor:pointer !important;'
-      + 'border:0 !important;border-radius:5px !important;background:#fff !important;color:#b00 !important;'
-      + 'font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:bold !important;line-height:1 !important;'
-      + 'appearance:none !important;-webkit-appearance:none !important;';
-    const tg = document.createElement('button');
-    tg.setAttribute('data-eac', 'toggle');
-    tg.style.cssText = bcss;
-    tg.addEventListener('click', () => { try { window.__eac_toggle(); } catch (e) {} });
-    const sh = document.createElement('button');
-    sh.setAttribute('data-eac', 'shot');
-    sh.textContent = L_SHOT;
-    sh.style.cssText = bcss;
-    sh.addEventListener('click', () => { try { window.__eac_shot(); } catch (e) {} });
+      // 静的な文言・ホバー説明を入れる。
+      els.shot.textContent = L_SHOT;
+      els.sel.placeholder = PH_SEL;
+      els.sel.title = TITLE_SEL;
+      els.spaLabel.textContent = L_SPA;
+      // 無効（セレクタ未設定）でも読めるよう、ラッパ／ラベル／ボタンに同じ説明を付ける。
+      els.spaLabel.title = TITLE_SPA;
+      els.spaWrap.title = TITLE_SPA;
+      els.spa.title = TITLE_SPA;
 
-    // SPA検知の対象セレクタ入力欄。常時ラベルは置かず、透かし文字（placeholder）で入力を促し、
-    // title でホバー時の詳しい説明（具体例つき）を出す。値がある時だけ SPA検知が押せる。
-    const selWrap = document.createElement('span');
-    selWrap.setAttribute('data-eac', 'sel-wrap');
-    selWrap.style.cssText =
-      'box-sizing:border-box !important;flex:0 0 auto !important;display:inline-flex !important;'
-      + 'align-items:center !important;gap:8px !important;margin:0 !important;padding:0 !important;'
-      + 'pointer-events:auto !important;';
-    // サイト側 CSS の影響を排除するため主要プロパティを !important で明示する。
-    const inp = document.createElement('input');
-    inp.setAttribute('data-eac', 'selector');
-    inp.type = 'text';
-    inp.placeholder = PH_SEL;
-    inp.title = TITLE_SEL;
-    inp.style.cssText =
-      'box-sizing:border-box !important;flex:0 0 auto !important;width:180px !important;height:26px !important;'
-      + 'margin:0 !important;padding:0 8px !important;pointer-events:auto !important;'
-      + 'border:1px solid rgba(255,255,255,.6) !important;border-radius:5px !important;'
-      + 'background:#fff !important;color:#111 !important;'
-      + 'font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:normal !important;line-height:1 !important;'
-      + 'appearance:none !important;-webkit-appearance:none !important;';
-    // 入力のたびにローカルで即座に見た目（SPAボタンの有効/無効）を反映しつつ、
-    // Python 側へも値を通知する（入力欄はフォーカス中なので apply が上書きしない）。
-    inp.addEventListener('input', () => {
-      apply(recording, spaOn, inp.value);
-      try { window.__eac_set_selector(inp.value); } catch (e) {}
-    });
-    // 確定時（blur / Enter）に最終値をログへ（入力毎の氾濫を避ける）。
-    inp.addEventListener('change', () => { try { window.__eac_commit_selector(inp.value); } catch (e) {} });
-    // 一致件数の表示（入力欄の右）。文言・色は apply() が現在のセレクタから更新する。
-    // 中身の有無・長短でバーの幅が動かないよう、常に固定幅の枠を確保しておく
-    //（空でも同じ幅を占有＝バー全体の長さが一定になる）。はみ出しは省略記号で丸める。
-    const selCount = document.createElement('span');
-    selCount.setAttribute('data-eac', 'sel-count');
-    selCount.style.cssText =
-      'flex:0 0 76px !important;width:76px !important;margin:0 !important;padding:0 !important;'
-      + 'white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important;'
-      + 'color:rgba(255,255,255,.85) !important;font-family:"Segoe UI",sans-serif !important;font-size:11px !important;font-weight:normal !important;line-height:1 !important;';
-    selWrap.appendChild(inp);
-    selWrap.appendChild(selCount);
+      // 操作はすべて expose_binding 経由で Python へ通知する。
+      els.toggle.addEventListener('click', () => { try { window.__eac_toggle(); } catch (e) {} });
+      els.shot.addEventListener('click', () => { try { window.__eac_shot(); } catch (e) {} });
+      els.spa.addEventListener('click', () => { try { window.__eac_spa_toggle(); } catch (e) {} });
+      // 入力のたびにローカルで即座に見た目（SPAボタンの有効/無効・一致件数）を反映しつつ、
+      // Python 側へも値を通知する（入力欄はフォーカス中なので apply が上書きしない）。
+      els.sel.addEventListener('input', () => {
+        apply(recording, spaOn, els.sel.value);
+        try { window.__eac_set_selector(els.sel.value); } catch (e) {}
+      });
+      // 確定時（blur / Enter）に最終値をログへ（入力毎の氾濫を避ける）。
+      els.sel.addEventListener('change', () => { try { window.__eac_commit_selector(els.sel.value); } catch (e) {} });
 
-    // SPA検知トグル: 「SPA検知」ラベル＋ピル型スイッチ（ノブがスライドする ON/OFF）。
-    // スイッチのトラック(button[data-eac=spa])がクリック対象。見た目は apply() が更新する。
-    const spaWrap = document.createElement('span');
-    spaWrap.setAttribute('data-eac', 'spa-wrap');
-    spaWrap.style.cssText =
-      'box-sizing:border-box !important;flex:0 0 auto !important;display:inline-flex !important;'
-      + 'align-items:center !important;gap:8px !important;margin:0 !important;padding:0 !important;'
-      + 'pointer-events:auto !important;';
-    // 無効（セレクタ未設定）ではボタン自身のホバーで tooltip が出ないことがあるため、
-    // ラッパ／ラベルにも同じ説明を付け、どこにホバーしても読めるようにする。
-    spaWrap.title = TITLE_SPA;
-    const spaLbl = document.createElement('span');
-    spaLbl.setAttribute('data-eac', 'spa-label');
-    spaLbl.textContent = L_SPA;
-    spaLbl.title = TITLE_SPA;
-    spaLbl.style.cssText =
-      'flex:0 0 auto !important;margin:0 !important;padding:0 !important;white-space:nowrap !important;'
-      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:12px !important;font-weight:bold !important;line-height:1 !important;';
-    const spa = document.createElement('button');
-    spa.setAttribute('data-eac', 'spa');
-    spa.setAttribute('role', 'switch');
-    spa.title = TITLE_SPA;
-    spa.style.cssText =
-      'box-sizing:border-box !important;position:relative !important;flex:0 0 auto !important;'
-      + 'width:50px !important;height:24px !important;margin:0 !important;padding:0 !important;'
-      + 'border:0 !important;border-radius:12px !important;pointer-events:auto !important;cursor:pointer !important;'
-      + 'background:rgba(255,255,255,.35) !important;appearance:none !important;-webkit-appearance:none !important;'
-      + 'transition:background .15s ease !important;';
-    const spaText = document.createElement('span');
-    spaText.setAttribute('data-eac', 'spa-text');
-    spaText.style.cssText =
-      'position:absolute !important;top:0 !important;height:24px !important;display:flex !important;'
-      + 'align-items:center !important;margin:0 !important;padding:0 !important;'
-      + 'font-family:"Segoe UI",sans-serif !important;font-size:10px !important;font-weight:bold !important;line-height:1 !important;'
-      + 'color:#fff !important;pointer-events:none !important;';
-    const spaKnob = document.createElement('span');
-    spaKnob.setAttribute('data-eac', 'spa-knob');
-    spaKnob.style.cssText =
-      'position:absolute !important;top:2px !important;left:2px !important;width:20px !important;height:20px !important;'
-      + 'border-radius:50% !important;background:#fff !important;margin:0 !important;padding:0 !important;'
-      + 'box-shadow:0 1px 2px rgba(0,0,0,.35) !important;transition:left .15s ease !important;pointer-events:none !important;';
-    spa.appendChild(spaText);
-    spa.appendChild(spaKnob);
-    spa.addEventListener('click', () => { try { window.__eac_spa_toggle(); } catch (e) {} });
-    spaWrap.appendChild(spaLbl);
-    spaWrap.appendChild(spa);
-
-    // 手応え表示用オーバーレイ（既定は非表示）。コンテナ内に絶対配置で重ねる。
-    const rx = document.createElement('div');
-    rx.setAttribute('data-eac', 'react');
-    rx.style.cssText =
-      'position:absolute !important;inset:0 !important;display:none !important;box-sizing:border-box !important;'
-      + 'align-items:center !important;justify-content:center !important;border-radius:8px !important;'
-      + 'margin:0 !important;padding:0 !important;'
-      + 'color:#fff !important;font-family:"Segoe UI",sans-serif !important;font-size:13px !important;font-weight:bold !important;'
-      + 'pointer-events:none !important;';
-
-    box.appendChild(st);
-    box.appendChild(tg);
-    box.appendChild(sh);
-    box.appendChild(selWrap);
-    box.appendChild(spaWrap);
-    box.appendChild(rx);
-    document.body.appendChild(box);
-    // 取得した現在の状態（記録中/SPA検知/セレクタ）で最初から正しく描画する。
-    apply(!!(initState && initState.recording), !!(initState && initState.spa),
-          (initState && initState.selector) || '');
+      document.body.appendChild(host);
+      // 取得した現在の状態で最初から正しく描画する。
+      apply(!!(state && state.recording), !!(state && state.spa), (state && state.selector) || '');
     };
     const fallback = { recording: recording, spa: spaOn, selector: selector };
     if (window.__eac_getstate) {
-      window.__eac_getstate().then(render).catch(() => render(fallback));
+      window.__eac_getstate().then(finish).catch(() => finish(fallback));
     } else {
-      render(fallback);
+      finish(fallback);
     }
   }
 
   // ---- Python(capture) から page.evaluate 経由で呼ぶページ側ヘルパ ----
-  // いずれも操作バー(#ID)を保存物へ写し込まないよう、内部で「隠す/戻す」を同期実行する。
 
-  // 撮影/抽出の瞬間だけバーを隠す/戻す。復帰は flex（display を消すと gap が失われるため）。
+  // スクショ撮影の瞬間だけバー（＝シャドウホスト）を隠す/戻す。
   function barDisplay(show) {
-    const b = document.getElementById(ID);
-    if (b) b.style.setProperty('display', show ? 'flex' : 'none', 'important');
+    if (host) host.style.setProperty('display', show ? 'block' : 'none', 'important');
   }
 
-  // ページ全文テキスト（バーを除外して取得）。隠す→読む→復帰を 1 回で同期実行。
+  // ページ全文テキスト。innerText はシャドウ内の描画も合成し得るため、
+  // 念のためホストを隠してから読み、元へ戻す（撮影時と同じ非表示手順）。
   function bodyText() {
-    const b = document.getElementById(ID);
-    if (!b) return document.body ? document.body.innerText : '';
-    const prev = b.style.getPropertyValue('display');
-    const prio = b.style.getPropertyPriority('display');
-    b.style.setProperty('display', 'none', 'important');
+    if (!host) return document.body ? document.body.innerText : '';
+    const prev = host.style.getPropertyValue('display');
+    const prio = host.style.getPropertyPriority('display');
+    host.style.setProperty('display', 'none', 'important');
     const t = document.body ? document.body.innerText : '';
-    if (prev) b.style.setProperty('display', prev, prio); else b.style.removeProperty('display');
+    if (prev) host.style.setProperty('display', prev, prio); else host.style.removeProperty('display');
     return t;
   }
 
   // SPA検知用のコンテンツ署名。セレクタ一致要素の innerText を連結して短いハッシュにする
-  //（全文ではなくハッシュだけ返し、毎 tick の転送量を抑える）。バーは除外。
+  //（全文ではなくハッシュだけ返し、毎 tick の転送量を抑える）。パネルはシャドウ内なので
+  // querySelectorAll には紛れ込まず、隠す/戻す処理は不要。
   // セレクタ不正/該当なしは長さ 0 のハッシュ（＝「変化なし」とみなせる固定値）。
   function signature(sel) {
-    const b = document.getElementById(ID);
-    let prev, prio;
-    if (b) {
-      prev = b.style.getPropertyValue('display');
-      prio = b.style.getPropertyPriority('display');
-      b.style.setProperty('display', 'none', 'important');
-    }
     let text = '';
     try {
       if (sel) {
@@ -356,7 +251,6 @@
         text = parts.join('\n');
       }
     } catch (e) { text = ''; }
-    if (b) { if (prev) b.style.setProperty('display', prev, prio); else b.style.removeProperty('display'); }
     // cyrb53 相当の簡易ハッシュ。衝突は実害小。長さ＋ハッシュで実質的に判別する。
     let h1 = 0xdeadbeef ^ text.length, h2 = 0x41c6ce57 ^ text.length;
     for (let i = 0; i < text.length; i++) {
@@ -371,7 +265,7 @@
   }
 
   window.__eacApplyState = apply;
-  window.__eacReact = react;
+  window.__eacFlash = flash;
   window.__eac_barDisplay = barDisplay;
   window.__eac_bodyText = bodyText;
   window.__eac_signature = signature;

@@ -6,8 +6,8 @@
 - 表示文言（利用者に見える日本語など）は Python 側で定義し、_BADGE_CONFIG に
   まとめて 1 個の JSON（badge.js 中の $CONFIG）として渡す。追加時に置換の
   引数を並べ直す必要がなく、直し漏れが起きにくい。
-- capture 側が page.evaluate で呼ぶヘルパ（バー隠し/本文取得/署名）の呼び出し式や、
-  手応え表示の文言もここに集約する。
+- capture 側が page.evaluate で呼ぶヘルパ（バー隠し/本文取得/署名/保存フラッシュ）の
+  呼び出し式もここに集約する。
 """
 
 import json
@@ -49,13 +49,6 @@ _TITLE_SPA = (
     "ON の間は、記録中にその要素の中身が変わるたびに自動保存します。"
 )
 
-# キャプチャ時に、撮れたことを利用者へ知らせるリアクション文言。
-# 待機中の単発ショットは「保存しました」、記録中（記録開始/URL移動の自動保存）は
-# 「記録しました」を出し、消えると下地の状態表示（記録中/待機中）に戻る。
-_REACT_BUSY = "⏳ 保存中…"
-REACT_DONE = "✓ 保存しました"
-REACT_REC = "✓ 記録しました"
-
 # badge.js の $CONFIG へ渡す設定（表示文言）。キー名は badge.js 内の C.* と対応する。
 _BADGE_CONFIG = {
     "id": BADGE_ID,
@@ -68,8 +61,6 @@ _BADGE_CONFIG = {
     "phSel": _PLACEHOLDER_SEL,
     "titleSel": _TITLE_SEL,
     "titleSpa": _TITLE_SPA,
-    "rBusy": _REACT_BUSY,
-    "rDone": REACT_DONE,
 }
 
 
@@ -114,12 +105,5 @@ BODY_TEXT_CALL = (
 # SPA検知の署名。引数 sel を受け取る関数式（page.evaluate(SIG_CALL, selector) で使う）。
 SIG_CALL = "(sel) => window.__eac_signature ? window.__eac_signature(sel) : '0_0'"
 
-
-def react_busy_js() -> str:
-    """「保存中…」表示を出すページ側呼び出し式。"""
-    return "window.__eacReact && window.__eacReact('busy')"
-
-
-def react_done_js(text: str) -> str:
-    """完了表示（done）を出すページ側呼び出し式。text は json.dumps で安全化して埋め込む。"""
-    return "window.__eacReact && window.__eacReact('done', " + json.dumps(text) + ")"
+# 保存完了の合図（パネルを一瞬フラッシュ）。撮影後に page.evaluate で呼ぶ。
+FLASH_CALL = "window.__eacFlash && window.__eacFlash()"

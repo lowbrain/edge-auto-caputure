@@ -242,14 +242,10 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     # 3) 一部抜き出し（セレクタ設定時のみ）
     if selector:
         with _step("part", url):
-            # 広いセレクタ（div / body / * など）だと操作パネルの文言を拾うことがある。
-            # 抽出の間だけパネルを display:none にして innerText から除外する。
-            await try_eval(page, badge.BAR_HIDE)
-            try:
-                parts = await page.locator(selector).all_inner_texts()
-            finally:
-                await try_eval(page, badge.BAR_SHOW)
-            # 空文字（隠したパネル配下や該当なし要素）は落とす。
+            # 操作パネルはシャドウ内にあり locator（querySelector 相当）は境界を越えない。
+            # 広いセレクタ（div / body / * など）でもパネルの文言は拾わないので隠す必要はない。
+            parts = await page.locator(selector).all_inner_texts()
+            # 空文字（該当なし要素）は落とす。
             parts = [p for p in parts if p.strip()]
             body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
             (config.output_dir / f"{stem}_part.txt").write_text(
@@ -260,25 +256,20 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     log(f"[saved] {stem}.*  <- {url}")
 
 
-def spawn_capture(
-    page: Page, url: str, config: Config, selector: str = "", done_text: str = badge.REACT_DONE
-) -> None:
+def spawn_capture(page: Page, url: str, config: Config, selector: str = "") -> None:
     """capture() をバックグラウンドタスクとして起動し、参照を保持する。
 
-    撮影の前後にパネル上へ手応え（「保存中…」→ done_text）を表示する。
-    done_text は待機中の単発ショットなら「保存しました」、記録中の保存なら
-    「記録しました」を渡す。表示はパネル内オーバーレイなので保存物には写り込まない。
+    保存が終わったらパネルを一瞬フラッシュして「保存した」ことを知らせる
+    （オーバーレイではなくパネル自身の点滅なので保存物には写り込まない）。
     selector は _part.txt 抜き出しの対象（実行時のバー入力値）を capture() へ渡す。
     タスクを _tasks に入れて GC を防ぎ、完了時に取り除く。
     """
 
     async def _run() -> None:
-        await try_eval(page, badge.react_busy_js())
         try:
             await capture(page, url, config, selector)
         finally:
-            # 完了表示（約1.2秒で自動的に消え、下地の状態表示に戻る）。
-            await try_eval(page, badge.react_done_js(done_text))
+            await try_eval(page, badge.FLASH_CALL)
 
     task = asyncio.create_task(_run())
     _tasks.add(task)

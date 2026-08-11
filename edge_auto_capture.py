@@ -166,15 +166,14 @@ class CaptureSession:
                 if url in self.config.skip_urls:
                     continue
                 self.seen[pg] = url
-                spawn_capture(pg, url, self.config, self.selector, done_text=badge.REACT_REC)
+                spawn_capture(pg, url, self.config, self.selector)
 
     async def on_shot(self, source) -> None:
         """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
 
         seen は触らないので自動キャプチャの判定には影響しない（記録ON中でも
         同一 URL の「撮り直し」として別ファイルにもう1枚保存される）。
-        手応え表示は spawn_capture が撮影の前後で行う（記録中は「記録しました」、
-        待機中は「保存しました」）。
+        保存が終わると spawn_capture がパネルを一瞬フラッシュして知らせる。
         """
         pg = source["page"]
         try:
@@ -184,10 +183,7 @@ class CaptureSession:
         if url in self.config.skip_urls:
             return
         log(f"[手動] {url}")
-        spawn_capture(
-            pg, url, self.config, self.selector,
-            done_text=badge.REACT_REC if self.on else badge.REACT_DONE,
-        )
+        spawn_capture(pg, url, self.config, self.selector)
 
     async def on_spa_toggle(self, source) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
@@ -289,9 +285,7 @@ class CaptureSession:
                     url_changed = self.seen.get(pg) != url
                     if url_changed:
                         self.seen[pg] = url
-                        spawn_capture(
-                            pg, url, self.config, self.selector, done_text=badge.REACT_REC
-                        )
+                        spawn_capture(pg, url, self.config, self.selector)
 
                     # SPA検知: セレクタ要素の中身の変化を契機に保存。
                     # 「前回撮影時と署名が違う」かつ「前 tick から署名が不変（＝落ち着いた）」
@@ -307,9 +301,7 @@ class CaptureSession:
                                 self.sig_seen[pg] = sig
                             elif sig != self.sig_seen.get(pg) and sig == self.sig_prev.get(pg):
                                 self.sig_seen[pg] = sig
-                                spawn_capture(
-                                    pg, url, self.config, self.selector, done_text=badge.REACT_REC
-                                )
+                                spawn_capture(pg, url, self.config, self.selector)
                             self.sig_prev[pg] = sig
 
             await asyncio.sleep(self.config.poll_interval)

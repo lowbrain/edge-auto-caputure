@@ -1,9 +1,9 @@
 """操作バー JS（badge.js / badge.BADGE_SCRIPT）のスモークテスト。
 
 実際の Edge を headless で起動し、add_init_script でバーを注入して
-「操作バーが実際に構築されるか」「Python から呼ぶページ側ヘルパ
-（barDisplay / bodyText / signature）が例外なく動くか」「JS エラーが出ないか」を
-機械的に確認する。以前の `st` 二重宣言のような JS 構文/実行時エラーを、
+「操作バー（シャドウホスト＋中身）が実際に構築されるか」「Python から呼ぶ
+ページ側ヘルパ（barDisplay / bodyText / signature）が例外なく動くか」
+「JS エラーが出ないか」を機械的に確認する。JS の構文/実行時エラーを、
 実行前に自動検出することが狙い。
 
 使い方:
@@ -47,8 +47,8 @@ def run() -> int:
             page.add_init_script(badge.BADGE_SCRIPT)
             page.goto("about:blank")
 
-            # 1) バーが構築されるか（＝スクリプトがパース/実行できている）
-            page.wait_for_selector(BADGE_SEL, timeout=5000)
+            # 1) シャドウホストが構築されるか（＝スクリプトがパース/実行できている）
+            page.wait_for_selector(BADGE_SEL, state="attached", timeout=5000)
 
             # 2) 状態反映（apply）が例外なく動くか
             page.evaluate("window.__eacApplyState(true, true, 'body')")
@@ -65,9 +65,13 @@ def run() -> int:
             if not isinstance(body_text, str):
                 errors.append(f"bodyText の戻り値が不正: {type(body_text)}")
 
-            # 4) バーがちゃんと存在するか最終確認
-            exists = page.evaluate(f"!!document.querySelector({BADGE_SEL!r})")
-            if not exists:
+            # 4) シャドウホストと、その中身（バー本体）が構築されているか最終確認。
+            #    バーはシャドウ内なので host.shadowRoot 経由で存在を見る。
+            built = page.evaluate(
+                "(() => { const h = document.querySelector(" + repr(BADGE_SEL) + ");"
+                " return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-eac=\"bar\"]')); })()"
+            )
+            if not built:
                 errors.append("操作バーが構築されていません（build 失敗）")
         finally:
             context.close()
