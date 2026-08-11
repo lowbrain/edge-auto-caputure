@@ -1,7 +1,7 @@
 """pytest 共通設定。
 
 プロジェクト直下（このファイルの親の親）を import パスへ入れ、
-tests/ からトップレベルモジュール（capture / badge / edge_auto_capture）を
+tests/ からトップレベルモジュール（infra / config / capture / badge / edge_auto_capture）を
 そのまま import できるようにする。
 """
 

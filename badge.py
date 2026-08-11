@@ -48,11 +48,12 @@ _TITLE_SEL = (
     "※右クリック → Copy → Copy selector でも取得できますが、長く壊れやすいので、\n"
     "  できるだけ短い #id や .class を指定するのがおすすめです。"
 )
-# SPA検知トグルのホバー説明。無効（セレクタ未設定）でも読めるよう、ラベル/ラッパにも付ける。
+# SPA検知トグルのホバー説明。セレクタ未設定でも既定ルートを監視するので、常に操作できる。
 _TITLE_SPA = (
     "SPA（URL が変わらず中身だけ変わるページ）向けの自動保存を ON/OFF します。\n"
-    "左の CSS セレクタを設定すると操作できます（未設定のときは押せません）。\n"
-    "ON の間は、記録中にその要素の中身が変わるたびに自動保存します。"
+    "左に CSS セレクタを入れると、その要素の中身の変化を監視します。\n"
+    "未入力のときはページの主要部（main / article、無ければ本文全体）を自動で監視します。\n"
+    "ON の間は、記録中にその中身が変わるたびに自動保存します。"
 )
 
 # badge.js の $CONFIG へ渡す設定（表示文言）。キー名は badge.js 内の C.* と対応する。
@@ -85,7 +86,7 @@ def _badge_js_path() -> Path:
     return base / "badge.js"
 
 
-def build_badge_script(token: str = "") -> str:
+def build_badge_script(token: str = "", settle_ms: int = 300) -> str:
     """badge.js を読み込み、$CONFIG を設定 JSON で置換した完成スクリプトを返す。
 
     token は、ページ側から expose_binding（__eac_* 群）を呼ぶときの「合言葉」。
@@ -94,12 +95,16 @@ def build_badge_script(token: str = "") -> str:
     （token を知らない呼び出しは Python 側で無視される）。空文字（既定）は照合しない
     用途向け（スモークテストなど、バインディング自体を公開しない場面）。
 
+    settle_ms は SPA検知のデバウンス時間（ミリ秒）。ページ側の MutationObserver が捉えた
+    中身変化が「この時間だけ止まったら落ち着いた」とみなして署名を確定する。Config の
+    settle_delay（秒）をミリ秒へ直して渡す（config.ini で調整可能）。
+
     置換対象は文字列 "$CONFIG" のみ。badge.js はテンプレートリテラル（バッククォート）を
     使うが、補間は `${...}` の形だけで、この JS では `${` を使わないため `$CONFIG` と
     衝突しない。よって単純な文字列置換で足りる（絵文字/日本語も json.dumps で
     \\uXXXX に安全化される）。
     """
-    config = dict(_BADGE_CONFIG, tok=token)
+    config = dict(_BADGE_CONFIG, tok=token, settleMs=settle_ms)
     src = _badge_js_path().read_text(encoding="utf-8")
     return src.replace("$CONFIG", json.dumps(config))
 
@@ -107,6 +112,18 @@ def build_badge_script(token: str = "") -> str:
 # 各ページへ注入する完成済みスクリプト（token 無し）。スモークテストなど、バインディングを
 # 公開せず見た目だけ確認する用途向け。実運用では build_badge_script(token) を使う。
 BADGE_SCRIPT = build_badge_script()
+
+# --- expose_binding で公開するバインディング名（ページ側 → Python の呼び出し口）---
+# badge.js 内の window.__eac_* 呼び出し名と 1:1 で一致させること。言語境界をまたぐため
+# 完全な一元化はできないが、Python 側の名前をここへ集約して「唯一の一覧」を持つ
+# （綴りずれは JS 側 try/catch で無言失敗するので、実発火はスモークテストで確認している）。
+BIND_TOGGLE = "__eac_toggle"                  # 記録開始/停止
+BIND_SHOT = "__eac_shot"                       # 今すぐ1枚
+BIND_SPA_TOGGLE = "__eac_spa_toggle"           # SPA検知 ON/OFF
+BIND_SET_SELECTOR = "__eac_set_selector"       # セレクタ入力（変更のたび）
+BIND_COMMIT_SELECTOR = "__eac_commit_selector" # セレクタ確定（blur/Enter）
+BIND_SPA_CHANGED = "__eac_spa_changed"         # SPA検知の変化通知
+BIND_GETSTATE = "__eac_getstate"               # 描画前の状態問い合わせ
 
 # --- capture 側が page.evaluate で呼ぶ、ページ側ヘルパの呼び出し式 ---
 # いずれも window.__eac_* が未定義でも落ちないよう、存在チェック付きの式にしてある。

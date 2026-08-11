@@ -1,4 +1,4 @@
-"""capture.py の純粋関数・設定読み込みのユニットテスト。
+"""純粋関数（capture）・設定読み込み（config）のユニットテスト。
 
 実 Edge を必要としない速いテスト（smoke_badge.py の補完）。
 docstring/コメントに書かれた「微妙な仕様」（切り詰め・フォールバック・
@@ -14,7 +14,10 @@ from pathlib import Path
 import pytest
 
 import capture
-from capture import Config, load_config, page_label, safe_name
+import config as config_mod
+import infra
+from capture import page_label, safe_name
+from config import Config, load_config
 
 
 @pytest.fixture(autouse=True)
@@ -23,9 +26,10 @@ def _no_dialog_no_repo_writes(monkeypatch, tmp_path):
 
     - notify_fatal 経由の _message_box はダイアログを出しテストを止めるので no-op に。
     - log() の書き込み先（LOG_PATH）を一時フォルダへ逃がす。
+    どちらも基盤ユーティリティ（infra）にあるので infra を差し替える。
     """
-    monkeypatch.setattr(capture, "_message_box", lambda *a, **k: None)
-    monkeypatch.setattr(capture, "LOG_PATH", tmp_path / "log.txt")
+    monkeypatch.setattr(infra, "_message_box", lambda *a, **k: None)
+    monkeypatch.setattr(infra, "LOG_PATH", tmp_path / "log.txt")
 
 
 # --------------------------------------------------------------------------- #
@@ -108,10 +112,10 @@ def test_config_defaults():
 
 
 def _write_config(monkeypatch, tmp_path, body: str) -> Path:
-    """一時 config.ini を作り、capture.CONFIG_PATH をそこへ向ける。"""
+    """一時 config.ini を作り、config.CONFIG_PATH をそこへ向ける。"""
     cfg = tmp_path / "config.ini"
     cfg.write_text(body, encoding="utf-8")
-    monkeypatch.setattr(capture, "CONFIG_PATH", cfg)
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg)
     return cfg
 
 
@@ -164,7 +168,8 @@ output_dir = {out}
 
 def test_load_config_relative_output_dir_resolves_under_base_dir(monkeypatch, tmp_path):
     # 相対パスは BASE_DIR 基準に固定される（exe 隣の output\ に確実に保存するため）。
-    monkeypatch.setattr(capture, "BASE_DIR", tmp_path)
+    # load_config は config モジュールに import 済みの BASE_DIR を参照するのでそちらを差し替える。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
     _write_config(
         monkeypatch,
         tmp_path,
@@ -192,7 +197,7 @@ output_dir = {out}
 
 
 def test_load_config_missing_file_exits(monkeypatch, tmp_path):
-    monkeypatch.setattr(capture, "CONFIG_PATH", tmp_path / "does-not-exist.ini")
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "does-not-exist.ini")
     with pytest.raises(SystemExit) as e:
         load_config()
     assert e.value.code == 1
@@ -223,7 +228,7 @@ poll_interval = not-a-number
 
 def test_load_config_empty_output_dir_falls_back_to_default(monkeypatch, tmp_path):
     # output_dir が空でもカレントへ落とさず、既定（BASE_DIR/output）へ戻す。
-    monkeypatch.setattr(capture, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
     _write_config(
         monkeypatch,
         tmp_path,

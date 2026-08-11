@@ -11,8 +11,8 @@ import asyncio
 
 import pytest
 
-from capture import Config
-from edge_auto_capture import CaptureSession
+from config import Config
+from edge_auto_capture import CaptureSession, _url_key
 
 
 def _session() -> CaptureSession:
@@ -47,6 +47,22 @@ def test_set_selector_ignored_without_token():
     assert s.selector == ""  # 外部から書き換えられない
 
 
+def test_spa_changed_ignored_without_token():
+    # 合言葉不一致（操作バー以外）からの変化通知は無視する（source を触らず早期 return）。
+    s = _session()
+    s.on = True
+    s.spa_on = True
+    asyncio.run(s.on_spa_changed(None, token="wrong", sig="x"))  # 例外なく無視される
+
+
+def test_spa_changed_ignored_when_not_recording():
+    # 正規 token でも、記録OFF なら撮らない（記録ON がマスタースイッチ）。
+    s = _session()
+    s.on = False
+    s.spa_on = True
+    asyncio.run(s.on_spa_changed(None, token=s.token, sig="x"))  # 記録OFF なので無視される
+
+
 @pytest.mark.parametrize("token", ["wrong", None, ""])
 def test_get_state_hides_real_state_without_token(token):
     s = _session()
@@ -64,3 +80,25 @@ def test_get_state_returns_real_state_with_token():
     s.selector = ".ok"
     state = asyncio.run(s.get_state(None, token=s.token))
     assert state == {"recording": True, "spa": False, "selector": ".ok"}
+
+
+# --------------------------------------------------------------------------- #
+# _url_key … URL変化の「同じページか」判定キー（フラグメント #... を除く）
+# --------------------------------------------------------------------------- #
+
+
+def test_url_key_strips_fragment():
+    # scroll-spy で付くハッシュ違いは同じページとみなす（Vuetify等の二重撮り防止）。
+    base = "https://vuetifyjs.com/ja/getting-started/installation/"
+    assert _url_key(base) == base
+    assert _url_key(base + "#vite309") == base
+    assert _url_key(base + "#section-624b") == base
+    # ハッシュだけ違う2URLは同一キーになる（＝撮り直さない）。
+    assert _url_key(base + "#nuxt") == _url_key(base + "#vite")
+
+
+def test_url_key_keeps_path_and_query():
+    # パスやクエリの違いは別ページとして残す（#以降だけを落とす）。
+    assert _url_key("https://a.com/p?q=1#frag") == "https://a.com/p?q=1"
+    assert _url_key("https://a.com/x") != _url_key("https://a.com/y")
+    assert _url_key("about:blank") == "about:blank"

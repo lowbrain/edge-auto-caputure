@@ -19,7 +19,9 @@
 //   - window.__eac_captureEnd()                           : 赤いフラッシュ＋バー復帰（撮影直後）
 //   - window.__eac_getstate(tok)（expose_binding）        : 描画前に現在状態を取得
 //   - window.__eac_bodyText()                             : バー除外の本文 innerText
-//   - window.__eac_signature(selector)                   : SPA検知用のコンテンツ署名
+//   - window.__eac_signature(selector)                   : コンテンツ署名（スモークテスト用）
+//   - SPA検知はページ側がイベント駆動で行い、落ち着いた変化を検知したら Python の
+//     window.__eac_spa_changed(tok, sig)（expose_binding）を呼んで保存を要求する。
 //   - ボタン類は window.__eac_toggle(tok)/__eac_shot(tok)/__eac_spa_toggle(tok)/
 //     __eac_set_selector(tok,v)/__eac_commit_selector(tok,v)（すべて expose_binding）を呼ぶ。
 //     第1引数の tok は合言葉（$CONFIG の tok）。Python 側が照合し、一致しない呼び出しは無視する。
@@ -54,6 +56,19 @@
   let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
   let countedSel = null;   // 一致件数を最後に計算したセレクタ（毎tickの無駄な再計算を避ける）
+
+  // --- SPA検知（中身変化のイベント駆動監視） ---
+  // 変化は MutationObserver で捉え、SPA_SETTLE_MS のデバウンスで「落ち着いてから」署名を
+  // 確定し、前回と違えば Python へ通知する（__eac_spa_changed）。従来の「Python が毎tick
+  // 署名を評価するポーリング」を廃し、変化があったときだけ計算するので負荷が下がる。
+  const SPA_SETTLE_MS = (C.settleMs > 0) ? C.settleMs : 300;   // 変化が止まってから確定するまで
+  const SPA_MAX_WAIT_MS = Math.max(SPA_SETTLE_MS * 5, 3000);   // 変化が続く場合でも確定する上限
+  let spaLastSig = '';         // 最後に基準/通知した署名
+  let spaTimer = null;         // デバウンス用タイマー
+  let spaFirstAt = 0;          // 連続変化の起点時刻（上限判定用）
+  let spaNavPending = false;   // 直近の遷移（pushState等）を消化中か（基準取り直しのみ・通知しない）
+  let spaPrevActive = false;   // 直前の「監視中(spaOn && recording)」状態
+  let spaPrevSelector = '';    // 直前のセレクタ（変更検知で基準取り直し）
 
   let host = null;         // ページ側 DOM に置くシャドウホスト（本文取得時の非表示もこれを操作）
   let shadow = null;       // host.shadowRoot（フォーカス判定・要素取得に使う）
@@ -180,8 +195,11 @@
     recording = !!r;
     spaOn = !!s;
     if (sel !== undefined && sel !== null) selector = String(sel);
+
+    // SPA監視の基準取り直し（UI とは独立。バー未構築でも動くよう els ガードより前で行う）。
+    spaSyncBaseline();
+
     if (!els) return;
-    const present = (selector || '').trim().length > 0;
 
     // 記録中＝赤バー・白丸／待機中＝灰バー・白輪郭の丸。
     els.bar.classList.toggle('rec', recording);
@@ -207,13 +225,13 @@
       updateMatchCount(s2);
     }
 
-    // SPA検知トグル: セレクタ未設定なら無効（灰色・押せない）。設定時のみ切替可。
-    const active = present && spaOn;
-    els.spa.disabled = !present;
-    els.spaWrap.classList.toggle('disabled', !present);
-    els.spa.classList.toggle('on', active);
-    els.spa.classList.toggle('off', !active);
-    els.spaText.textContent = active ? 'ON' : 'OFF';
+    // SPA検知トグル: 既定ルート監視により、セレクタ未設定でも操作できる（常に有効）。
+    // セレクタを入れればその要素、未入力ならページ主要部（main/article/本文）を監視する。
+    els.spa.disabled = false;
+    els.spaWrap.classList.remove('disabled');
+    els.spa.classList.toggle('on', spaOn);
+    els.spa.classList.toggle('off', !spaOn);
+    els.spaText.textContent = spaOn ? 'ON' : 'OFF';
   }
 
   // セレクタ一致件数の表示を更新する。0件/不正はすぐ気づけるよう色を変える（warn クラス）。
@@ -363,8 +381,23 @@
     return t;
   }
 
+  // テキストを短いハッシュ（コンテンツ署名）にする。cyrb53 相当の簡易ハッシュで、衝突は
+  // 実害小。長さ＋ハッシュを連結し、実質的に内容の異同を判別する。
+  function hashText(text) {
+    let h1 = 0xdeadbeef ^ text.length, h2 = 0x41c6ce57 ^ text.length;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    const hash = (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16);
+    return text.length + '_' + hash;
+  }
+
   // SPA検知用のコンテンツ署名。セレクタ一致要素の innerText を連結して短いハッシュにする
-  //（全文ではなくハッシュだけ返し、毎 tick の転送量を抑える）。バーはシャドウ内なので
+  //（全文ではなくハッシュだけ返し、転送量を抑える）。バーはシャドウ内なので
   // querySelectorAll には紛れ込まず、隠す/戻す処理は不要。
   // セレクタ不正/該当なしは長さ 0 のハッシュ（＝「変化なし」とみなせる固定値）。
   function signature(sel) {
@@ -376,17 +409,74 @@
         text = parts.join('\n');
       }
     } catch (e) { text = ''; }
-    // cyrb53 相当の簡易ハッシュ。衝突は実害小。長さ＋ハッシュで実質的に判別する。
-    let h1 = 0xdeadbeef ^ text.length, h2 = 0x41c6ce57 ^ text.length;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text.charCodeAt(i);
-      h1 = Math.imul(h1 ^ ch, 2654435761);
-      h2 = Math.imul(h2 ^ ch, 1597334677);
+    return hashText(text);
+  }
+
+  // SPA監視対象の署名。セレクタ指定時はその一致要素、未指定時はページ主要部
+  //（main / article、無ければ本文全体）を対象にする。既定ルートを見ることで、セレクタ
+  // 未設定でも URL が変わらない中身差し替え（SPA）を拾える。
+  function spaSignature() {
+    const sel = (selector || '').trim();
+    if (sel) return signature(sel);
+    const root = document.querySelector('main') || document.querySelector('article') || document.body;
+    let text = '';
+    try { text = root ? (root.innerText || '') : ''; } catch (e) { text = ''; }
+    return hashText(text);
+  }
+
+  // SPA検知が実際に動く条件（記録ON かつ SPA検知ON）。監視の各所で参照する。
+  function spaActive() { return spaOn && recording; }
+
+  // 監視中(spaActive)へ切り替わった直後、またはセレクタが変わった直後は、現在の内容を
+  // 「基準」に取り直す（開始/変更の直後に無駄撮りしないため）。Python 側で行っていた
+  // reseed 相当をページ側で行う。apply から毎回呼ぶが、基準の再計算は遷移時だけ走る。
+  function spaSyncBaseline() {
+    const nowActive = spaActive();
+    const sel = (selector || '').trim();
+    const selChanged = sel !== spaPrevSelector;
+    if (nowActive && (!spaPrevActive || selChanged)) {
+      if (spaTimer) { clearTimeout(spaTimer); spaTimer = null; }
+      spaNavPending = false;
+      spaLastSig = spaSignature();
     }
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-    const hash = (h2 >>> 0).toString(16) + (h1 >>> 0).toString(16);
-    return text.length + '_' + hash;
+    spaPrevActive = nowActive;
+    spaPrevSelector = sel;
+  }
+
+  // 変化を1件受けてデバウンスタイマーを張り直す。ただし連続変化が SPA_MAX_WAIT_MS を超えたら
+  // 張り直さず、いま動いているタイマーで確定させる（動き続けるページで永遠に確定しないのを防ぐ）。
+  function spaSchedule() {
+    if (!spaActive()) return;
+    const now = Date.now();
+    if (spaTimer) {
+      if (now - spaFirstAt >= SPA_MAX_WAIT_MS) return;   // 上限到達: 現タイマーで確定させる
+      clearTimeout(spaTimer);
+    } else {
+      spaFirstAt = now;
+    }
+    spaTimer = setTimeout(spaFire, SPA_SETTLE_MS);
+  }
+
+  // デバウンス確定。落ち着いた時点の署名を求め、前回と違えば Python へ通知する。
+  // 遷移直後（spaNavPending）は通知せず基準の取り直しだけ行う（URL変化側で1枚撮るため二重撮り回避）。
+  function spaFire() {
+    spaTimer = null;
+    if (!spaActive()) return;
+    const sig = spaSignature();
+    if (spaNavPending) { spaNavPending = false; spaLastSig = sig; return; }
+    if (sig !== spaLastSig) {
+      spaLastSig = sig;
+      try { window.__eac_spa_changed(TOK, sig); } catch (e) {}
+    }
+  }
+
+  // ルート変化（SPA の画面遷移）。URL は変わるので Python 側の URL 監視が1枚撮る。ここでは
+  // 通知せず基準を取り直すためにフラグを立て、遷移後の再描画を「変化」と誤検知して二重に
+  // 撮らないようにする（遷移後の中身変化は次回以降で拾う）。
+  function onRoute() {
+    if (!spaActive()) return;
+    spaNavPending = true;
+    spaSchedule();
   }
 
   window.__eacApplyState = apply;
@@ -406,4 +496,20 @@
   const _root = document.documentElement || document;
   new MutationObserver(() => { if (!document.getElementById(ID)) build(); })
     .observe(_root, { childList: true, subtree: true });
+
+  // SPA検知の監視。DOM 変化（childList / characterData）を捉えてデバウンス確定する。
+  // 属性変化は監視しない（クラス切替などの無関係な更新でタイマーを張り直さないため）。
+  // バーはシャドウ内なので、その内部変化（撮影退避・透過切替など）はこの監視に混ざらない。
+  new MutationObserver(() => spaSchedule())
+    .observe(_root, { childList: true, subtree: true, characterData: true });
+  // ルート変化（SPA の画面遷移）のフック。pushState / replaceState を包み、popstate /
+  // hashchange も拾う。いずれも onRoute（基準取り直し）へ回す。
+  const hookHistory = (name) => {
+    const orig = history[name];
+    history[name] = function () { const ret = orig.apply(this, arguments); onRoute(); return ret; };
+  };
+  hookHistory('pushState');
+  hookHistory('replaceState');
+  window.addEventListener('popstate', onRoute);
+  window.addEventListener('hashchange', onRoute);
 })();

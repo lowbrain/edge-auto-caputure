@@ -15,7 +15,7 @@ Write-Host "[2/3] PyInstaller でビルドします ..."
 # --collect-all playwright : Playwright の node ドライバを同梱（凍結時に必須）
 # --noconsole              : 黒いコンソール窓を出さない（動作ログは log.txt に出力）
 # --add-data "badge.js;."  : 操作バーのページ側 JS を同梱（badge.py が _MEIPASS から読む）
-#   ※ badge.py / capture.py は import から自動で辿られるので指定不要。
+#   ※ badge.py / capture.py / config.py / infra.py は import から自動で辿られるので指定不要。
 pyinstaller --noconfirm --onedir --noconsole --name edge-auto-capture --collect-all playwright --add-data "badge.js;." edge_auto_capture.py
 if ($LASTEXITCODE -ne 0) { Write-Host "ビルドに失敗しました。上のメッセージを確認してください。" -ForegroundColor Red; exit 1 }
 

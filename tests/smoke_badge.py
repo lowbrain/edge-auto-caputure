@@ -93,6 +93,27 @@ def run() -> int:
             )
             if peek != "ok":
                 errors.append(f"透過トグルが機能していません: {peek}")
+
+            # 6) SPA検知のイベント駆動監視が通しで動くか。
+            #    記録側の通知バインディング（__eac_spa_changed）をテスト用のコレクタに差し替え、
+            #    SPA検知を ON（セレクタ空＝既定ルート監視）にしてから本文を書き換える。デバウンス
+            #    確定後にコレクタが呼ばれれば、MutationObserver→落ち着き→通知の一連が動いている。
+            page.evaluate(
+                "window.__spaCalls = [];"
+                "window.__eac_spa_changed = (tok, sig) => { window.__spaCalls.push(sig); };"
+            )
+            page.evaluate("window.__eacApplyState(true, true, '')")  # 記録ON・SPA検知ON・既定ルート
+            page.evaluate(
+                "document.body.appendChild(Object.assign("
+                "document.createElement('div'), { textContent: 'spa-change-' + Date.now() }))"
+            )
+            try:
+                # 既定 settleMs は 300ms。デバウンス確定を十分待つ。
+                page.wait_for_function(
+                    "window.__spaCalls && window.__spaCalls.length > 0", timeout=3000
+                )
+            except Exception:
+                errors.append("SPA検知の変化通知（__eac_spa_changed）が発火しませんでした")
         finally:
             context.close()
 

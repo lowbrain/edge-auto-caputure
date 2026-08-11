@@ -22,7 +22,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 # 役割ごとに分割したトップレベル・モジュール群（パッケージフォルダは作らない）。
 # ページ側 JS 本体は badge.js（データファイル）で、配布 exe には build.ps1 が同梱する。
-py-modules = ["edge_auto_capture", "badge", "capture"]
+py-modules = ["edge_auto_capture", "badge", "capture", "config", "infra"]
 
 [tool.pytest.ini_options]
 # テストは tests/ 配下。実 Edge を要するスモーク（smoke_*）は既定の収集から外し、
