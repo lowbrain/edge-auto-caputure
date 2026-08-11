@@ -81,8 +81,10 @@ def _badge_js_path() -> Path:
 def _load_badge_script() -> str:
     """badge.js を読み込み、$CONFIG を設定 JSON で置換した完成スクリプトを返す。
 
-    JS 中に他の `$` は使わない前提なので単純な文字列置換で足りる（絵文字/日本語も
-    json.dumps で \\uXXXX に安全化される）。
+    置換対象は文字列 "$CONFIG" のみ。badge.js はテンプレートリテラル（バッククォート）を
+    使うが、補間は `${...}` の形だけで、この JS では `${` を使わないため `$CONFIG` と
+    衝突しない。よって単純な文字列置換で足りる（絵文字/日本語も json.dumps で
+    \\uXXXX に安全化される）。
     """
     src = _badge_js_path().read_text(encoding="utf-8")
     return src.replace("$CONFIG", json.dumps(_BADGE_CONFIG))

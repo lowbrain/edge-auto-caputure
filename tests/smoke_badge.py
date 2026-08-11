@@ -17,14 +17,15 @@ from pathlib import Path
 # プロジェクト直下（このファイルの親の親）を import パスに入れて badge を読む。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import badge  # noqa: E402
 from playwright.sync_api import sync_playwright  # noqa: E402
+
+import badge  # noqa: E402
 
 BADGE_SEL = f'#{badge.BADGE_ID}'
 
 
 def run() -> int:
-    errors: "list[str]" = []
+    errors: list[str] = []
     with sync_playwright() as p:
         try:
             context = p.chromium.launch_persistent_context(
@@ -69,7 +70,8 @@ def run() -> int:
             #    バーはシャドウ内なので host.shadowRoot 経由で存在を見る。
             built = page.evaluate(
                 "(() => { const h = document.querySelector(" + repr(BADGE_SEL) + ");"
-                " return !!(h && h.shadowRoot && h.shadowRoot.querySelector('[data-eac=\"bar\"]')); })()"
+                " return !!(h && h.shadowRoot"
+                " && h.shadowRoot.querySelector('[data-eac=\"bar\"]')); })()"
             )
             if not built:
                 errors.append("操作バーが構築されていません（build 失敗）")

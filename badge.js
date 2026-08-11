@@ -32,6 +32,14 @@
   const S_ON = C.sOn, S_OFF = C.sOff, L_START = C.lStart, L_STOP = C.lStop, L_SHOT = C.lShot;
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
 
+  // --- 撮影演出のタイミング定数（ミリ秒）。ここだけ直せば挙動を調整できる。 ---
+  // 対になる CSS 側の時間（.bar の transition .24s＝240ms、.frame.flash の .5s＝500ms）は
+  // <style> 内にあり、テンプレートリテラルの ${ が $CONFIG 置換と衝突するため差し込めない。
+  // よって CSS 値とは手動で整合を取る（下のコメントに対応関係を明記）。
+  const CAP_FALLBACK_MS = 500;  // captureStart: transitionend が来ない場合の保険（bar transition 240ms を十分に超える上限）
+  const FLASH_CLEAR_MS = 520;   // captureEnd: シャッターフラッシュ(.flash)を消すまで（CSS の .5s=500ms 完了を見込み少し長め）
+  const BAR_RETURN_MS = 170;    // captureEnd: フラッシュ後にバーを戻すまでの遅延（動きが競合しないよう時間差）
+
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
@@ -49,83 +57,89 @@
   // シャドウ内の <style> が受け持つ。中央寄せは内側の flex で行い、ホストには transform を
   // 使わない（transform を持つ要素は position:fixed の子の基準になってしまい、下の全画面
   // フラッシュがホスト内に閉じ込められてしまうため）。
-  const HOST_CSS =
-    'position:fixed !important;top:0 !important;left:0 !important;right:0 !important;'
-    + 'z-index:2147483647 !important;margin:0 !important;padding:0 !important;border:0 !important;'
-    + 'pointer-events:none !important;display:block !important;';
+  const HOST_CSS = `
+    position:fixed !important;top:0 !important;left:0 !important;right:0 !important;
+    z-index:2147483647 !important;margin:0 !important;padding:0 !important;border:0 !important;
+    pointer-events:none !important;display:block !important;`;
 
   // シャドウ内のスタイルと構造。境界で隔離されるので通常の CSS クラスで書ける。
   // 文言（ラベル/プレースホルダ/title）は textContent/属性で後から入れる（HTML へ
   // 直接埋め込まず、日本語・絵文字・引用符のエスケープを気にせずに済ませる）。
-  const TEMPLATE =
-    '<style>'
-    + '.wrap{display:flex;justify-content:center;align-items:flex-start;padding-top:8px;pointer-events:none;}'
-    + '.bar{box-sizing:border-box;height:36px;display:flex;align-items:center;gap:14px;'
-    + 'margin:0;padding:0 16px;border-radius:8px;pointer-events:none;white-space:nowrap;'
-    + 'color:#fff;font-family:"Segoe UI",sans-serif;font-size:13px;font-weight:bold;line-height:1;'
-    + 'box-shadow:0 2px 8px rgba(0,0,0,.4);background:rgba(90,90,90,.92);'
-    // 退避/復帰は同じ transition（＝隠す動きと戻る動きを対称に）。少しゆっくりの ease-out。
-    + 'transition:transform .24s cubic-bezier(.22,.61,.36,1);}'
-    + '.bar.rec{background:rgba(200,0,0,.92);}'
-    + '.bar.idle{background:rgba(90,90,90,.92);}'
-    // 撮影時: バーを上端の外まで退避（スクショに写らない）。
-    + '.bar.capturing{transform:translateY(-64px);}'
-    + '.status{box-sizing:border-box;flex:0 0 auto;width:84px;height:36px;'
-    + 'display:inline-flex;align-items:center;justify-content:center;gap:6px;}'
-    + '.dot{box-sizing:border-box;flex:0 0 auto;width:9px;height:9px;border-radius:50%;}'
-    + '.dot.rec{background:#fff;border:0;}'
-    + '.dot.idle{background:transparent;border:2px solid rgba(255,255,255,.85);}'
-    + '.label{flex:0 0 auto;}'
-    + '.btn{box-sizing:border-box;flex:0 0 auto;height:26px;display:inline-flex;align-items:center;'
-    + 'justify-content:center;white-space:nowrap;margin:0;padding:0 12px;pointer-events:auto;cursor:pointer;'
-    + 'border:0;border-radius:5px;background:#fff;color:#b00;'
-    + 'font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;'
-    + 'appearance:none;-webkit-appearance:none;}'
-    + '.sel-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}'
-    + '.sel{box-sizing:border-box;flex:0 0 auto;width:180px;height:26px;margin:0;padding:0 8px;pointer-events:auto;'
-    + 'border:1px solid rgba(255,255,255,.6);border-radius:5px;background:#fff;color:#111;'
-    + 'font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:normal;line-height:1;'
-    + 'appearance:none;-webkit-appearance:none;}'
-    + '.sel-count{flex:0 0 76px;width:76px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'
-    + 'color:rgba(255,255,255,.85);font-family:"Segoe UI",sans-serif;font-size:11px;font-weight:normal;line-height:1;}'
-    + '.sel-count.warn{color:#ffd24d;}'
-    + '.spa-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}'
-    + '.spa-wrap.disabled{opacity:.45;}'
-    + '.spa-label{flex:0 0 auto;white-space:nowrap;color:#fff;'
-    + 'font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;}'
-    + '.spa{box-sizing:border-box;position:relative;flex:0 0 auto;width:50px;height:24px;margin:0;padding:0;'
-    + 'border:0;border-radius:12px;pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.35);'
-    + 'appearance:none;-webkit-appearance:none;transition:background .15s ease;}'
-    + '.spa.on{background:#7cc243;}'
-    + '.spa.off{background:rgba(255,255,255,.35);}'
-    + '.spa:disabled{background:rgba(255,255,255,.2);cursor:not-allowed;}'
-    + '.spa-text{position:absolute;top:0;height:24px;display:flex;align-items:center;'
-    + 'color:#fff;font-family:"Segoe UI",sans-serif;font-size:10px;font-weight:bold;line-height:1;pointer-events:none;}'
-    + '.spa.on .spa-text{left:8px;right:auto;}'
-    + '.spa.off .spa-text{right:7px;left:auto;}'
-    + '.spa-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;'
-    + 'box-shadow:0 1px 2px rgba(0,0,0,.35);transition:left .15s ease;pointer-events:none;}'
-    + '.spa.on .spa-knob{left:28px;}'
-    + '.spa.off .spa-knob{left:2px;}'
-    // 撮影完了の合図に使う全画面の赤いシャッターフラッシュ（既定は透明、.flash で発光）。
-    // ホストに transform が無いので position:fixed はビューポート基準になり全画面に出る。
-    // 枠は付けず、全画面の淡い赤み＋内側から広がる赤いグローだけ。パッと光って引く単発フラッシュ。
-    + '.frame{position:fixed;inset:0;'
-    + 'background:rgba(255,0,0,.10);box-shadow:inset 0 0 90px 14px rgba(255,0,0,.55);'
-    + 'pointer-events:none;opacity:0;}'
-    + '.frame.flash{animation:eac-shutter .5s ease-out;}'
-    + '@keyframes eac-shutter{0%{opacity:0;}9%{opacity:1;}100%{opacity:0;}}'
-    + '</style>'
-    + '<div class="wrap"><div class="bar idle" data-eac="bar">'
-    + '<span class="status"><span class="dot idle" data-eac="dot"></span><span class="label" data-eac="label"></span></span>'
-    + '<button class="btn" data-eac="toggle"></button>'
-    + '<button class="btn" data-eac="shot"></button>'
-    + '<span class="sel-wrap"><input class="sel" type="text" data-eac="selector"><span class="sel-count" data-eac="sel-count"></span></span>'
-    + '<span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>'
-    + '<button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>'
-    + '<span class="spa-knob"></span></button></span>'
-    + '</div></div>'
-    + '<div class="frame" data-eac="frame"></div>';
+  const STYLE = `<style>
+    .wrap{display:flex;justify-content:center;align-items:flex-start;padding-top:8px;pointer-events:none;}
+    .bar{box-sizing:border-box;height:36px;display:flex;align-items:center;gap:14px;
+      margin:0;padding:0 16px;border-radius:8px;pointer-events:none;white-space:nowrap;
+      color:#fff;font-family:"Segoe UI",sans-serif;font-size:13px;font-weight:bold;line-height:1;
+      box-shadow:0 2px 8px rgba(0,0,0,.4);background:rgba(90,90,90,.92);
+      /* 退避/復帰は同じ transition（＝隠す動きと戻る動きを対称に）。少しゆっくりの ease-out。 */
+      transition:transform .24s cubic-bezier(.22,.61,.36,1);}
+    .bar.rec{background:rgba(200,0,0,.92);}
+    .bar.idle{background:rgba(90,90,90,.92);}
+    /* 撮影時: バーを上端の外まで退避（スクショに写らない）。 */
+    .bar.capturing{transform:translateY(-64px);}
+    .status{box-sizing:border-box;flex:0 0 auto;width:84px;height:36px;
+      display:inline-flex;align-items:center;justify-content:center;gap:6px;}
+    .dot{box-sizing:border-box;flex:0 0 auto;width:9px;height:9px;border-radius:50%;}
+    .dot.rec{background:#fff;border:0;}
+    .dot.idle{background:transparent;border:2px solid rgba(255,255,255,.85);}
+    .label{flex:0 0 auto;}
+    .btn{box-sizing:border-box;flex:0 0 auto;height:26px;display:inline-flex;align-items:center;
+      justify-content:center;white-space:nowrap;margin:0;padding:0 12px;pointer-events:auto;cursor:pointer;
+      border:0;border-radius:5px;background:#fff;color:#b00;
+      font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;
+      appearance:none;-webkit-appearance:none;}
+    .sel-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}
+    .sel{box-sizing:border-box;flex:0 0 auto;width:180px;height:26px;margin:0;padding:0 8px;pointer-events:auto;
+      border:1px solid rgba(255,255,255,.6);border-radius:5px;background:#fff;color:#111;
+      font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:normal;line-height:1;
+      appearance:none;-webkit-appearance:none;}
+    .sel-count{flex:0 0 76px;width:76px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+      color:rgba(255,255,255,.85);font-family:"Segoe UI",sans-serif;font-size:11px;font-weight:normal;line-height:1;}
+    .sel-count.warn{color:#ffd24d;}
+    .spa-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}
+    .spa-wrap.disabled{opacity:.45;}
+    .spa-label{flex:0 0 auto;white-space:nowrap;color:#fff;
+      font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;}
+    .spa{box-sizing:border-box;position:relative;flex:0 0 auto;width:50px;height:24px;margin:0;padding:0;
+      border:0;border-radius:12px;pointer-events:auto;cursor:pointer;background:rgba(255,255,255,.35);
+      appearance:none;-webkit-appearance:none;transition:background .15s ease;}
+    .spa.on{background:#7cc243;}
+    .spa.off{background:rgba(255,255,255,.35);}
+    .spa:disabled{background:rgba(255,255,255,.2);cursor:not-allowed;}
+    .spa-text{position:absolute;top:0;height:24px;display:flex;align-items:center;
+      color:#fff;font-family:"Segoe UI",sans-serif;font-size:10px;font-weight:bold;line-height:1;pointer-events:none;}
+    .spa.on .spa-text{left:8px;right:auto;}
+    .spa.off .spa-text{right:7px;left:auto;}
+    .spa-knob{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;
+      box-shadow:0 1px 2px rgba(0,0,0,.35);transition:left .15s ease;pointer-events:none;}
+    .spa.on .spa-knob{left:28px;}
+    .spa.off .spa-knob{left:2px;}
+    /* 撮影完了の合図に使う全画面の赤いシャッターフラッシュ（既定は透明、.flash で発光）。
+       ホストに transform が無いので position:fixed はビューポート基準になり全画面に出る。
+       枠は付けず、全画面の淡い赤み＋内側から広がる赤いグローだけ。パッと光って引く単発フラッシュ。 */
+    .frame{position:fixed;inset:0;
+      background:rgba(255,0,0,.10);box-shadow:inset 0 0 90px 14px rgba(255,0,0,.55);
+      pointer-events:none;opacity:0;}
+    .frame.flash{animation:eac-shutter .5s ease-out;}
+    @keyframes eac-shutter{0%{opacity:0;}9%{opacity:1;}100%{opacity:0;}}
+    </style>`;
+
+  // バーの構造。要素間の空白（改行/インデント）は flex/inline-flex コンテナ内では
+  // 空白のみのテキストノードとして無視されるため、表示には影響しない。文言は
+  // 後から textContent/属性で入れる（HTML への直接埋め込みを避ける）。
+  const MARKUP = `
+    <div class="wrap"><div class="bar idle" data-eac="bar">
+      <span class="status"><span class="dot idle" data-eac="dot"></span><span class="label" data-eac="label"></span></span>
+      <button class="btn" data-eac="toggle"></button>
+      <button class="btn" data-eac="shot"></button>
+      <span class="sel-wrap"><input class="sel" type="text" data-eac="selector"><span class="sel-count" data-eac="sel-count"></span></span>
+      <span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>
+        <button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>
+        <span class="spa-knob"></span></button></span>
+    </div></div>
+    <div class="frame" data-eac="frame"></div>`;
+
+  const TEMPLATE = STYLE + MARKUP;
 
   // 現在状態（記録中/SPA検知/セレクタ）をバーの見た目へ反映する。
   // 見た目の切り替えはすべて CSS クラス（rec/idle・on/off・warn・disabled）の付け外しで行う。
@@ -204,7 +218,7 @@
         resolve();
       };
       bar.addEventListener('transitionend', finish);
-      setTimeout(finish, 500);   // transitionend が来ない場合の保険
+      setTimeout(finish, CAP_FALLBACK_MS);   // transitionend が来ない場合の保険
       bar.classList.add('capturing');
     });
   }
@@ -226,14 +240,14 @@
       frameTimer = setTimeout(() => {
         if (els && els.frame) els.frame.classList.remove('flash');
         frameTimer = null;
-      }, 520);
+      }, FLASH_CLEAR_MS);
     }
     // 2) フラッシュの直後にバーを降ろす（動きが競合せず、戻りがはっきり見える）。
     if (barTimer) clearTimeout(barTimer);
     barTimer = setTimeout(() => {
       if (els && els.bar) els.bar.classList.remove('capturing');
       barTimer = null;
-    }, 170);
+    }, BAR_RETURN_MS);
   }
 
   function build() {

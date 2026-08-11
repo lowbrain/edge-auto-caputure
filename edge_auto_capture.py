@@ -52,12 +52,12 @@ from playwright.async_api import Page, async_playwright
 import badge
 from capture import (
     Config,
-    notify_fatal,
-    spawn_capture,
-    try_eval,
     cleanup_old_profiles,
     load_config,
     log,
+    notify_fatal,
+    spawn_capture,
+    try_eval,
 )
 
 
@@ -107,9 +107,9 @@ class CaptureSession:
         self.spa_on = False                       # SPA検知（中身変化を契機に保存）
         self.selector = config.target_selector    # 検知/抜き出しの対象 CSS セレクタ
         # --- ページごとの追跡情報 ---
-        self.seen: "dict[Page, str]" = {}         # page -> 直近のURL
-        self.sig_seen: "dict[Page, str]" = {}     # page -> 最後に撮った署名
-        self.sig_prev: "dict[Page, str]" = {}     # page -> 前 tick の署名（落ち着き判定用）
+        self.seen: dict[Page, str] = {}         # page -> 直近のURL
+        self.sig_seen: dict[Page, str] = {}     # page -> 最後に撮った署名
+        self.sig_prev: dict[Page, str] = {}     # page -> 前 tick の署名（落ち着き判定用）
 
     # ---- ページ側とのやり取り ----
 
@@ -261,7 +261,10 @@ class CaptureSession:
                 self.sig_seen.pop(pg, None)
 
     async def run(self, closed: asyncio.Event) -> None:
-        """Edge のウィンドウが閉じるまで、URL変化・新規タブ・（SPA検知ONなら）中身変化を監視する。"""
+        """Edge のウィンドウが閉じるまで監視する。
+
+        URL変化・新規タブ・（SPA検知ONなら）中身変化を契機に保存する。
+        """
         while not closed.is_set():
             pages = list(self.context.pages)
             self._prune(pages)

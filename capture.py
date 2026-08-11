@@ -148,9 +148,12 @@ def load_config() -> Config:
       - 項目の「行そのものが無い」                 → Config の既定値を使う
         （sec.get / getfloat / getint の第2引数が既定値）。
       - 数値項目の値だけが空（例: poll_interval =）→ 変換に失敗し終了（ValueError）。
-      - 文字列項目の値だけが空（output_dir / edge_path など）→ 空文字がそのまま入る。
-        ※ output_dir が空だと Path('.') となりカレントフォルダへ保存されるので注意。
+      - output_dir の値が空 → 既定値（output）へフォールバックする
+        （空だと Path('.') でカレントへ保存してしまう事故を防ぐ）。
+      - edge_path など他の文字列項目が空 → 空文字がそのまま入る（空が正常値）。
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
+      - 数値の範囲が不正（poll_interval<=0 / settle_delay<0 / load_timeout<=0）
+        → メッセージ表示して終了（暴走・無意味値を防ぐ）。
     """
     if not CONFIG_PATH.exists():
         notify_fatal(
@@ -167,14 +170,30 @@ def load_config() -> Config:
         parser.read(CONFIG_PATH, encoding="utf-8")
         sec = parser["capture"]
 
+        # 保存先。値が空ならカレントへ落ちないよう既定へ戻す（配布先で編集ミスが起きても安全側に）。
+        raw_out = sec.get("output_dir", str(defaults.output_dir)).strip()
+        if not raw_out:
+            log("[config] output_dir が空のため既定値を使います。")
+            raw_out = str(defaults.output_dir)
         # 相対パスは基準フォルダ基準に固定（exe 隣の output\ に確実に保存する）。
         # 絶対パス指定時はそのまま使う（config.ini で任意の保存先に変更可能）。
-        output_dir = Path(sec.get("output_dir", str(defaults.output_dir)))
+        output_dir = Path(raw_out)
         if not output_dir.is_absolute():
             output_dir = BASE_DIR / output_dir
 
         # ログも PNG などと同じ保存先へ寄せる（保存先が確定したこの時点で切り替え）。
         set_log_dir(output_dir)
+
+        # 数値項目。範囲を検証し、不正なら理由付き ValueError（下の except で通知＆終了）。
+        poll_interval = sec.getfloat("poll_interval", defaults.poll_interval)
+        settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
+        load_timeout = sec.getint("load_timeout", defaults.load_timeout)
+        if poll_interval <= 0:
+            raise ValueError(f"poll_interval は正の数にしてください（現在: {poll_interval}）")
+        if settle_delay < 0:
+            raise ValueError(f"settle_delay は 0 以上にしてください（現在: {settle_delay}）")
+        if load_timeout <= 0:
+            raise ValueError(f"load_timeout は正の整数にしてください（現在: {load_timeout}）")
 
         # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
         urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
@@ -183,9 +202,9 @@ def load_config() -> Config:
             start_url=sec.get("start_url", defaults.start_url).strip() or "about:blank",
             edge_path=sec.get("edge_path", "").strip(),
             output_dir=output_dir,
-            poll_interval=sec.getfloat("poll_interval", defaults.poll_interval),
-            settle_delay=sec.getfloat("settle_delay", defaults.settle_delay),
-            load_timeout=sec.getint("load_timeout", defaults.load_timeout),
+            poll_interval=poll_interval,
+            settle_delay=settle_delay,
+            load_timeout=load_timeout,
             skip_urls=tuple(urls) + ("",),
             target_selector=sec.get("target_selector", "").strip(),
             start_recording=sec.getboolean("start_recording", defaults.start_recording),
@@ -201,9 +220,11 @@ def load_config() -> Config:
 def safe_name(text: str) -> str:
     """任意の文字列をファイル名に使える形へ変換（長すぎる場合は先頭 NAME_MAX_LEN 文字）。
 
-    使えない文字は _ にまとめる。\\w は Unicode 対応なので日本語タイトルはそのまま残る。
+    使えない文字は - にまとめる。\\w は Unicode 対応なので日本語タイトルはそのまま残る。
+    前後の _ / - は落とす。空白・記号のみの入力（例: "   ", "///"）は変換後に
+    区切り文字だけが残るため、それらも除いて空になれば "page" へフォールバックする。
     """
-    name = re.sub(r"[^\w\-]+", "-", text)[:NAME_MAX_LEN].strip("_")
+    name = re.sub(r"[^\w\-]+", "-", text)[:NAME_MAX_LEN].strip("_-")
     return name or "page"
 
 

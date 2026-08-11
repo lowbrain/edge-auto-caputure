@@ -11,6 +11,9 @@ dependencies = [
 [project.optional-dependencies]
 # 配布用 exe をビルドする人向け（配布物の実行には不要）。
 build = ["pyinstaller"]
+# 開発・テスト用（配布物の実行には不要）。
+#   pip install -e ".[dev]"  で入れて、pytest / ruff を使う。
+dev = ["pytest", "ruff"]
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -20,3 +23,22 @@ build-backend = "setuptools.build_meta"
 # 役割ごとに分割したトップレベル・モジュール群（パッケージフォルダは作らない）。
 # ページ側 JS 本体は badge.js（データファイル）で、配布 exe には build.ps1 が同梱する。
 py-modules = ["edge_auto_capture", "badge", "capture"]
+
+[tool.pytest.ini_options]
+# テストは tests/ 配下。実 Edge を要するスモーク（smoke_*）は既定の収集から外し、
+# 速い純粋関数テスト（test_*）だけを既定で回す（smoke は明示指定で実行）。
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+# 対象は分割した3モジュールとテスト。生成物（build/dist/output）は除外。
+target-version = "py38"
+line-length = 100
+extend-exclude = ["build", "dist", "output"]
+
+[tool.ruff.lint]
+# E/F=pyflakes+pycodestyle, I=import順, UP=旧構文の近代化, B=bugbear（バグになりやすい書き方）。
+select = ["E", "F", "I", "UP", "B"]
+# 意図的に例外を握り潰す箇所が多い（堅牢性のための設計）ため、B の一部は許容する。
+# E501（行長）は line-length に従う。necessary な握り潰しは各所コメントで説明済み。
+ignore = ["B008"]
