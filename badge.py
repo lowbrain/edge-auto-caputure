@@ -94,9 +94,6 @@ BADGE_SCRIPT = _load_badge_script()
 # --- capture 側が page.evaluate で呼ぶ、ページ側ヘルパの呼び出し式 ---
 # いずれも window.__eac_* が未定義でも落ちないよう、存在チェック付きの式にしてある。
 
-# スクリーンショット/抽出の瞬間だけバーを隠す/戻す。
-BAR_HIDE = "window.__eac_barDisplay && window.__eac_barDisplay(false)"
-BAR_SHOW = "window.__eac_barDisplay && window.__eac_barDisplay(true)"
 # 本文テキスト（バー除外）。未注入時は素の innerText にフォールバック。
 BODY_TEXT_CALL = (
     "window.__eac_bodyText ? window.__eac_bodyText() "
@@ -106,7 +103,7 @@ BODY_TEXT_CALL = (
 SIG_CALL = "(sel) => window.__eac_signature ? window.__eac_signature(sel) : '0_0'"
 
 # 撮影の合図。撮影直前に captureStart（バーを退避し切るまで待つ・Promise を返す）、
-# 撮影直後に captureEnd（全画面の赤枠フラッシュ＋バー復帰）を page.evaluate で呼ぶ。
+# 撮影直後に captureEnd（全画面の赤いシャッターフラッシュ＋バー復帰）を page.evaluate で呼ぶ。
 # captureStart は未注入でも await できるよう、関数式で null を返す形にしておく。
 CAPTURE_START_CALL = "(() => window.__eac_captureStart ? window.__eac_captureStart() : null)()"
 CAPTURE_END_CALL = "window.__eac_captureEnd && window.__eac_captureEnd()"

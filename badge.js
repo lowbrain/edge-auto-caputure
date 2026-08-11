@@ -11,14 +11,13 @@
 //
 // 撮影の合図（captureStart/captureEnd）: スクショにはバーが写るので、撮影時は
 // バーを上へスライドさせて画面外へ退避してから撮る（意図した動作に見せる）。撮影が
-// 終わったら全画面の赤枠を一瞬フラッシュ（シャッター確定の合図）し、バーを元位置へ戻す。
+// 終わったら全画面を赤く一瞬フラッシュ（シャッター確定の合図）し、バーを元位置へ戻す。
 //
 // Python から使う API:
 //   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
 //   - window.__eac_captureStart()                         : バーを退避し切るまで待つ（撮影直前）
-//   - window.__eac_captureEnd()                           : 赤枠フラッシュ＋バー復帰（撮影直後）
+//   - window.__eac_captureEnd()                           : 赤いフラッシュ＋バー復帰（撮影直後）
 //   - window.__eac_getstate()（expose_binding）           : 描画前に現在状態を取得
-//   - window.__eac_barDisplay(show)                       : バーを隠す/戻す（本文取得時に使用）
 //   - window.__eac_bodyText()                             : バー除外の本文 innerText
 //   - window.__eac_signature(selector)                   : SPA検知用のコンテンツ署名
 //   - ボタン類は window.__eac_toggle()/__eac_shot()/__eac_spa_toggle()/
@@ -37,8 +36,9 @@
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
   let capDepth = 0;        // 進行中の撮影数（重なっても最後の1つで復帰させるための入れ子カウント）
-  let frameTimer = null;   // 赤枠フラッシュ（.flash クラス）を消すためのタイマー
+  let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
+  let countedSel = null;   // 一致件数を最後に計算したセレクタ（毎tickの無駄な再計算を避ける）
 
   let host = null;         // ページ側 DOM に置くシャドウホスト（本文取得時の非表示もこれを操作）
   let shadow = null;       // host.shadowRoot（フォーカス判定・要素取得に使う）
@@ -48,7 +48,7 @@
   // 透過だけをインライン !important で固定する（サイト側 CSS に負けない）。見た目は
   // シャドウ内の <style> が受け持つ。中央寄せは内側の flex で行い、ホストには transform を
   // 使わない（transform を持つ要素は position:fixed の子の基準になってしまい、下の全画面
-  // 赤枠がホスト内に閉じ込められてしまうため）。
+  // フラッシュがホスト内に閉じ込められてしまうため）。
   const HOST_CSS =
     'position:fixed !important;top:0 !important;left:0 !important;right:0 !important;'
     + 'z-index:2147483647 !important;margin:0 !important;padding:0 !important;border:0 !important;'
@@ -68,7 +68,7 @@
     + 'transition:transform .24s cubic-bezier(.22,.61,.36,1);}'
     + '.bar.rec{background:rgba(200,0,0,.92);}'
     + '.bar.idle{background:rgba(90,90,90,.92);}'
-    // 撮影時: バーを上端の外まで退避（下の赤枠と重ならず、スクショにも写らない）。
+    // 撮影時: バーを上端の外まで退避（スクショに写らない）。
     + '.bar.capturing{transform:translateY(-64px);}'
     + '.status{box-sizing:border-box;flex:0 0 auto;width:84px;height:36px;'
     + 'display:inline-flex;align-items:center;justify-content:center;gap:6px;}'
@@ -148,21 +148,12 @@
     // 非フォーカス時のみ現在値と差があれば同期（別タブでの変更を反映）。
     if (shadow.activeElement !== els.sel && els.sel.value !== selector) els.sel.value = selector;
 
-    // 一致件数フィードバック。0件/不正はすぐ気づけるよう色を変える（warn クラス）。
-    // パネルはシャドウ内なので querySelectorAll には紛れ込まない（除外処理は不要）。
+    // 一致件数フィードバック。セレクタ文字列が変わったときだけ数え直す（apply は毎tick
+    // 呼ばれるが、同じセレクタなら件数表示は変わらないので querySelectorAll を無駄打ちしない）。
     const s2 = (selector || '').trim();
-    if (!s2) {
-      els.selCount.textContent = '';
-      els.selCount.classList.remove('warn');
-    } else {
-      try {
-        const n = document.querySelectorAll(s2).length;
-        els.selCount.textContent = '一致 ' + n + '件';
-        els.selCount.classList.toggle('warn', n === 0);
-      } catch (e) {
-        els.selCount.textContent = '無効な指定';
-        els.selCount.classList.add('warn');
-      }
+    if (s2 !== countedSel) {
+      countedSel = s2;
+      updateMatchCount(s2);
     }
 
     // SPA検知トグル: セレクタ未設定なら無効（灰色・押せない）。設定時のみ切替可。
@@ -172,6 +163,25 @@
     els.spa.classList.toggle('on', active);
     els.spa.classList.toggle('off', !active);
     els.spaText.textContent = active ? 'ON' : 'OFF';
+  }
+
+  // セレクタ一致件数の表示を更新する。0件/不正はすぐ気づけるよう色を変える（warn クラス）。
+  // パネルはシャドウ内なので querySelectorAll には紛れ込まない（除外処理は不要）。
+  function updateMatchCount(s2) {
+    if (!els) return;
+    if (!s2) {
+      els.selCount.textContent = '';
+      els.selCount.classList.remove('warn');
+      return;
+    }
+    try {
+      const n = document.querySelectorAll(s2).length;
+      els.selCount.textContent = '一致 ' + n + '件';
+      els.selCount.classList.toggle('warn', n === 0);
+    } catch (e) {
+      els.selCount.textContent = '無効な指定';
+      els.selCount.classList.add('warn');
+    }
   }
 
   // 撮影直前: バーを上へスライドさせて画面外へ退避する。退避し切ってから撮れるよう、
@@ -271,6 +281,8 @@
       els.sel.addEventListener('change', () => { try { window.__eac_commit_selector(els.sel.value); } catch (e) {} });
 
       document.body.appendChild(host);
+      // 作り直したパネルでは件数を必ず数え直させる（同じセレクタでも新しい要素は空のため）。
+      countedSel = null;
       // 取得した現在の状態で最初から正しく描画する。
       apply(!!(state && state.recording), !!(state && state.spa), (state && state.selector) || '');
     };
@@ -283,11 +295,6 @@
   }
 
   // ---- Python(capture) から page.evaluate 経由で呼ぶページ側ヘルパ ----
-
-  // バー（＝シャドウホスト）を隠す/戻す。本文取得時の一時退避に使う。
-  function barDisplay(show) {
-    if (host) host.style.setProperty('display', show ? 'block' : 'none', 'important');
-  }
 
   // ページ全文テキスト。innerText はシャドウ内の描画も合成し得るため、
   // 念のためホストを隠してから読み、元へ戻す。
@@ -330,7 +337,6 @@
   window.__eacApplyState = apply;
   window.__eac_captureStart = captureStart;
   window.__eac_captureEnd = captureEnd;
-  window.__eac_barDisplay = barDisplay;
   window.__eac_bodyText = bodyText;
   window.__eac_signature = signature;
 

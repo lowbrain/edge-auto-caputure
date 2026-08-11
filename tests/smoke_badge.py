@@ -2,7 +2,7 @@
 
 実際の Edge を headless で起動し、add_init_script でバーを注入して
 「操作バー（シャドウホスト＋中身）が実際に構築されるか」「Python から呼ぶ
-ページ側ヘルパ（barDisplay / bodyText / signature）が例外なく動くか」
+ページ側ヘルパ（captureStart / captureEnd / bodyText / signature）が例外なく動くか」
 「JS エラーが出ないか」を機械的に確認する。JS の構文/実行時エラーを、
 実行前に自動検出することが狙い。
 
@@ -56,8 +56,8 @@ def run() -> int:
             # 3) ページ側ヘルパが動くか
             sig = page.evaluate(badge.SIG_CALL, "body")
             body_text = page.evaluate(badge.BODY_TEXT_CALL)
-            page.evaluate(badge.BAR_HIDE)
-            page.evaluate(badge.BAR_SHOW)
+            page.evaluate(badge.CAPTURE_START_CALL)  # 撮影退避（Promise を待つ）
+            page.evaluate(badge.CAPTURE_END_CALL)    # シャッターフラッシュ＋バー復帰
 
             # 署名は "<長さ>_<hash>" 形式の文字列を返す。
             if not (isinstance(sig, str) and "_" in sig):

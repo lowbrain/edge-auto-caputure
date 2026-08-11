@@ -223,7 +223,7 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
 
     # 1) フルページ スクリーンショット
     #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、
-    #    撮影後に赤枠フラッシュ＋バー復帰。captureEnd は撮影が失敗しても必ず呼ぶ
+    #    撮影後にシャッターフラッシュ＋バー復帰。captureEnd は撮影が失敗しても必ず呼ぶ
     #    （でないとバーが退避したまま戻らないため finally で実行）。
     with _step("png", url):
         try:
@@ -232,7 +232,7 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
                 path=str(config.output_dir / f"{stem}.png"), full_page=True
             )
         finally:
-            await try_eval(page, badge.CAPTURE_END_CALL)     # 赤枠＋復帰（必ず実行）
+            await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
 
     # 2) ページ全文テキスト（操作パネルは除外して取得）
     with _step("txt", url):
@@ -261,7 +261,7 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
 def spawn_capture(page: Page, url: str, config: Config, selector: str = "") -> None:
     """capture() をバックグラウンドタスクとして起動し、参照を保持する。
 
-    撮影の合図（バー退避→撮影→赤枠フラッシュ＋復帰）は capture() のスクショ処理が
+    撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は capture() のスクショ処理が
     内部で行うので、ここでは起動と参照保持だけを担う。
     selector は _part.txt 抜き出しの対象（実行時のバー入力値）を capture() へ渡す。
     タスクを _tasks に入れて GC を防ぎ、完了時に取り除く。
