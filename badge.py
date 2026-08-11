@@ -105,5 +105,8 @@ BODY_TEXT_CALL = (
 # SPA検知の署名。引数 sel を受け取る関数式（page.evaluate(SIG_CALL, selector) で使う）。
 SIG_CALL = "(sel) => window.__eac_signature ? window.__eac_signature(sel) : '0_0'"
 
-# 保存完了の合図（パネルを一瞬フラッシュ）。撮影後に page.evaluate で呼ぶ。
-FLASH_CALL = "window.__eacFlash && window.__eacFlash()"
+# 撮影の合図。撮影直前に captureStart（バーを退避し切るまで待つ・Promise を返す）、
+# 撮影直後に captureEnd（全画面の赤枠フラッシュ＋バー復帰）を page.evaluate で呼ぶ。
+# captureStart は未注入でも await できるよう、関数式で null を返す形にしておく。
+CAPTURE_START_CALL = "(() => window.__eac_captureStart ? window.__eac_captureStart() : null)()"
+CAPTURE_END_CALL = "window.__eac_captureEnd && window.__eac_captureEnd()"

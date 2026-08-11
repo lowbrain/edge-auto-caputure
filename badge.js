@@ -9,11 +9,16 @@
 // また document.querySelectorAll はシャドウ境界を越えないので、SPA署名・_part.txt 抽出・
 // 一致件数の計算にパネル要素が紛れ込まない（＝そのための「隠す/戻す」処理も不要）。
 //
+// 撮影の合図（captureStart/captureEnd）: スクショにはバーが写るので、撮影時は
+// バーを上へスライドさせて画面外へ退避してから撮る（意図した動作に見せる）。撮影が
+// 終わったら全画面の赤枠を一瞬フラッシュ（シャッター確定の合図）し、バーを元位置へ戻す。
+//
 // Python から使う API:
 //   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
-//   - window.__eacFlash()                                 : 保存完了の合図（パネルを一瞬フラッシュ）
+//   - window.__eac_captureStart()                         : バーを退避し切るまで待つ（撮影直前）
+//   - window.__eac_captureEnd()                           : 赤枠フラッシュ＋バー復帰（撮影直後）
 //   - window.__eac_getstate()（expose_binding）           : 描画前に現在状態を取得
-//   - window.__eac_barDisplay(show)                       : スクショ撮影中にバーを隠す/戻す
+//   - window.__eac_barDisplay(show)                       : バーを隠す/戻す（本文取得時に使用）
 //   - window.__eac_bodyText()                             : バー除外の本文 innerText
 //   - window.__eac_signature(selector)                   : SPA検知用のコンテンツ署名
 //   - ボタン類は window.__eac_toggle()/__eac_shot()/__eac_spa_toggle()/
@@ -31,17 +36,21 @@
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
-  let flashTimer = null;   // フラッシュを元へ戻すためのタイマー
+  let capDepth = 0;        // 進行中の撮影数（重なっても最後の1つで復帰させるための入れ子カウント）
+  let frameTimer = null;   // 赤枠フラッシュ（.flash クラス）を消すためのタイマー
+  let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
 
-  let host = null;         // ページ側 DOM に置くシャドウホスト（撮影時の非表示もこれを操作）
+  let host = null;         // ページ側 DOM に置くシャドウホスト（本文取得時の非表示もこれを操作）
   let shadow = null;       // host.shadowRoot（フォーカス判定・要素取得に使う）
   let els = null;          // シャドウ内の主要要素をまとめた参照
 
-  // シャドウホストの最小限のスタイル。位置と重なり順、当たり判定の透過だけを
-  // インライン !important で固定する（サイト側 CSS に負けない）。見た目そのものは
-  // シャドウ内の <style> が受け持つ（境界の内側なのでサイト CSS の影響を受けない）。
+  // シャドウホストの最小限のスタイル。画面上端いっぱいに敷いて重なり順と当たり判定の
+  // 透過だけをインライン !important で固定する（サイト側 CSS に負けない）。見た目は
+  // シャドウ内の <style> が受け持つ。中央寄せは内側の flex で行い、ホストには transform を
+  // 使わない（transform を持つ要素は position:fixed の子の基準になってしまい、下の全画面
+  // 赤枠がホスト内に閉じ込められてしまうため）。
   const HOST_CSS =
-    'position:fixed !important;top:8px !important;left:50% !important;transform:translateX(-50%) !important;'
+    'position:fixed !important;top:0 !important;left:0 !important;right:0 !important;'
     + 'z-index:2147483647 !important;margin:0 !important;padding:0 !important;border:0 !important;'
     + 'pointer-events:none !important;display:block !important;';
 
@@ -50,12 +59,17 @@
   // 直接埋め込まず、日本語・絵文字・引用符のエスケープを気にせずに済ませる）。
   const TEMPLATE =
     '<style>'
+    + '.wrap{display:flex;justify-content:center;align-items:flex-start;padding-top:8px;pointer-events:none;}'
     + '.bar{box-sizing:border-box;height:36px;display:flex;align-items:center;gap:14px;'
     + 'margin:0;padding:0 16px;border-radius:8px;pointer-events:none;white-space:nowrap;'
     + 'color:#fff;font-family:"Segoe UI",sans-serif;font-size:13px;font-weight:bold;line-height:1;'
-    + 'box-shadow:0 2px 8px rgba(0,0,0,.4);background:rgba(90,90,90,.92);}'
+    + 'box-shadow:0 2px 8px rgba(0,0,0,.4);background:rgba(90,90,90,.92);'
+    // 退避/復帰は同じ transition（＝隠す動きと戻る動きを対称に）。少しゆっくりの ease-out。
+    + 'transition:transform .24s cubic-bezier(.22,.61,.36,1);}'
     + '.bar.rec{background:rgba(200,0,0,.92);}'
     + '.bar.idle{background:rgba(90,90,90,.92);}'
+    // 撮影時: バーを上端の外まで退避（下の赤枠と重ならず、スクショにも写らない）。
+    + '.bar.capturing{transform:translateY(-64px);}'
     + '.status{box-sizing:border-box;flex:0 0 auto;width:84px;height:36px;'
     + 'display:inline-flex;align-items:center;justify-content:center;gap:6px;}'
     + '.dot{box-sizing:border-box;flex:0 0 auto;width:9px;height:9px;border-radius:50%;}'
@@ -93,8 +107,16 @@
     + 'box-shadow:0 1px 2px rgba(0,0,0,.35);transition:left .15s ease;pointer-events:none;}'
     + '.spa.on .spa-knob{left:28px;}'
     + '.spa.off .spa-knob{left:2px;}'
+    // 撮影完了の合図に使う全画面の赤いシャッターフラッシュ（既定は透明、.flash で発光）。
+    // ホストに transform が無いので position:fixed はビューポート基準になり全画面に出る。
+    // 枠は付けず、全画面の淡い赤み＋内側から広がる赤いグローだけ。パッと光って引く単発フラッシュ。
+    + '.frame{position:fixed;inset:0;'
+    + 'background:rgba(255,0,0,.10);box-shadow:inset 0 0 90px 14px rgba(255,0,0,.55);'
+    + 'pointer-events:none;opacity:0;}'
+    + '.frame.flash{animation:eac-shutter .5s ease-out;}'
+    + '@keyframes eac-shutter{0%{opacity:0;}9%{opacity:1;}100%{opacity:0;}}'
     + '</style>'
-    + '<div class="bar idle" data-eac="bar">'
+    + '<div class="wrap"><div class="bar idle" data-eac="bar">'
     + '<span class="status"><span class="dot idle" data-eac="dot"></span><span class="label" data-eac="label"></span></span>'
     + '<button class="btn" data-eac="toggle"></button>'
     + '<button class="btn" data-eac="shot"></button>'
@@ -102,7 +124,8 @@
     + '<span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>'
     + '<button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>'
     + '<span class="spa-knob"></span></button></span>'
-    + '</div>';
+    + '</div></div>'
+    + '<div class="frame" data-eac="frame"></div>';
 
   // 現在状態（記録中/SPA検知/セレクタ）をバーの見た目へ反映する。
   // 見た目の切り替えはすべて CSS クラス（rec/idle・on/off・warn・disabled）の付け外しで行う。
@@ -151,17 +174,56 @@
     els.spaText.textContent = active ? 'ON' : 'OFF';
   }
 
-  // 保存完了の合図。パネル背景を一瞬だけ緑にして戻す（オーバーレイを使わないので
-  // 保存物への写り込みもない）。背景はインラインで一時上書きし、約0.6秒後に取り除くと
-  // 下地の CSS クラス（rec/idle）の色へ戻る。
-  function flash() {
-    if (!els) return;
-    els.bar.style.setProperty('background', 'rgba(0,150,60,.96)', 'important');
-    if (flashTimer) clearTimeout(flashTimer);
-    flashTimer = setTimeout(() => {
-      els.bar.style.removeProperty('background');
-      flashTimer = null;
-    }, 600);
+  // 撮影直前: バーを上へスライドさせて画面外へ退避する。退避し切ってから撮れるよう、
+  // transition の完了（transitionend）で解決する Promise を返す（page.evaluate が待つ）。
+  // 撮影が重なった場合は入れ子カウントで数え、最初の1回だけアニメーションする。
+  function captureStart() {
+    return new Promise((resolve) => {
+      if (!els || !els.bar) { resolve(); return; }
+      capDepth++;
+      // 前回の「復帰待ち」が残っていれば取り消し、退避状態を維持する（撮影が重なっても
+      // 途中でバーが降りてきて次のスクショに写り込まないように）。
+      if (barTimer) { clearTimeout(barTimer); barTimer = null; }
+      if (capDepth > 1) { resolve(); return; }   // 既に退避済み（別の撮影が進行中）
+      const bar = els.bar;
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        bar.removeEventListener('transitionend', finish);
+        resolve();
+      };
+      bar.addEventListener('transitionend', finish);
+      setTimeout(finish, 500);   // transitionend が来ない場合の保険
+      bar.classList.add('capturing');
+    });
+  }
+
+  // 撮影直後: 進行中の撮影が無くなったら、まず全画面の赤いシャッターフラッシュを出し
+  //（シャッター確定の合図）、少し遅らせてからバーを元位置へスライドで戻す。フラッシュと
+  // 復帰の動きを時間差にすることで、隠すときと同じ「上から降りてくる」動きが単独で見える。
+  // 撮影が重なっていれば最後の1つで戻す。
+  function captureEnd() {
+    if (!els || !els.bar) return;
+    if (capDepth > 0) capDepth--;
+    if (capDepth > 0) return;                     // まだ他の撮影が進行中
+    // 1) シャッターフラッシュ（クラスを付け直して毎回アニメを頭から再生）。
+    if (els.frame) {
+      els.frame.classList.remove('flash');
+      void els.frame.offsetWidth;                 // リフローでアニメーションを確実に再スタート
+      els.frame.classList.add('flash');
+      if (frameTimer) clearTimeout(frameTimer);
+      frameTimer = setTimeout(() => {
+        if (els && els.frame) els.frame.classList.remove('flash');
+        frameTimer = null;
+      }, 520);
+    }
+    // 2) フラッシュの直後にバーを降ろす（動きが競合せず、戻りがはっきり見える）。
+    if (barTimer) clearTimeout(barTimer);
+    barTimer = setTimeout(() => {
+      if (els && els.bar) els.bar.classList.remove('capturing');
+      barTimer = null;
+    }, 170);
   }
 
   function build() {
@@ -182,6 +244,7 @@
         toggle: q('toggle'), shot: q('shot'),
         sel: q('selector'), selCount: q('sel-count'),
         spaWrap: q('spa-wrap'), spaLabel: q('spa-label'), spa: q('spa'), spaText: q('spa-text'),
+        frame: q('frame'),
       };
 
       // 静的な文言・ホバー説明を入れる。
@@ -221,13 +284,13 @@
 
   // ---- Python(capture) から page.evaluate 経由で呼ぶページ側ヘルパ ----
 
-  // スクショ撮影の瞬間だけバー（＝シャドウホスト）を隠す/戻す。
+  // バー（＝シャドウホスト）を隠す/戻す。本文取得時の一時退避に使う。
   function barDisplay(show) {
     if (host) host.style.setProperty('display', show ? 'block' : 'none', 'important');
   }
 
   // ページ全文テキスト。innerText はシャドウ内の描画も合成し得るため、
-  // 念のためホストを隠してから読み、元へ戻す（撮影時と同じ非表示手順）。
+  // 念のためホストを隠してから読み、元へ戻す。
   function bodyText() {
     if (!host) return document.body ? document.body.innerText : '';
     const prev = host.style.getPropertyValue('display');
@@ -265,7 +328,8 @@
   }
 
   window.__eacApplyState = apply;
-  window.__eacFlash = flash;
+  window.__eac_captureStart = captureStart;
+  window.__eac_captureEnd = captureEnd;
   window.__eac_barDisplay = barDisplay;
   window.__eac_bodyText = bodyText;
   window.__eac_signature = signature;
