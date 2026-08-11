@@ -8,8 +8,8 @@ Windows PC へ配る」（`README.md` の「配布方法」）を前提とする
 
 関連文書:
 
-- [`IMPROVEMENTS.md`](IMPROVEMENTS.md) … 不具合・設計・運用の指摘（A-1〜D）
-- [`FEATURES.md`](FEATURES.md) … 機能提案（F-A1〜F-D4）
+- [`IMPROVEMENTS.md`](IMPROVEMENTS.md) … 不具合・設計・運用・ページへの影響の指摘（A〜E 節）
+- [`FEATURES.md`](FEATURES.md) … 機能提案（`F-` 接頭辞）
 - [`HANDOFF.md`](HANDOFF.md) … 実装引き継ぎメモ
 
 > **項番について**: 本ファイルの項目には **`D-` 接頭辞**を付ける
