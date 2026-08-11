@@ -68,8 +68,12 @@
 | S-5 | `A-6` | BOM 付き config.ini が読めない | `config.py` |
 
 **スコープ外**（利用者の判断が要る、または別トラック）:
-`A-4` `A-5` `B` 系 `E-1`〜`E-3` `E-5` `E-6`、`FEATURES.md` の全項目、
+`A-5` `B` 系 `E-1`〜`E-3` `E-5` `E-6`、`FEATURES.md` の全項目、
 `DISTRIBUTION.md` の `D-A1`（ライセンス選定）`D-D1`（証明書）。
+
+> **`A-4` は対応済み**（`badge.js` を `mode:'closed'` 化＋バインディング参照の退避）。
+> スコープからは外れているが、**`badge.js` を触る S-4 では影響を受ける**ので、
+> 下記の落とし穴 6 を必ず読むこと。
 
 > **旧スコープからの変更**: 当初は `A-1 / A-2 / A-3 / A-6` としていたが、
 > `ROADMAP.md` の順位に合わせて `D-C1` と `D-B1` を追加した。理由はそちらに記載。
@@ -278,8 +282,24 @@ parser.read(CONFIG_PATH, encoding="utf-8-sig")
    （`README.md` / `docs/` は UTF-8）。
 
 5. **バインディング名は 2 箇所に存在** — `badge.py:120-126` の `BIND_*` と
-   `badge.js` 内の `window.__eac_*` 呼び出し。言語境界のため一元化できていない。
-   片方だけ変えると **JS 側の try/catch で無言失敗する**（気づけない）。
+   `badge.js` 内の `BINDING_NAMES` / `callBinding('__eac_*')`。
+   言語境界のため一元化できていない。
+   片方だけ変えると **無言失敗する**（気づけない）。
+   `badge.js` 側でバインディングを追加するときは `BINDING_NAMES` にも足すこと
+   （足さなくてもフォールバックで動いてしまうため、抜けに気づきにくい）。
+
+6. **`badge.js` のシャドウは `closed`・呼び出しは `callBinding` 経由**（A-4 対応済み）。
+   - `host.shadowRoot` は `null` を返す。中を触るテストは
+     `window.__eac_debugRoot()`（token 無しビルドでのみ公開）を使う
+   - `window.__eac_toggle(...)` のような**直接呼び出しを新たに書かないこと**。
+     必ず `callBinding('__eac_toggle', TOK, ...)` を使う。直接呼ぶと、
+     サイト側が差し替えた関数へ token を渡してしまう
+   - `mode: 'open'` に戻すとスモークテストが失敗する（回帰チェックを入れてある）
+
+7. **`ruff check --fix` を実行しないこと** — `capture.py:84` `capture.py:92`
+   `edge_auto_capture.py:117` の文字列注釈に UP037 が出るが、この引用符は
+   上記 2 のとおり**意図的**。`--fix` すると**黙って Python 3.8 互換が壊れる**。
+   `ruff check`（`--fix` なし）で 3 件出るのが正常な状態。
 
 ---
 
@@ -309,7 +329,9 @@ python tests/smoke_badge.py   # Edge があれば。SKIP されたら「未検�
 
 | 項目 | 内容 |
 |------|------|
+| `A-4` の実機確認 | **対応済みだが実 Edge で未検証。** Edge のある環境でスモークを 1 回通すこと |
 | `D-A1` | **ライセンス選定** — 決まらないと配布できない。他のどの作業とも独立して今すぐ決められる |
 | `B-6` | MutationObserver 常時稼働（`ROADMAP.md` 11 位）。`badge.js` の小変更で全利用者の負荷が下がる |
 | `E-4` | ダウンロード消失（`ROADMAP.md` 5 位）。**実機検証が先** |
 | `D-A3` | プライバシー注意書き（`ROADMAP.md` 6 位）。文面は法務確認が要るかもしれない |
+| UP037 | `ruff` の `ignore` へ追加するか `# noqa` を付けるか（落とし穴 7）|

@@ -25,6 +25,14 @@
 //   - ボタン類は window.__eac_toggle(tok)/__eac_shot(tok)/__eac_spa_toggle(tok)/
 //     __eac_set_selector(tok,v)/__eac_commit_selector(tok,v)（すべて expose_binding）を呼ぶ。
 //     第1引数の tok は合言葉（$CONFIG の tok）。Python 側が照合し、一致しない呼び出しは無視する。
+//
+// 閲覧中サイトからの干渉に対する防御（2 段構え）:
+//   1. シャドウは mode:'closed'。host.shadowRoot が null になるため、サイト側スクリプトは
+//      バー内部の要素を取得できず、ボタンを click() して記録操作を起こすこともできない。
+//      （open だった頃は、tok を知らなくても UI 経由で記録の開始/停止や連写を起こせた）
+//   2. expose_binding の参照は IIFE 冒頭で退避する（BOUND）。add_init_script はサイトの JS より
+//      先に走るので、ここで掴んだ参照は本物。サイトが window.__eac_toggle を自前関数で包んでも、
+//      利用者のクリックはその関数を通らないため、第1引数の tok を盗まれない。
 (() => {
   // add_init_script は各 iframe にも注入される。最上位フレーム以外では
   // 何もしない（iframe の数だけバーが重複表示されるのを防ぐ）。
@@ -39,6 +47,36 @@
   // 照合する。閲覧中サイトのスクリプトが token を知らずに記録操作・連写・セレクタ書き換えを
   // 行っても Python 側で無視される。起動ごとにランダム生成した値が Python から渡ってくる。
   const TOK = C.tok || "";
+
+  // --- expose_binding（Python 側の呼び出し口）の参照を退避する ---
+  // add_init_script はサイトの JS より先に実行されるため、ここで掴んだ参照は「本物」である。
+  // これをしないと、サイト側が
+  //     const orig = window.__eac_toggle;
+  //     window.__eac_toggle = (t) => { stolen = t; return orig(t); };
+  // のように包んでおくだけで、利用者がボタンを押した瞬間に合言葉（TOK）を盗める。
+  // 盗まれれば token 照合は無意味になり、以後は自由に記録操作・連写ができてしまう。
+  const BINDING_NAMES = [
+    '__eac_toggle', '__eac_shot', '__eac_spa_toggle',
+    '__eac_set_selector', '__eac_commit_selector',
+    '__eac_spa_changed', '__eac_getstate',
+  ];
+  const BOUND = {};
+  BINDING_NAMES.forEach((n) => { BOUND[n] = window[n]; });
+
+  // バインディング呼び出しの唯一の入り口。退避済み参照を優先して使う。
+  // 退避できていなければ実行時の window を見る（スモークテストのように、バインディングを
+  // 公開せず後から差し込む場面のため）。実運用では expose_binding が add_init_script より
+  // 先に登録されるので、常に退避済みの本物が使われる。
+  // 失敗は握り潰す（未注入・呼び出し不能でもページ操作を壊さない。従来の try/catch と同じ方針）。
+  function callBinding(name) {
+    const fn = BOUND[name] || window[name];
+    if (typeof fn !== 'function') return undefined;
+    try {
+      return fn.apply(null, Array.prototype.slice.call(arguments, 1));
+    } catch (e) {
+      return undefined;
+    }
+  }
 
   // --- 撮影演出のタイミング定数（ミリ秒）。ここだけ直せば挙動を調整できる。 ---
   // 対になる CSS 側の時間（.bar の transition .24s＝240ms、.frame.flash の .5s＝500ms）は
@@ -314,7 +352,11 @@
       host = document.createElement('div');
       host.id = ID;
       host.style.cssText = HOST_CSS;
-      shadow = host.attachShadow({ mode: 'open' });
+      // closed にして、サイト側スクリプトから host.shadowRoot 経由で中へ入れないようにする。
+      // open だと document.getElementById(ID).shadowRoot.querySelector(...).click() だけで
+      // 記録の開始/停止・連写・セレクタ書き換えを起こせてしまい、token 照合が迂回される。
+      // 内部からは以下の shadow 変数で従来どおり操作できる（closed でも参照は返る）。
+      shadow = host.attachShadow({ mode: 'closed' });
       shadow.innerHTML = TEMPLATE;
 
       const q = (name) => shadow.querySelector('[data-eac="' + name + '"]');
@@ -339,19 +381,20 @@
       els.spa.title = TITLE_SPA;
 
       // 操作はすべて expose_binding 経由で Python へ通知する。第1引数に合言葉 TOK を付ける。
-      els.toggle.addEventListener('click', () => { try { window.__eac_toggle(TOK); } catch (e) {} });
-      els.shot.addEventListener('click', () => { try { window.__eac_shot(TOK); } catch (e) {} });
+      // 呼び出しは callBinding に通す（退避済みの本物を使い、TOK をサイト側へ渡さない）。
+      els.toggle.addEventListener('click', () => callBinding('__eac_toggle', TOK));
+      els.shot.addEventListener('click', () => callBinding('__eac_shot', TOK));
       // 透過トグルは見た目だけのローカル状態（Python への通知は不要）。押すたびに反転して再描画する。
       els.peek.addEventListener('click', () => { peekOn = !peekOn; apply(recording, spaOn); });
-      els.spa.addEventListener('click', () => { try { window.__eac_spa_toggle(TOK); } catch (e) {} });
+      els.spa.addEventListener('click', () => callBinding('__eac_spa_toggle', TOK));
       // 入力のたびにローカルで即座に見た目（SPAボタンの有効/無効・一致件数）を反映しつつ、
       // Python 側へも値を通知する（入力欄はフォーカス中なので apply が上書きしない）。
       els.sel.addEventListener('input', () => {
         apply(recording, spaOn, els.sel.value);
-        try { window.__eac_set_selector(TOK, els.sel.value); } catch (e) {}
+        callBinding('__eac_set_selector', TOK, els.sel.value);
       });
       // 確定時（blur / Enter）に最終値をログへ（入力毎の氾濫を避ける）。
-      els.sel.addEventListener('change', () => { try { window.__eac_commit_selector(TOK, els.sel.value); } catch (e) {} });
+      els.sel.addEventListener('change', () => callBinding('__eac_commit_selector', TOK, els.sel.value));
 
       document.body.appendChild(host);
       // 作り直したバーでは件数を必ず数え直させる（同じセレクタでも新しい要素は空のため）。
@@ -360,8 +403,10 @@
       apply(!!(state && state.recording), !!(state && state.spa), (state && state.selector) || '');
     };
     const fallback = { recording: recording, spa: spaOn, selector: selector };
-    if (window.__eac_getstate) {
-      window.__eac_getstate(TOK).then(finish).catch(() => finish(fallback));
+    // 未注入・呼び出し不能なら callBinding が undefined を返すので、直前の状態で描画する。
+    const pending = callBinding('__eac_getstate', TOK);
+    if (pending && typeof pending.then === 'function') {
+      pending.then(finish).catch(() => finish(fallback));
     } else {
       finish(fallback);
     }
@@ -466,7 +511,7 @@
     if (spaNavPending) { spaNavPending = false; spaLastSig = sig; return; }
     if (sig !== spaLastSig) {
       spaLastSig = sig;
-      try { window.__eac_spa_changed(TOK, sig); } catch (e) {}
+      callBinding('__eac_spa_changed', TOK, sig);
     }
   }
 
@@ -484,6 +529,13 @@
   window.__eac_captureEnd = captureEnd;
   window.__eac_bodyText = bodyText;
   window.__eac_signature = signature;
+
+  // スモークテスト専用の入り口。シャドウが closed になったことで host.shadowRoot から
+  // 中を検査できなくなったため、テストだけが使えるアクセサを用意する。
+  // 公開条件は「TOK が空」＝ badge.BADGE_SCRIPT（バインディングを公開しないテスト用ビルド）
+  // のときだけ。実運用は必ず token 付きで組み立てられる（badge.build_badge_script）ので、
+  // この関数は本番のページには存在せず、closed の防御に穴を空けない。
+  if (!TOK) window.__eac_debugRoot = () => shadow;
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', build);

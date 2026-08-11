@@ -61,10 +61,14 @@ if (bar.classList.contains('capturing')) { resolve(); return; }
 
 各ステップの成否を集めて `[saved] png,txt` のように実際に書けたものを出すのが妥当。
 
-### A-4. `mode:'open'` の Shadow DOM が token 防御を無効化する（中）
+### A-4. `mode:'open'` の Shadow DOM が token 防御を無効化する（中）〔**修正済み**〕
 
-`badge.js:317` の `attachShadow({ mode: 'open' })` により、閲覧中サイトのスクリプトから
-以下が可能。
+> **状態: 対応済み。** 本リポジトリを公開したまま運用する判断に伴い、
+> 他項目に先行して修正した。以下は記録として残す。
+> 修正内容は本節末尾の「対応」を参照。
+
+**問題**: `attachShadow({ mode: 'open' })` により、閲覧中サイトのスクリプトから
+以下が可能だった。
 
 ```js
 document.getElementById('__eac_rec_badge__').shadowRoot
@@ -73,20 +77,30 @@ document.getElementById('__eac_rec_badge__').shadowRoot
 
 記録の開始/停止・連写・セレクタ書き換えがすべて通る。token 照合
 （`edge_auto_capture.py:143`）はバインディング直接呼び出ししか防いでおらず、
-UI 経由で素通りする。`mode: 'closed'` にすれば塞がる
-（`tests/smoke_badge.py:71-93` が `shadowRoot` を触っているので、
-テスト用のアクセサを 1 個生やす必要はある）。
+UI 経由で素通りしていた。
 
 さらに、サイト側は `window.__eac_toggle` を自前関数でラップしておけば、
-利用者がボタンを押した瞬間に **token そのものを盗める**。
-`add_init_script` はサイト JS より先に走るので、`badge.js` の冒頭で
-バインディング参照を IIFE ローカルへ退避しておくのが確実。
+利用者がボタンを押した瞬間に **token そのものを盗めた**。
+盗まれれば token 照合は無意味になり、以後は自由に記録操作・連写ができる。
 
-```js
-const B = {
-  toggle: window.__eac_toggle, shot: window.__eac_shot, /* ... */
-};
-```
+#### 対応
+
+1. **シャドウを `mode: 'closed'` へ**（`badge.js` の `build()` 内）。
+   `host.shadowRoot` が `null` を返すようになり、UI 経由の迂回が塞がった。
+2. **バインディング参照を IIFE 冒頭で退避**（`BOUND` + `callBinding`）。
+   `add_init_script` はサイト JS より先に走るため、ここで掴んだ参照が本物。
+   利用者のクリックはサイトのラッパを通らず、token が漏れない。
+   退避できていない場合は実行時の `window` を見るフォールバックがあり、
+   バインディングを公開しないスモークテストでも従来どおり動く。
+3. **スモークテスト用アクセサ** `window.__eac_debugRoot()` を追加。
+   公開条件は `TOK` が空のときだけ（＝`badge.BADGE_SCRIPT` のテスト用ビルド）。
+   実運用は必ず token 付きで組み立てられるため、本番のページには存在しない。
+4. **回帰テスト**を `tests/smoke_badge.py` に追加
+   （`host.shadowRoot` が `null` であること）。
+
+> **検証状況**: `pytest`（34 件）と `ruff` は通過。
+> **スモークテストは実 Edge が無い環境のため未実行**（SKIP）。
+> `mode: 'closed'` と `callBinding` の実挙動は Edge のある環境で確認すること。
 
 ### A-5. `cleanup_old_profiles` が同時起動を壊す（中）
 
@@ -231,6 +245,14 @@ SPA 検知を使っていない利用者にも、閲覧しているだけで恒�
   Edge を起動できないと `SKIP` かつ**終了コード 0** で抜ける。手元での実行には親切だが、
   **CI に載せると「何も検証していないのに緑」**になる。`--strict` オプション
   （Edge 不在なら失敗）を足し、CI ではそちらを使う。上の「CI がない」とセット。
+- **`ruff --fix` が Python 3.8 互換を壊す（罠）** — `ruff check` は
+  `capture.py:84` `capture.py:92` `edge_auto_capture.py:117` の文字列注釈に
+  **UP037「Remove quotes from type annotation」を出す**（3 件・自動修正可）。
+  しかしこの引用符は**意図的**で、外すと `dict[Page, str]` が実行時評価され
+  Python 3.8 起動時に `TypeError` になる（各所のコメント参照）。
+  `ruff check --fix` を実行すると**黙って 3.8 互換が壊れる**。
+  `[tool.ruff.lint]` の `ignore` に `UP037` を足すか、各行に `# noqa: UP037` を付けて、
+  自動修正で消えないようにすべき。CI に `--fix` を載せる場合は必須。
 - **型チェッカーが未導入** — `ruff` は入っているが型検査はしていない。
   `Optional[str]` の扱いや Python 3.8 互換の注釈（文字列注釈の徹底、`3-2` 参照）は
   `mypy` / `pyright` があれば機械的に守れる。規模も小さく導入コストは低い。
