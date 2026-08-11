@@ -9,7 +9,6 @@
 
 import asyncio
 import configparser
-import itertools
 import re
 import shutil
 import sys
@@ -114,10 +113,6 @@ async def try_eval(page: Page, js: str) -> None:
         pass
 
 
-# 保存ファイル名の一意性を保証する通し番号（この起動中で連番）。
-# next() は不可分なので、並行する capture() 同士でも番号は重複しない。
-_seq_counter = itertools.count(1)
-
 # 実行中の capture タスクへの強参照を保持する集合。
 # これが無いとイベントループはタスクを弱参照でしか持たず、
 # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
@@ -203,10 +198,25 @@ def load_config() -> Config:
         sys.exit(1)
 
 
-def safe_name(url: str) -> str:
-    """URL をファイル名に使える形へ変換（長すぎる場合は先頭 NAME_MAX_LEN 文字）。"""
-    name = re.sub(r"[^\w\-]+", "_", url)[:NAME_MAX_LEN].strip("_")
+def safe_name(text: str) -> str:
+    """任意の文字列をファイル名に使える形へ変換（長すぎる場合は先頭 NAME_MAX_LEN 文字）。
+
+    使えない文字は _ にまとめる。\\w は Unicode 対応なので日本語タイトルはそのまま残る。
+    """
+    name = re.sub(r"[^\w\-]+", "-", text)[:NAME_MAX_LEN].strip("_")
     return name or "page"
+
+
+def page_label(title: str, url: str) -> str:
+    """ファイル名末尾に付ける「人が読む識別名」を作る。
+
+    ページタイトルを最優先で使う（人はタイトルでページを覚えているため）。
+    タイトルが空/空白のみのときは URL から scheme と www. を落とした控えめな名前で代替する。
+    """
+    if title.strip():
+        return safe_name(title)
+    cleaned = re.sub(r"^\w+://(www\.)?", "", url)   # https:// や www. の定型頭を除去
+    return safe_name(cleaned)
 
 
 @contextmanager
@@ -226,19 +236,23 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
     # 実行時に変えられるため、config 固定値ではなく呼び出し時の値を使う
     #（初期値は config.target_selector）。空なら _part.txt はスキップ。
-    # 一意性は「ミリ秒付き日時 + 通し番号」で保証する。URL スラッグは
-    # 読みやすさ用の装飾で、切り詰めや正規化で衝突しても実害はない。
-    # seq / stem は await より前に確定させ、番号を予約してから保存する。
+    # ファイル名は「日時（ミリ秒まで）_ページタイトル」。ミリ秒付き日時で一意性と
+    # 時系列順を保証し、末尾のタイトルは人がページを見分けるための情報。
+    # ts は await より前に確定させる。タイトルはページ読み込み後に確定させる。
     now = datetime.now()
-    ts = now.strftime("%Y%m%d_%H%M%S")
-    ms = now.strftime("%f")[:3]              # マイクロ秒の先頭3桁＝ミリ秒
-    seq = next(_seq_counter)
-    stem = f"{ts}_{ms}_{seq:04d}_{safe_name(url)}"   # 3ファイルで同じ接頭辞を共有
+    ms = now.strftime("%f")[:3]                          # マイクロ秒の先頭3桁＝ミリ秒
+    ts = f"{now:%Y-%m-%d_%H-%M-%S}-{ms}"                 # 例: 2026-08-11_14-30-25-123
 
     # 読み込み完了を待つ（タイムアウトしても続行）
     with _step("load", url):
         await page.wait_for_load_state("load", timeout=config.load_timeout)
     await asyncio.sleep(config.settle_delay)
+
+    # タイトルを取得してファイル名の識別名を確定（失敗しても URL 由来の名前で代替）。
+    title = ""
+    with _step("title", url):
+        title = await page.title()
+    stem = f"{ts}_{page_label(title, url)}"              # 3ファイルで同じ接頭辞を共有
 
     # 1) フルページ スクリーンショット
     #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、
