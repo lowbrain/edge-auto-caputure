@@ -1,4 +1,4 @@
-// 各ページ上部に出す操作バー（記録状態＋記録開始/停止＋今すぐ1枚＋セレクタ入力＋SPA検知トグル）
+// 各ページ上部に出す操作バー（記録状態＋記録開始/停止＋今すぐ1枚＋セレクタ入力＋SPA検知トグル＋透過トグル）
 // のページ側スクリプト。add_init_script でページ遷移・新規タブにも自動適用される。
 //
 // このファイルは badge.py が読み込み、$CONFIG を 1 個の JSON（表示文言などの設定）へ
@@ -30,6 +30,7 @@
   const C = $CONFIG;
   const ID = C.id;
   const S_ON = C.sOn, S_OFF = C.sOff, L_START = C.lStart, L_STOP = C.lStop, L_SHOT = C.lShot;
+  const TITLE_PEEK = C.titlePeek;
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
 
   // --- 撮影演出のタイミング定数（ミリ秒）。ここだけ直せば挙動を調整できる。 ---
@@ -43,6 +44,7 @@
   let recording = false;   // 直近に適用された記録状態（再描画時の復元に使う）
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
+  let peekOn = false;      // 透過（半透明）表示中か。下に隠れた内容を確認するための一時状態。
   let capDepth = 0;        // 進行中の撮影数（重なっても最後の1つで復帰させるための入れ子カウント）
   let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
@@ -71,12 +73,19 @@
       margin:0;padding:0 16px;border-radius:8px;pointer-events:none;white-space:nowrap;
       color:#fff;font-family:"Segoe UI",sans-serif;font-size:13px;font-weight:bold;line-height:1;
       box-shadow:0 2px 8px rgba(0,0,0,.4);background:rgba(90,90,90,.92);
-      /* 退避/復帰は同じ transition（＝隠す動きと戻る動きを対称に）。少しゆっくりの ease-out。 */
-      transition:transform .24s cubic-bezier(.22,.61,.36,1);}
+      /* 退避/復帰は同じ transition（＝隠す動きと戻る動きを対称に）。少しゆっくりの ease-out。
+         透過（peek）で背景を消す/戻すのも滑らかに見せるため background も一緒に遷移させる。 */
+      transition:transform .24s cubic-bezier(.22,.61,.36,1),background .18s ease;}
     .bar.rec{background:rgba(200,0,0,.92);}
     .bar.idle{background:rgba(90,90,90,.92);}
     /* 撮影時: バーを上端の外まで退避（スクショに写らない）。 */
     .bar.capturing{transform:translateY(-64px);}
+    /* 透過表示中: バーの背景を消し、透過ボタン以外を薄くして下のページ内容を確認できるようにする。
+       透過ボタン（アイコン）は常にはっきり見せて戻す場所を見失わせない。滑らかに切り替わるよう
+       薄くする対象に opacity の transition を付ける。 */
+    .status,.btn,.sel-wrap,.spa-wrap{transition:opacity .18s ease;}
+    .bar.peek{background:transparent;box-shadow:none;}
+    .bar.peek > *:not(.peek-btn){opacity:.16;}
     .status{box-sizing:border-box;flex:0 0 auto;width:84px;height:36px;
       display:inline-flex;align-items:center;justify-content:center;gap:6px;}
     .dot{box-sizing:border-box;flex:0 0 auto;width:9px;height:9px;border-radius:50%;}
@@ -88,6 +97,21 @@
       border:0;border-radius:5px;background:#fff;color:#b00;
       font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:bold;line-height:1;
       appearance:none;-webkit-appearance:none;}
+    /* 透過ボタン: 記録操作(.btn)とは種類が違う「表示ユーティリティ」。枠も背景も持たない
+       アイコンだけのボタンにし、ON/OFF はアイコン自体の装飾（目のスラッシュ・色・発光）で表す。 */
+    .peek-btn{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;
+      width:30px;height:30px;margin:0 0 0 2px;padding:0;pointer-events:auto;cursor:pointer;
+      border:0;background:transparent;appearance:none;-webkit-appearance:none;
+      color:rgba(255,255,255,.85);transition:color .15s ease,transform .1s ease,filter .15s ease;}
+    .peek-btn:hover{color:#fff;transform:scale(1.1);}
+    .peek-btn:active{transform:scale(.92);}
+    .peek-icon{width:20px;height:20px;display:block;overflow:visible;
+      fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;}
+    /* OFF（透過していない＝見ていない）: 目にスラッシュを重ねる。 */
+    .peek-icon .eye-slash{transition:opacity .15s ease;}
+    /* ON（透過中）: スラッシュを消し、琥珀色＋発光で「見えている」状態を示す。 */
+    .peek-btn.on{color:#ffd24d;filter:drop-shadow(0 0 4px rgba(255,200,60,.9));}
+    .peek-btn.on .eye-slash{opacity:0;}
     .sel-wrap{box-sizing:border-box;flex:0 0 auto;display:inline-flex;align-items:center;gap:8px;pointer-events:auto;}
     .sel{box-sizing:border-box;flex:0 0 auto;width:180px;height:26px;margin:0;padding:0 8px;pointer-events:auto;
       border:1px solid rgba(255,255,255,.6);border-radius:5px;background:#fff;color:#111;
@@ -136,6 +160,10 @@
       <span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>
         <button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>
         <span class="spa-knob"></span></button></span>
+      <button class="peek-btn" data-eac="peek"><svg class="peek-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path>
+        <circle cx="12" cy="12" r="3"></circle>
+        <line class="eye-slash" x1="3.5" y1="3.5" x2="20.5" y2="20.5"></line></svg></button>
     </div></div>
     <div class="frame" data-eac="frame"></div>`;
 
@@ -157,6 +185,10 @@
     els.dot.classList.toggle('idle', !recording);
     els.label.textContent = recording ? S_ON : S_OFF;
     els.toggle.textContent = recording ? L_STOP : L_START;
+
+    // 透過（peek）表示の反映。記録状態とは独立した見た目だけの状態。
+    els.bar.classList.toggle('peek', peekOn);
+    els.peek.classList.toggle('on', peekOn);
 
     // セレクタ入力欄はフォーカス中は書き換えない（タイピングを壊さない）。
     // 非フォーカス時のみ現在値と差があれば同期（別タブでの変更を反映）。
@@ -265,7 +297,7 @@
       const q = (name) => shadow.querySelector('[data-eac="' + name + '"]');
       els = {
         bar: q('bar'), dot: q('dot'), label: q('label'),
-        toggle: q('toggle'), shot: q('shot'),
+        toggle: q('toggle'), shot: q('shot'), peek: q('peek'),
         sel: q('selector'), selCount: q('sel-count'),
         spaWrap: q('spa-wrap'), spaLabel: q('spa-label'), spa: q('spa'), spaText: q('spa-text'),
         frame: q('frame'),
@@ -273,6 +305,8 @@
 
       // 静的な文言・ホバー説明を入れる。
       els.shot.textContent = L_SHOT;
+      // アイコンボタンなので文言は入れず、ホバー説明（title）だけ付ける。
+      els.peek.title = TITLE_PEEK;
       els.sel.placeholder = PH_SEL;
       els.sel.title = TITLE_SEL;
       els.spaLabel.textContent = L_SPA;
@@ -284,6 +318,8 @@
       // 操作はすべて expose_binding 経由で Python へ通知する。
       els.toggle.addEventListener('click', () => { try { window.__eac_toggle(); } catch (e) {} });
       els.shot.addEventListener('click', () => { try { window.__eac_shot(); } catch (e) {} });
+      // 透過トグルは見た目だけのローカル状態（Python への通知は不要）。押すたびに反転して再描画する。
+      els.peek.addEventListener('click', () => { peekOn = !peekOn; apply(recording, spaOn); });
       els.spa.addEventListener('click', () => { try { window.__eac_spa_toggle(); } catch (e) {} });
       // 入力のたびにローカルで即座に見た目（SPAボタンの有効/無効・一致件数）を反映しつつ、
       // Python 側へも値を通知する（入力欄はフォーカス中なので apply が上書きしない）。

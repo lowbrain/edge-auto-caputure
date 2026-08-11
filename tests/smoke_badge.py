@@ -75,6 +75,24 @@ def run() -> int:
             )
             if not built:
                 errors.append("操作バーが構築されていません（build 失敗）")
+
+            # 5) 透過トグル（枠なしアイコン）が存在し、押すたびに ON/OFF が切り替わるか。
+            #    透過はローカル状態なので、クリック→バーの 'peek' とボタンの 'on' が付き、
+            #    もう一度押すと外れることを確認する（アイコンの装飾切替の土台がこのクラス）。
+            peek = page.evaluate(
+                "(() => { const h = document.querySelector(" + repr(BADGE_SEL) + ");"
+                " const sr = h && h.shadowRoot;"
+                " const btn = sr && sr.querySelector('[data-eac=\"peek\"]');"
+                " const bar = sr && sr.querySelector('[data-eac=\"bar\"]');"
+                " if (!btn || !bar) return 'missing';"
+                " btn.click();"
+                " const on = bar.classList.contains('peek') && btn.classList.contains('on');"
+                " btn.click();"
+                " const off = !bar.classList.contains('peek') && !btn.classList.contains('on');"
+                " return on && off ? 'ok' : 'toggle-failed'; })()"
+            )
+            if peek != "ok":
+                errors.append(f"透過トグルが機能していません: {peek}")
         finally:
             context.close()
 
@@ -83,7 +101,7 @@ def run() -> int:
         for e in errors:
             print(f"  - {e}")
         return 1
-    print("PASS: 操作バーの構築・ヘルパ動作・JSエラー無しを確認しました。")
+    print("PASS: 操作バーの構築・ヘルパ動作・透過トグル・JSエラー無しを確認しました。")
     return 0
 
 

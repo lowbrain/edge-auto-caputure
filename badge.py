@@ -24,6 +24,12 @@ _STATUS_OFF = "待機中"
 _LABEL_START = "記録開始"
 _LABEL_STOP = "記録停止"
 _LABEL_SHOT = "📸 今すぐ1枚"
+# パネルを半透明にして下に隠れた内容を確認するためのトグル（枠なしのアイコンボタン）。
+# 文言ラベルは持たず、ホバー時の説明（title）だけ持つ。状態はアイコンの装飾で表す。
+_TITLE_PEEK = (
+    "操作パネルを半透明にして、下に隠れているページ内容を確認できるようにします。\n"
+    "もう一度押すと元の表示に戻ります（記録状態や撮影には影響しません）。"
+)
 # SPA（URLが変わらず中身だけ変わるページ）向けトグルスイッチの横に出すラベル。
 _LABEL_SPA = "SPA検知"
 # セレクタ入力欄。常時ラベルは置かず、プレースホルダ（透かし文字）で入力を促し、
@@ -57,6 +63,7 @@ _BADGE_CONFIG = {
     "lStart": _LABEL_START,
     "lStop": _LABEL_STOP,
     "lShot": _LABEL_SHOT,
+    "titlePeek": _TITLE_PEEK,
     "lSpa": _LABEL_SPA,
     "phSel": _PLACEHOLDER_SEL,
     "titleSel": _TITLE_SEL,
