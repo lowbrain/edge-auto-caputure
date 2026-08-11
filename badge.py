@@ -85,20 +85,28 @@ def _badge_js_path() -> Path:
     return base / "badge.js"
 
 
-def _load_badge_script() -> str:
+def build_badge_script(token: str = "") -> str:
     """badge.js を読み込み、$CONFIG を設定 JSON で置換した完成スクリプトを返す。
+
+    token は、ページ側から expose_binding（__eac_* 群）を呼ぶときの「合言葉」。
+    バッジJSはこの token を各呼び出しの第1引数に付け、Python 側が照合する。閲覧中の
+    サイトのスクリプトが勝手に記録操作・連写・セレクタ書き換えを行えないようにするため
+    （token を知らない呼び出しは Python 側で無視される）。空文字（既定）は照合しない
+    用途向け（スモークテストなど、バインディング自体を公開しない場面）。
 
     置換対象は文字列 "$CONFIG" のみ。badge.js はテンプレートリテラル（バッククォート）を
     使うが、補間は `${...}` の形だけで、この JS では `${` を使わないため `$CONFIG` と
     衝突しない。よって単純な文字列置換で足りる（絵文字/日本語も json.dumps で
     \\uXXXX に安全化される）。
     """
+    config = dict(_BADGE_CONFIG, tok=token)
     src = _badge_js_path().read_text(encoding="utf-8")
-    return src.replace("$CONFIG", json.dumps(_BADGE_CONFIG))
+    return src.replace("$CONFIG", json.dumps(config))
 
 
-# 各ページへ注入する完成済みスクリプト（add_init_script に渡す）。
-BADGE_SCRIPT = _load_badge_script()
+# 各ページへ注入する完成済みスクリプト（token 無し）。スモークテストなど、バインディングを
+# 公開せず見た目だけ確認する用途向け。実運用では build_badge_script(token) を使う。
+BADGE_SCRIPT = build_badge_script()
 
 # --- capture 側が page.evaluate で呼ぶ、ページ側ヘルパの呼び出し式 ---
 # いずれも window.__eac_* が未定義でも落ちないよう、存在チェック付きの式にしてある。

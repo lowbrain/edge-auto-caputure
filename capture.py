@@ -13,6 +13,7 @@ import re
 import shutil
 import sys
 import tempfile
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -117,6 +118,23 @@ async def try_eval(page: Page, js: str) -> None:
 # これが無いとイベントループはタスクを弱参照でしか持たず、
 # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
 _tasks: "set[asyncio.Task]" = set()
+
+# ページごとの撮影を直列化するためのロック（page -> Lock）。
+# 同じページで撮影が重なると（例: 「今すぐ1枚」と自動保存がほぼ同時、リダイレクト連鎖）、
+# 一方の captureEnd がバーを復帰させた直後にもう一方が screenshot 中、という並びが起き得て、
+# 退避したはずの操作バーが画像へ写り込む。撮影のクリティカル区間（バー退避→撮影→復帰）を
+# このロックで page 単位に直列化して防ぐ。別ページ同士は別ロックなので並行できる。
+# ページが閉じたらエントリは自動で消えるよう WeakKeyDictionary を使う。
+_page_locks: "weakref.WeakKeyDictionary[Page, asyncio.Lock]" = weakref.WeakKeyDictionary()
+
+
+def _page_lock(page: Page) -> asyncio.Lock:
+    """そのページ用の撮影ロックを返す（無ければ作る）。"""
+    lock = _page_locks.get(page)
+    if lock is None:
+        lock = asyncio.Lock()
+        _page_locks[page] = lock
+    return lock
 
 
 @dataclass
@@ -279,14 +297,17 @@ async def capture(page: Page, url: str, config: Config, selector: str = "") -> N
     #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、
     #    撮影後にシャッターフラッシュ＋バー復帰。captureEnd は撮影が失敗しても必ず呼ぶ
     #    （でないとバーが退避したまま戻らないため finally で実行）。
-    with _step("png", url):
-        try:
-            await try_eval(page, badge.CAPTURE_START_CALL)  # 退避し切るまで待つ
-            await page.screenshot(
-                path=str(config.output_dir / f"{stem}.png"), full_page=True
-            )
-        finally:
-            await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
+    #    同一ページで撮影が重なるとバーの退避/復帰が競合して写り込むため、page 単位の
+    #    ロックでこの区間だけ直列化する（別ページ同士は別ロックなので並行できる）。
+    async with _page_lock(page):
+        with _step("png", url):
+            try:
+                await try_eval(page, badge.CAPTURE_START_CALL)  # 退避し切るまで待つ
+                await page.screenshot(
+                    path=str(config.output_dir / f"{stem}.png"), full_page=True
+                )
+            finally:
+                await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
 
     # 2) ページ全文テキスト（操作パネルは除外して取得）
     with _step("txt", url):

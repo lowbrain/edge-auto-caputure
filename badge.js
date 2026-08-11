@@ -17,11 +17,12 @@
 //   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
 //   - window.__eac_captureStart()                         : バーを退避し切るまで待つ（撮影直前）
 //   - window.__eac_captureEnd()                           : 赤いフラッシュ＋バー復帰（撮影直後）
-//   - window.__eac_getstate()（expose_binding）           : 描画前に現在状態を取得
+//   - window.__eac_getstate(tok)（expose_binding）        : 描画前に現在状態を取得
 //   - window.__eac_bodyText()                             : バー除外の本文 innerText
 //   - window.__eac_signature(selector)                   : SPA検知用のコンテンツ署名
-//   - ボタン類は window.__eac_toggle()/__eac_shot()/__eac_spa_toggle()/
-//     __eac_set_selector(v)/__eac_commit_selector(v)（すべて expose_binding）を呼ぶ
+//   - ボタン類は window.__eac_toggle(tok)/__eac_shot(tok)/__eac_spa_toggle(tok)/
+//     __eac_set_selector(tok,v)/__eac_commit_selector(tok,v)（すべて expose_binding）を呼ぶ。
+//     第1引数の tok は合言葉（$CONFIG の tok）。Python 側が照合し、一致しない呼び出しは無視する。
 (() => {
   // add_init_script は各 iframe にも注入される。最上位フレーム以外では
   // 何もしない（iframe の数だけパネルが重複表示されるのを防ぐ）。
@@ -32,6 +33,10 @@
   const S_ON = C.sOn, S_OFF = C.sOff, L_START = C.lStart, L_STOP = C.lStop, L_SHOT = C.lShot;
   const TITLE_PEEK = C.titlePeek;
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
+  // expose_binding（__eac_* 群）を呼ぶときの合言葉。各呼び出しの第1引数に付け、Python 側が
+  // 照合する。閲覧中サイトのスクリプトが token を知らずに記録操作・連写・セレクタ書き換えを
+  // 行っても Python 側で無視される。起動ごとにランダム生成した値が Python から渡ってくる。
+  const TOK = C.tok || "";
 
   // --- 撮影演出のタイミング定数（ミリ秒）。ここだけ直せば挙動を調整できる。 ---
   // 対になる CSS 側の時間（.bar の transition .24s＝240ms、.frame.flash の .5s＝500ms）は
@@ -315,20 +320,20 @@
       els.spaWrap.title = TITLE_SPA;
       els.spa.title = TITLE_SPA;
 
-      // 操作はすべて expose_binding 経由で Python へ通知する。
-      els.toggle.addEventListener('click', () => { try { window.__eac_toggle(); } catch (e) {} });
-      els.shot.addEventListener('click', () => { try { window.__eac_shot(); } catch (e) {} });
+      // 操作はすべて expose_binding 経由で Python へ通知する。第1引数に合言葉 TOK を付ける。
+      els.toggle.addEventListener('click', () => { try { window.__eac_toggle(TOK); } catch (e) {} });
+      els.shot.addEventListener('click', () => { try { window.__eac_shot(TOK); } catch (e) {} });
       // 透過トグルは見た目だけのローカル状態（Python への通知は不要）。押すたびに反転して再描画する。
       els.peek.addEventListener('click', () => { peekOn = !peekOn; apply(recording, spaOn); });
-      els.spa.addEventListener('click', () => { try { window.__eac_spa_toggle(); } catch (e) {} });
+      els.spa.addEventListener('click', () => { try { window.__eac_spa_toggle(TOK); } catch (e) {} });
       // 入力のたびにローカルで即座に見た目（SPAボタンの有効/無効・一致件数）を反映しつつ、
       // Python 側へも値を通知する（入力欄はフォーカス中なので apply が上書きしない）。
       els.sel.addEventListener('input', () => {
         apply(recording, spaOn, els.sel.value);
-        try { window.__eac_set_selector(els.sel.value); } catch (e) {}
+        try { window.__eac_set_selector(TOK, els.sel.value); } catch (e) {}
       });
       // 確定時（blur / Enter）に最終値をログへ（入力毎の氾濫を避ける）。
-      els.sel.addEventListener('change', () => { try { window.__eac_commit_selector(els.sel.value); } catch (e) {} });
+      els.sel.addEventListener('change', () => { try { window.__eac_commit_selector(TOK, els.sel.value); } catch (e) {} });
 
       document.body.appendChild(host);
       // 作り直したパネルでは件数を必ず数え直させる（同じセレクタでも新しい要素は空のため）。
@@ -338,7 +343,7 @@
     };
     const fallback = { recording: recording, spa: spaOn, selector: selector };
     if (window.__eac_getstate) {
-      window.__eac_getstate().then(finish).catch(() => finish(fallback));
+      window.__eac_getstate(TOK).then(finish).catch(() => finish(fallback));
     } else {
       finish(fallback);
     }

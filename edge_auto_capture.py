@@ -44,6 +44,7 @@ SPA（URLが変わらず中身だけ変わるページ）向けに、パネル�
 
 import asyncio
 import json
+import secrets
 import shutil
 import tempfile
 
@@ -102,6 +103,10 @@ class CaptureSession:
     def __init__(self, context, config: Config) -> None:
         self.context = context
         self.config = config
+        # ページ側から公開バインディング（__eac_* 群）を呼ぶときの合言葉。起動ごとにランダム
+        # 生成し、バッジJSへ埋め込む。閲覧中サイトのスクリプトが token を知らずに記録操作・
+        # 連写・セレクタ書き換えを試みても、下の各コールバックが token 不一致で無視する。
+        self.token = secrets.token_hex(16)
         # --- 実行時状態 ---
         self.on = config.start_recording          # 記録中か（自動保存のマスタースイッチ）
         self.spa_on = False                       # SPA検知（中身変化を契機に保存）
@@ -147,13 +152,24 @@ class CaptureSession:
             )
 
     # ---- expose_binding で公開するコールバック ----
+    #
+    # これらは全ページの window に公開されるため、閲覧中サイトのスクリプトからも呼べてしまう。
+    # 各コールバックは第1引数 token を self.token と照合し、一致しない呼び出し（＝バッジUI以外）
+    # は黙って無視する（ログも出さない: 不一致呼び出しを連打されてもログを氾濫させないため）。
+    # 引数には既定値を与え、任意個数/不正な引数で呼ばれても TypeError で落ちないようにする。
 
-    async def on_toggle(self, source) -> None:
+    def _authorized(self, token) -> bool:
+        """バッジUIからの正規の呼び出しか（合言葉が一致するか）を判定する。"""
+        return isinstance(token, str) and secrets.compare_digest(token, self.token)
+
+    async def on_toggle(self, source, token=None) -> None:
         """「記録開始／停止」ボタン: 記録状態を反転する。
 
         ON にした瞬間は現在開いている全ページを即キャプチャし、seen を現在 URL に
         そろえる（撮り始めの体感を良くしつつ、直後のループでの二重取りも防ぐ）。
         """
+        if not self._authorized(token):
+            return
         self.on = not self.on
         log(f"[記録] {'開始' if self.on else '停止'}")
         await self.refresh_panels()
@@ -168,13 +184,15 @@ class CaptureSession:
                 self.seen[pg] = url
                 spawn_capture(pg, url, self.config, self.selector)
 
-    async def on_shot(self, source) -> None:
+    async def on_shot(self, source, token=None) -> None:
         """「今すぐ1枚」ボタン: 記録状態に関わらず、押したページを1回だけ撮る。
 
         seen は触らないので自動キャプチャの判定には影響しない（記録ON中でも
         同一 URL の「撮り直し」として別ファイルにもう1枚保存される）。
         保存が終わると spawn_capture がパネルを一瞬フラッシュして知らせる。
         """
+        if not self._authorized(token):
+            return
         pg = source["page"]
         try:
             url = pg.url
@@ -185,12 +203,14 @@ class CaptureSession:
         log(f"[手動] {url}")
         spawn_capture(pg, url, self.config, self.selector)
 
-    async def on_spa_toggle(self, source) -> None:
+    async def on_spa_toggle(self, source, token=None) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
 
         セレクタ未設定では検知対象が無いので no-op（UI 側でも無効化しているが二重防御）。
         ON にした瞬間は署名基準を現状に取り直し、開始直後の無駄撮りを避ける。
         """
+        if not self._authorized(token):
+            return
         if not self.selector:
             return
         self.spa_on = not self.spa_on
@@ -199,13 +219,15 @@ class CaptureSession:
             await self.reseed_signatures()
         await self.refresh_panels()
 
-    async def on_set_selector(self, source, value) -> None:
+    async def on_set_selector(self, source, token=None, value="") -> None:
         """セレクタ入力欄の変更（入力のたびに呼ばれる）。実行時セレクタを更新する。
 
         空になったら SPA検知を OFF に落とす（検知対象が無いため）。SPA検知中に
         対象が変わったら署名基準を取り直す（旧セレクタの署名で誤検知しないため）。
         ログは氾濫を避けるためここでは出さず、確定時（on_commit_selector）に出す。
         """
+        if not self._authorized(token):
+            return
         new = (value or "").strip()
         if new == self.selector:
             return
@@ -216,22 +238,29 @@ class CaptureSession:
             await self.reseed_signatures()
         await self.refresh_panels()
 
-    async def on_commit_selector(self, source, value) -> None:
+    async def on_commit_selector(self, source, token=None, value="") -> None:
         """セレクタ入力の確定（blur / Enter）。最終値をログに残す。
 
         入力のたびに出すとログが氾濫するため、確定時にだけ実際に使う値を記録する。
         これにより「どのセレクタで動かしたか」がログと実態で一致する。
         """
+        if not self._authorized(token):
+            return
         new = (value or "").strip()
         log(f"[セレクタ] {'クリア' if not new else repr(new)}")
 
-    async def get_state(self, source) -> dict:
+    async def get_state(self, source, token=None) -> dict:
         """パネルが描画前に現在の状態を問い合わせるためのバインディング。
 
         ページ遷移直後、新しいドキュメントのパネルはこれを見てから描画するので、
         記録ON中に別URLへ移動しても一瞬「待機中」を見せずに済む。SPA検知の
         ON/OFF・セレクタ値も同時に返し、遷移後も入力欄・ボタンを正しく初期化する。
+
+        token 不一致（バッジUI以外からの問い合わせ）には既定状態を返し、実際の
+        記録状態やセレクタ値を外部スクリプトへ漏らさない。
         """
+        if not self._authorized(token):
+            return {"recording": False, "spa": False, "selector": ""}
         return {"recording": self.on, "spa": self.spa_on, "selector": self.selector}
 
     # ---- セットアップと監視ループ ----
@@ -248,7 +277,8 @@ class CaptureSession:
         await self.context.expose_binding("__eac_set_selector", self.on_set_selector)
         await self.context.expose_binding("__eac_commit_selector", self.on_commit_selector)
         await self.context.expose_binding("__eac_getstate", self.get_state)
-        await self.context.add_init_script(badge.BADGE_SCRIPT)
+        # バッジJSには今回の合言葉（token）を埋め込む。各バインディング呼び出しの照合に使う。
+        await self.context.add_init_script(badge.build_badge_script(self.token))
 
     def _prune(self, pages) -> None:
         """閉じられたページを管理から除去（seen と SPA署名の両方）。"""
