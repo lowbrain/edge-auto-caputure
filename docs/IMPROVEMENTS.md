@@ -15,7 +15,8 @@
 | D | テスト・ドキュメント |
 | E | ページへの影響・未定義動作 |
 
-関連文書: [`FEATURES.md`](FEATURES.md)（機能提案）/
+関連文書: [`ROADMAP.md`](ROADMAP.md)（**文書横断の優先順位**）/
+[`FEATURES.md`](FEATURES.md)（機能提案）/
 [`DISTRIBUTION.md`](DISTRIBUTION.md)（配布対応）/ [`HANDOFF.md`](HANDOFF.md)（引き継ぎ）
 
 ---
@@ -304,7 +305,12 @@ PDF ファイルを開いた場合（Edge の内蔵ビューア）、`page.title
 
 ---
 
-## 着手順のおすすめ
+## 着手順のおすすめ（本文書内のみ）
+
+> **注意**: これは本文書の項目だけを並べたもの。
+> `FEATURES.md` / `DISTRIBUTION.md` も含めた**全体の優先順位は
+> [`ROADMAP.md`](ROADMAP.md) が正**。実際の作業順はそちらに従うこと。
+> （例: `DISTRIBUTION.md` の `D-C1`「無言終了」は全体 1 位だが、本表には現れない）
 
 | 順 | 項目 | 規模 | 効果 |
 |----|------|------|------|

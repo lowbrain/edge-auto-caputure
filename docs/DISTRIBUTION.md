@@ -8,9 +8,14 @@ Windows PC へ配る」（`README.md` の「配布方法」）を前提とする
 
 関連文書:
 
+- [`ROADMAP.md`](ROADMAP.md) … **文書横断の優先順位。作業順はこれが正**
 - [`IMPROVEMENTS.md`](IMPROVEMENTS.md) … 不具合・設計・運用・ページへの影響の指摘（A〜E 節）
 - [`FEATURES.md`](FEATURES.md) … 機能提案（`F-` 接頭辞）
 - [`HANDOFF.md`](HANDOFF.md) … 実装引き継ぎメモ
+
+> 末尾の「配布前チェックリスト」は**配布作業の中での順序**。
+> `D-C1`（無言終了）と `D-B1`（バージョン）は全体でも第 1 群に入るため、
+> 配布を待たず先に直す価値がある（`ROADMAP.md` 参照）。
 
 > **項番について**: 本ファイルの項目には **`D-` 接頭辞**を付ける
 > （`IMPROVEMENTS.md` / `FEATURES.md` と衝突させないため）。

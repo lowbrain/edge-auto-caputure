@@ -1,130 +1,135 @@
-# 引き継ぎメモ（改善提案 → 実装）
+# 引き継ぎメモ（Opus 4.8 向け）
 
-宛先: 次に作業するモデル／担当者
+宛先: 次に作業するモデル（Opus 4.8 を想定）／担当者
 作成日: 2026-08-11
-ブランチ: `refactor/spa-event-driven`（作業ツリーはクリーン）
+ブランチ: `refactor/spa-event-driven`（作業ツリーはクリーン、未 push）
 コード起点コミット: `eac2b92` — **ここから先、コードは 1 行も変わっていない**
-文書追加コミット: `07452a6` / `f72730c` ほか（`docs/` の 4 文書のみ。未 push）
+文書コミット: `07452a6` 以降（`docs/` のみ）
 
 ---
 
-## 0. これまでの経緯（読む順序）
+## 0. 最初に渡す指示（そのままコピーして使える）
 
-1. このリポジトリのコード全体（Python 5 ファイル + `badge.js` + `tests/` + `build.ps1`）を
-   通読してレビューを行った。
-2. その結果を **[`docs/IMPROVEMENTS.md`](IMPROVEMENTS.md)** に保存した（A〜E 節）。
-   **まず先にそれを読むこと。** 本メモは「実装するための補足」であり、
-   指摘の根拠と全項目は `IMPROVEMENTS.md` 側にある。
-   本メモが具体案を示すのは A-1/A-2/A-3/A-6 の 4 件だけで、**それ以外の項目
-   （B-6・E-4 など、独立して入れられて効果の大きいものを含む）は
-   `IMPROVEMENTS.md` の「着手順のおすすめ」を見ること。**
-3. 別途、機能面（ツールとして何ができるか）の提案を
-   **[`docs/FEATURES.md`](FEATURES.md)** にまとめた。今回のスコープ外だが、
-   実装方針を考えるときの参考になる。項目 ID は `F-` 接頭辞で区別してある。
-4. さらに、第三者配布を前提とした指摘を
-   **[`docs/DISTRIBUTION.md`](DISTRIBUTION.md)** にまとめた。項目 ID は `D-` 接頭辞。
-   **配布（exe のビルド・受け渡し）を伴う作業に入る前に必ず読むこと。**
-   特に `D-A1`（LICENSE 未指定）と `D-C1`（書き込み不可の場所で無言で死ぬ）は、
-   コードの品質とは別軸で「配れない／配っても動かない」を引き起こす。
-5. **コードの修正はまだ 1 行も行っていない。** 追加したのは `docs/` の 4 文書のみで、
-   `07452a6` / `f72730c` としてコミット済み（未 push）。
-   つまり **`eac2b92` 時点のコードがそのまま残っている**状態から着手することになる。
+> このリポジトリの `docs/HANDOFF.md` を読んで、そこに書かれた 5 件の修正を
+> 上から順に実装してください。各件は独立しているので、1 件ずつコミットしてください。
+> `docs/ROADMAP.md` に全体の優先度、`docs/IMPROVEMENTS.md` と
+> `docs/DISTRIBUTION.md` に各指摘の根拠があります。
+> 作業前に `pip install -e ".[dev]"` を実行してください。
+> 実 Edge が無い環境では smoke テストが SKIP になります。その場合は
+> 「未検証」と明記して報告してください。勝手にコミット以上のこと
+> （push / タグ付け / ブランチ作成）はしないでください。
 
 ---
 
-## 1. 作業環境の注意（重要）
+## 1. 経緯と文書の地図
+
+コード全体（Python 5 ファイル + `badge.js` + `tests/` + `build.ps1`）を通読したレビューを行い、
+結果を 4 文書に分けてある。**着手前に最低限 `ROADMAP.md` は読むこと。**
+
+| 文書 | 項番 | 内容 |
+|------|------|------|
+| [`ROADMAP.md`](ROADMAP.md) | — | **3 文書を横断した単一の優先順位。まずここ** |
+| [`IMPROVEMENTS.md`](IMPROVEMENTS.md) | `A-` `B-` `E-` | 不具合・設計・運用・ページへの影響（A〜E 節） |
+| [`FEATURES.md`](FEATURES.md) | `F-` | 機能提案（今回のスコープ外） |
+| [`DISTRIBUTION.md`](DISTRIBUTION.md) | `D-` | 第三者配布に向けた対応 |
+
+**コードの修正はまだ 1 行も行っていない。** 追加したのは `docs/` の文書のみ。
+つまり **`eac2b92` 時点のコードがそのまま残っている**状態から着手することになる。
+
+---
+
+## 2. 作業環境の注意（重要）
 
 このツールは **Windows 専用**だが、開発ホストは **macOS (darwin 25.5.0)**。
-以下を前提に動くこと。
 
 | 事項 | 状況 |
 |------|------|
 | `pytest` / `ruff` | **システム python3 に未インストール**。`pip install -e ".[dev]"` から始める |
-| `tests/smoke_badge.py` | 実 Edge が必要。macOS でも Edge があれば動く可能性はあるが**未検証**。Edge が無ければ `SKIP`（終了コード 0）で抜ける仕様なので、PASS 表示を鵜呑みにしないこと |
+| `tests/smoke_badge.py` | 実 Edge が必要。macOS でも Edge があれば動く可能性はあるが**未検証**。Edge が無ければ `SKIP`（終了コード 0）で抜ける仕様なので、**PASS 表示を鵜呑みにしないこと** |
 | `infra._message_box` | `ctypes.windll` 依存。macOS では except で握られ no-op になる |
 | `build.ps1` | PowerShell / Windows 専用。macOS では実行検証できない |
+| `%LOCALAPPDATA%` | 下記 S-1 で使うが、macOS には存在しない。フォールバック先の決定はプラットフォーム非依存に書き、**実挙動の確認は Windows に委ねる** |
 
-つまり **`pytest` は動かせるが、`badge.js` の挙動は macOS 上では実機確認できない可能性が高い**。
-JS 側の修正は「smoke テストを足す」ところまでを成果物とし、
-実行確認は Windows 環境に委ねる旨を報告に明記すること。
-
----
-
-## 2. 今回やってほしいこと
-
-`IMPROVEMENTS.md` の「着手順のおすすめ」の **1 と 2**、すなわち
-**A-1 / A-2 / A-3 / A-6** の 4 件。合計 30 行程度の変更。
-
-A-4（Shadow DOM `closed` 化）・A-5（一時プロファイル掃除）・B 系は**今回のスコープ外**。
-先に上記 4 件を小さく通してから、利用者に次を確認すること。
-
-`FEATURES.md`（機能追加）と `DISTRIBUTION.md`（配布対応）も**別トラック**であり、
-今回は着手しない。ただし **配布作業が発生する場合は `DISTRIBUTION.md` が優先**する
-（`D-A1` LICENSE 未指定・`D-C1` 無言終了は、本メモの 4 件より配布上の影響が大きい）。
-
-### 4 件を終えたあとの推奨（利用者に確認のうえ）
-
-`IMPROVEMENTS.md` の「着手順のおすすめ」で **3 位・4 位に置いた 2 件**は、
-他とほぼ独立して入れられるうえ効果が大きい。次に着手する候補として提案するとよい。
-
-- **B-6**（MutationObserver が常時稼働）… 記録OFF でも全ページで動き続けている。
-  SPA 検知を使わない利用者にも恒常的な負荷。`badge.js` の小変更で済む。
-- **E-4**（ダウンロードが消える）… `downloads_path` 未指定のため、
-  利用者がダウンロードしたファイルが終了時に消える可能性が高い。**実機検証が先**。
+つまり **`pytest` は動かせるが、`badge.js` と Windows 固有の挙動は実機確認できない可能性が高い。**
+確認できなかったものは、報告に**「未検証」と明記**すること。憶測で「動作を確認しました」と書かない。
 
 ---
 
-## 3. 各修正の具体案
+## 3. 今回のスコープ（この順に、1 件ずつコミット）
 
-### A-1 / A-2 — `badge.js` の `captureStart`（`badge.js:259` 付近）
+`ROADMAP.md` の第 1 群と第 2 群の一部。**合計で半日程度。**
 
-この 2 件は同じ関数を触るので**まとめて 1 コミット**にする。
+| # | ID | 内容 | 主な対象ファイル |
+|---|-----|------|------------------|
+| S-1 | `D-C1` | 書き込み不可の場所で無言終了する | `infra.py` `config.py` `edge_auto_capture.py` |
+| S-2 | `A-3` | 全失敗でも `[saved]` とログに出る | `capture.py` |
+| S-3 | `D-B1` | バージョンが exe にもログにも出ない | `infra.py` `pyproject.toml` `edge_auto_capture.py` |
+| S-4 | `A-1` + `A-2` | フラッシュ写り込み / 500ms 待ち | `badge.js` |
+| S-5 | `A-6` | BOM 付き config.ini が読めない | `config.py` |
 
-現状:
+**スコープ外**（利用者の判断が要る、または別トラック）:
+`A-4` `A-5` `B` 系 `E-1`〜`E-3` `E-5` `E-6`、`FEATURES.md` の全項目、
+`DISTRIBUTION.md` の `D-A1`（ライセンス選定）`D-D1`（証明書）。
 
-```js
-  function captureStart() {
-    return new Promise((resolve) => {
-      if (!els || !els.bar) { resolve(); return; }
-      capDepth++;
-      if (barTimer) { clearTimeout(barTimer); barTimer = null; }
-      if (capDepth > 1) { resolve(); return; }   // 既に退避済み（別の撮影が進行中）
-      const bar = els.bar;
-      ...
-      bar.classList.add('capturing');
+> **旧スコープからの変更**: 当初は `A-1 / A-2 / A-3 / A-6` としていたが、
+> `ROADMAP.md` の順位に合わせて `D-C1` と `D-B1` を追加した。理由はそちらに記載。
+
+---
+
+## 4. 各修正の具体案
+
+### S-1 — `D-C1` 書き込み不可の場所で無言終了する
+
+**症状**: `C:\Program Files\` など書き込み権限のない場所へ展開されると、
+利用者から見て「**ダブルクリックしても何も起きない**」。ログもダイアログも残らない。
+
+**原因の連鎖**:
+
+1. `log()` は `except: pass`（`infra.py:66`）で静かに失敗
+2. `set_log_dir` の `mkdir` も `except: pass`（`infra.py:50`）で静かに失敗
+3. `edge_auto_capture.py:321` の `config.output_dir.mkdir(...)` は**保護されておらず**
+   `PermissionError` を送出
+4. `--noconsole` ビルドなので stderr は誰にも見えない
+
+**方針**: 書き込み可能なフォルダを解決するヘルパを `infra.py` に足し、
+`config.py` の `output_dir` 確定時に通す。`%LOCALAPPDATA%` へ退避して**動き続ける**。
+
+```python
+# infra.py
+def resolve_writable_dir(preferred: Path) -> Optional[Path]:
+    """書き込み可能なフォルダを返す。preferred が使えなければ退避先を試す。
+    どこにも書けなければ None（呼び出し側が notify_fatal する）。"""
+    fallback_base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    candidates = [preferred, Path(fallback_base) / "edge-auto-capture" / preferred.name]
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / ".eac-write-test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+            return cand
+        except Exception:
+            continue
+    return None
 ```
 
-足すもの:
+要件:
 
-1. **A-1**: `barTimer` のクリア直後に、進行中のシャッターフラッシュも畳む。
-   これを入れないと、直前の撮影のフラッシュ（`.frame.flash`、CSS 500ms）が
-   次のスクリーンショットに赤みとして写り込む。
+- 退避が発生したら **`log()` と `notify_fatal` の両方で利用者に知らせる**
+  （どこへ保存されたか分からないほうが困る）
+- `edge_auto_capture.py:321` の裸の `mkdir` は、解決済みパスを使う形にするか
+  `try` で包んで `notify_fatal` する。**例外が素通りする経路を残さないこと**
+- `set_log_dir`（`infra.py:41`）も同じ解決結果を使い、
+  ログが確実に書ける場所へ向くようにする
 
-   ```js
-   if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
-   if (els.frame) els.frame.classList.remove('flash');
-   ```
+**テスト**: `tmp_path` に読み取り専用ディレクトリを作り、フォールバックが働くことを検証。
+`os.chmod` が効かない環境（Windows の一部）ではスキップ扱いにしてよい。
 
-2. **A-2**: `capDepth > 1` の早期 return を抜けても、`barTimer` を消した直後だと
-   バーは既に `capturing` クラスを持っている。その状態で `classList.add` しても
-   no-op なので `transitionend` が飛ばず、`CAP_FALLBACK_MS`（500ms）まで無駄に待つ。
-
-   ```js
-   if (bar.classList.contains('capturing')) { resolve(); return; }
-   ```
-
-   ※ `const bar = els.bar;` の直後に置く。
-
-**根拠の確度**: CSS のアニメ時間（`.bar` transition 240ms / `.frame.flash` 500ms）と
-JS 定数（`CAP_FALLBACK_MS` 500 / `BAR_RETURN_MS` 170）からの**タイミング計算による導出**で、
-実ブラウザでの再現は未確認。修正自体は無害だが、報告時はこの点を正直に書くこと。
-
-### A-3 — `capture.py:174` の無条件 `[saved]` ログ
+### S-2 — `A-3` 全失敗でも `[saved]` とログに出る
 
 `_step`（`capture.py:59`）が png / txt / part の例外を握り潰すため、
-**全部失敗しても `[saved]` が出る**。`--noconsole` 配布でログが唯一の運用情報なので直す。
-
-`_step` に成功記録用のリストを渡せるようにするのが最小変更:
+**全部失敗しても `capture.py:174` の `[saved]` が出る**。
+`--noconsole` 配布でログが唯一の運用情報なので直す。
 
 ```python
 @contextmanager
@@ -147,43 +152,108 @@ else:
     log(f"[保存できず] {stem}  <- {url}")
 ```
 
-**注意**: png ステップは `_step` の内側にさらに `try/finally` がある
-（`finally` で `captureEnd` を必ず呼ぶ）。`screenshot` が例外を投げれば
-`_step` が捕まえるので `done` には積まれない — この挙動は正しいので変えないこと。
+> **注意**: png ステップは `_step` の内側にさらに `try/finally` がある
+> （`finally` で `captureEnd` を必ず呼ぶ）。`screenshot` が例外を投げれば
+> `_step` が捕まえるので `done` には積まれない — **この挙動は正しいので変えないこと。**
 
-### A-6 — `config.py:67` の encoding
+**テスト**: `_step` に `done` を渡し、例外なし → tag が積まれる／例外あり → 積まれない。純粋なので簡単。
+
+### S-3 — `D-B1` バージョンが exe にもログにも出ない
+
+`version = "0.1.0"` は `pyproject.toml:3` にあるだけで、
+**exe にもログにも UI にも一切出ていない**（`grep` で確認済み）。
+第三者から「動きません」と言われたときに「どの版ですか」に答えられない。
+
+最低限やること:
+
+1. `infra.py` に `__version__ = "0.1.0"` を置く（`infra` は依存の最下層なので循環しない）
+2. `pyproject.toml` を `dynamic = ["version"]` +
+   `[tool.setuptools.dynamic] version = {attr = "infra.__version__"}` にして**出所を 1 つにする**
+3. `edge_auto_capture.py:378` の
+   `log("=== edge-auto-capture 起動 ===")` にバージョンを入れる
+
+余力があれば（任意）:
+
+- `build.ps1` に PyInstaller の `--version-file` を足し、exe のプロパティにも出す
+  （Windows 固有・実機検証が要るので、できなければ見送ってよい）
+- `D-B2`（環境情報のログ）も 2 行程度で入る。起動時に **Edge のバージョン・OS・
+  採用された設定値**を 1 行出すと切り分けが一気に楽になる
+
+**テスト**: `pyproject.toml` と `infra.__version__` が一致することを検証すると、
+片方だけ上げる事故を防げる。
+
+### S-4 — `A-1` / `A-2` `badge.js` の `captureStart`（`badge.js:259` 付近）
+
+この 2 件は同じ関数を触るので**まとめて 1 コミット**にする。
+
+現状:
+
+```js
+  function captureStart() {
+    return new Promise((resolve) => {
+      if (!els || !els.bar) { resolve(); return; }
+      capDepth++;
+      if (barTimer) { clearTimeout(barTimer); barTimer = null; }
+      if (capDepth > 1) { resolve(); return; }   // 既に退避済み（別の撮影が進行中）
+      const bar = els.bar;
+      ...
+      bar.classList.add('capturing');
+```
+
+**A-1**: `barTimer` のクリア直後に、進行中のシャッターフラッシュも畳む。
+これを入れないと、直前の撮影のフラッシュ（`.frame.flash`、CSS 500ms）が
+次のスクリーンショットに赤みとして写り込む。
+
+```js
+if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+if (els.frame) els.frame.classList.remove('flash');
+```
+
+**A-2**: `capDepth > 1` の早期 return を抜けても、`barTimer` を消した直後だと
+バーは既に `capturing` クラスを持っている。その状態で `classList.add` しても
+no-op なので `transitionend` が飛ばず、`CAP_FALLBACK_MS`（500ms）まで無駄に待つ。
+`const bar = els.bar;` の直後に置く:
+
+```js
+if (bar.classList.contains('capturing')) { resolve(); return; }
+```
+
+> **根拠の確度**: CSS のアニメ時間（`.bar` transition 240ms / `.frame.flash` 500ms）と
+> JS 定数（`CAP_FALLBACK_MS` 500 / `BAR_RETURN_MS` 170）からの**タイミング計算による導出**で、
+> 実ブラウザでの再現は未確認。修正自体は無害だが、**報告時はこの点を正直に書くこと。**
+
+**テスト**: `tests/smoke_badge.py` に、`captureEnd()` → 直後に `captureStart()` を呼び、
+`.frame` に `flash` クラスが残っていないことを確認するステップを足す。
+macOS で実行できなければ**コードだけ足して未実行と報告**する。
+
+### S-5 — `A-6` BOM 付き config.ini が読めない
+
+`config.py:67` の
 
 ```python
 parser.read(CONFIG_PATH, encoding="utf-8")
 ```
+
 を
+
 ```python
 parser.read(CONFIG_PATH, encoding="utf-8-sig")
 ```
+
 に変更するだけ。BOM の有無どちらでも読める。
 
 `USAGE.txt` が「config.ini をメモ帳で編集」と案内しているため、BOM 混入時に
-`MissingSectionHeaderError` → 「config.ini の読み込みに失敗しました」となり、
+`MissingSectionHeaderError` →「config.ini の読み込みに失敗しました」となり、
 利用者が原因に辿り着けない。
 
----
-
-## 4. テストの追加
-
-現状 `_capture` / `CaptureRunner` は未テスト。最低限、以下を足す。
-
-- **A-3 の回帰** (`tests/test_capture.py`): `_step` に `done` を渡して、
-  例外なし → tag が積まれる／例外あり → 積まれない、を検証。純粋なので簡単。
-- **A-1 の回帰** (`tests/smoke_badge.py`): 既存の 3) ヘルパ確認の後に、
-  `captureEnd()` → 直後に `captureStart()` を呼び、`.frame` に `flash` クラスが
-  残っていないことを確認するステップを足す。
-  smoke は Edge 必須なので、macOS で実行できなければ**コードだけ足して未実行と報告**する。
+**テスト**: BOM 付きの一時 config.ini を書いて `load_config()` が成功することを検証。
+既存の `_write_config`（`tests/test_capture.py:114`）を流用できる。
 
 ---
 
 ## 5. コードベース固有の落とし穴
 
-このリポジトリには、知らないと壊す仕掛けがいくつかある。
+知らないと壊す仕掛けがある。
 
 1. **`badge.js` の `$CONFIG` 置換** — `badge.py:109` が
    `src.replace("$CONFIG", json.dumps(config))` で単純置換している。
@@ -195,9 +265,13 @@ parser.read(CONFIG_PATH, encoding="utf-8-sig")
    `edge_auto_capture.py:117` の `self.seen: "dict[Page, str]" = {}` のように、
    **インスタンス属性の注釈は文字列で書く**こと（素の `dict[...]` は 3.8 で実行時 TypeError）。
    関数ローカル変数の注釈は評価されないので素で書いてよい。
+   S-1 で `Optional[Path]` を使うなら `typing` から import すること。
 
 3. **例外の握り潰しは意図的** — `try_eval` / `_step` / `infra` の各 `except: pass` は
-   堅牢性のための設計で、各所にコメントがある。**「握り潰しを直す」方向のリファクタはしない。**
+   堅牢性のための設計で、各所にコメントがある。
+   **「握り潰しを直す」方向の一括リファクタはしない。**
+   S-1 と S-2 は「握り潰しの結果が利用者に伝わらない」ことへの対処であって、
+   握り潰しそのものを消す作業ではない。
    `ruff` も `B008` を意図的に ignore している。
 
 4. **`USAGE.txt` は Shift-JIS** — 編集する場合は文字コードを維持すること
@@ -222,13 +296,20 @@ python tests/smoke_badge.py   # Edge があれば。SKIP されたら「未検�
 
 ---
 
-## 7. コミットについて
+## 7. コミット・報告について
 
-利用者はまだコミットを指示していない。**勝手にコミット／プッシュしないこと。**
-変更が揃った時点で内容を報告し、コミットするか確認する。
+- **1 件（S-1〜S-5）ごとに 1 コミット。** まとめない
+- コミットメッセージは既存の慣習（日本語・`種別: 内容` 形式）に合わせる
+  例: `修正: 保存先が書き込み不可のとき無言終了せず退避先へフォールバックする`
+- **push / タグ付け / ブランチ作成はしない。** 利用者に確認する
+- 文書（`docs/`）を直す必要が出たら直してよいが、**その旨を報告に含める**
+- 未検証の項目は必ず「未検証」と明記する
 
-コミットメッセージは既存の慣習（日本語・`種別: 内容` 形式）に合わせる。
-例: `修正: 連続撮影時にシャッターフラッシュが次のスクショへ写り込む問題`
+### 終わったあとに利用者へ確認すべきこと
 
-`docs/` の 3 文書は `07452a6` でコミット済み（**未 push**）。
-push するかどうかも利用者の判断なので、勝手に push しないこと。
+| 項目 | 内容 |
+|------|------|
+| `D-A1` | **ライセンス選定** — 決まらないと配布できない。他のどの作業とも独立して今すぐ決められる |
+| `B-6` | MutationObserver 常時稼働（`ROADMAP.md` 11 位）。`badge.js` の小変更で全利用者の負荷が下がる |
+| `E-4` | ダウンロード消失（`ROADMAP.md` 5 位）。**実機検証が先** |
+| `D-A3` | プライバシー注意書き（`ROADMAP.md` 6 位）。文面は法務確認が要るかもしれない |
