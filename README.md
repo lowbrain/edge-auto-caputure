@@ -13,9 +13,13 @@ Microsoft Edge で開いたページを、**記録ONの間だけ**、フルペ�
 - 記録ON中、Playwright が `poll_interval` ごとに各ページの URL/タブ変化を検知し、変化ごとに
   capture（`png` / `txt`、セレクタ指定時は `_part.txt`）を走らせる。Edge の起動・監視・終了・
   一時プロファイルの後始末までを一括で行う（毎回まっさらな一時プロファイルで起動）。
-- **SPA検知**: 指定セレクタ要素の innerText を短いハッシュ（コンテンツ署名）にし、「前 tick から
-  署名が安定」かつ「前回保存時と署名が異なる」ときだけ保存する（重複除外＋描画途中の撮影回避）。
-  記録ONがマスタースイッチで、SPA検知は記録ON中のみ動く。
+- **SPA検知**: 中身変化の検出はページ側（`badge.js`）がイベント駆動で行う。`MutationObserver` で
+  DOM 変化を捉え、`settle_delay` ぶん変化が止まって「落ち着いた」ら対象の innerText を短いハッシュ
+  （コンテンツ署名）にし、前回保存時と署名が異なるときだけ Python へ通知して保存する（重複除外＋
+  描画途中の撮影回避）。監視対象はセレクタ指定時はその要素、未指定時はページ主要部（`main`/`article`、
+  無ければ本文全体）。`history.pushState` 等のルート変化はフックして基準を取り直すだけにし、URL変化
+  側の1枚と二重に撮らない。記録ONがマスタースイッチで、SPA検知は記録ON中のみ動く。従来の「Python が
+  毎 tick 全ページの署名を評価するポーリング」を廃したので、変化が無い間は署名計算が走らない。
 - 操作バーは各ページへ `add_init_script` で注入し、**Shadow DOM** の中に作る。サイト側 CSS の
   影響を受けず、`document.querySelectorAll` にも紛れ込まないため、全文/一部抜き出しにバーの
   文言が混ざらない。スクリーンショット撮影の瞬間だけバーを隠すので、保存物（png/txt/_part.txt）
@@ -42,9 +46,8 @@ edge-auto-capture/
 ├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG に集約）
 ├─ badge.js               操作バーのページ側JS本体（実ファイル）
 ├─ tests/
-│  ├─ smoke_badge.py         操作バーJSのスモークテスト（Edge headless で構築確認）
+│  ├─ smoke_badge.py         操作バーJS＋SPA検知監視のスモークテスト（Edge headless）
 │  ├─ test_capture.py        純粋関数・設定読み込みのユニットテスト（pytest）
-│  ├─ test_spa_decision.py   SPA検知の落ち着き判定のユニットテスト（pytest）
 │  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
 │  └─ conftest.py            pytest 共通設定
 ├─ config.ini             既定の設定ファイル
@@ -87,8 +90,9 @@ python edge_auto_capture.py
 - **`_part.txt` の抽出**: Playwright の `page.locator(sel)` → CSS に加え Playwright 独自記法
   （`text=` / `:has-text()` / `xpath=` など）も使える。
 - **SPA検知の署名**: ページ側 `document.querySelectorAll(sel)` → **標準 CSS のみ**。
+  セレクタ未入力のときは主要部（`main`/`article`/本文）を自動監視するので、SPA検知にセレクタは必須ではない。
 
-したがって SPA検知も使う値は**標準 CSS**にすること（独自記法は SPA検知では無反応になる）。
+したがって SPA検知でセレクタを使うなら**標準 CSS**にすること（独自記法は SPA検知では無反応になる）。
 書き方・調べ方・確認方法（一致件数）など利用者向けの説明は `USAGE.txt` にまとめている。
 
 ### テスト
@@ -101,8 +105,10 @@ python edge_auto_capture.py
 
 - `test_capture.py` … 純粋関数（`safe_name` / `page_label`）と設定読み込み（`load_config`）。
   切り詰め・フォールバック・既定値・空値や範囲外値の扱いを検証。
-- `test_spa_decision.py` … SPA検知の落ち着き判定（`spa_capture_decision`）。
-- `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合。
+- `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合
+  （SPA変化通知 `__eac_spa_changed` の記録状態ゲートを含む）。
+
+SPA検知の落ち着き判定はページ側（`badge.js`）へ移したため、その回帰確認はスモークテストが担う。
 
 ```bash
 pip install -e ".[dev]"
@@ -111,8 +117,9 @@ pytest
 
 **2. スモークテスト（実 Edge headless・遅い）**
 
-操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）が
-例外なく動くかを、システムの Edge を headless で使って確認する。
+操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）と
+SPA検知の監視（本文を変えると `__eac_spa_changed` が発火する一連）が例外なく動くかを、
+システムの Edge を headless で使って確認する。
 
 ```bash
 python tests/smoke_badge.py

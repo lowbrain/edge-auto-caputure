@@ -47,6 +47,22 @@ def test_set_selector_ignored_without_token():
     assert s.selector == ""  # 外部から書き換えられない
 
 
+def test_spa_changed_ignored_without_token():
+    # 合言葉不一致（操作バー以外）からの変化通知は無視する（source を触らず早期 return）。
+    s = _session()
+    s.on = True
+    s.spa_on = True
+    asyncio.run(s.on_spa_changed(None, token="wrong", sig="x"))  # 例外なく無視される
+
+
+def test_spa_changed_ignored_when_not_recording():
+    # 正規 token でも、記録OFF なら撮らない（記録ON がマスタースイッチ）。
+    s = _session()
+    s.on = False
+    s.spa_on = True
+    asyncio.run(s.on_spa_changed(None, token=s.token, sig="x"))  # 記録OFF なので無視される
+
+
 @pytest.mark.parametrize("token", ["wrong", None, ""])
 def test_get_state_hides_real_state_without_token(token):
     s = _session()

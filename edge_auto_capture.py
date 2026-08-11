@@ -10,10 +10,12 @@
 加え、上記ボタン・セレクタ入力欄・「SPA検知」トグル・バーを半透明にする「透過」トグルが
 並ぶ（保存する png / txt / part のいずれにも写し込まない）。
 
-SPA（URLが変わらず中身だけ変わるページ）向けに、入力欄へ CSS セレクタを入れて「SPA検知」を
-ON にすると、記録ON中はそのセレクタ要素の中身が変わるたびに自動保存する（同じ内容は署名
-比較で撮らない）。セレクタが空だと SPA検知は使えない。このセレクタは _part.txt の抜き出し
-対象も兼ねる（初期値は config.ini の target_selector）。
+SPA（URLが変わらず中身だけ変わるページ）向けに「SPA検知」を ON にすると、記録ON中はページの
+中身が変わるたびに自動保存する（同じ内容は署名比較で撮らない）。中身変化の検出はページ側
+（badge.js）がイベント駆動（MutationObserver＋落ち着きのデバウンス）で行う。入力欄に CSS
+セレクタを入れればその要素を監視し、空ならページ主要部（main/article、無ければ本文全体）を
+自動監視する。このセレクタは _part.txt の抜き出し対象も兼ねる（初期値は config.ini の
+target_selector）。
 
 Edge の起動・監視・後始末はこのスクリプトが一括で行う（Playwright が毎回まっさらな一時
 プロファイルで Edge を起動し、終了時に自動で掃除する）。
@@ -54,7 +56,6 @@ from capture import (
     load_config,
     log,
     notify_fatal,
-    spa_capture_decision,
     spawn_capture,
     try_eval,
 )
@@ -95,7 +96,10 @@ class CaptureSession:
     まとめて持つ。以前は main() 内のネスト関数群だったものをクラスへ集約し、状態の
     所在を明確にして main() を薄くする。
 
-    不変条件: selector が空なら spa_on は必ず False（検知対象が無いため）。
+    SPA検知の中身変化の検出はページ側（badge.js）がイベント駆動で行い、落ち着いた変化を
+    __eac_spa_changed で通知してくる。ここではその通知を受けて撮る（毎tickの署名評価は無い）。
+    セレクタ未設定でも既定ルート（main/article/本文）を監視するため、spa_on は selector の
+    有無に依らず ON にできる。
     """
 
     def __init__(self, context, config: Config) -> None:
@@ -114,28 +118,8 @@ class CaptureSession:
         # Python 3.9+ の機能で、インスタンス属性への注釈は関数スコープでも実行時評価される
         # ため、素で書くと 3.8 起動時に TypeError になる（requires-python >=3.8 と整合させる）。
         self.seen: "dict[Page, str]" = {}         # page -> 直近のURL
-        self.sig_seen: "dict[Page, str]" = {}     # page -> 最後に撮った署名
-        self.sig_prev: "dict[Page, str]" = {}     # page -> 前 tick の署名（落ち着き判定用）
 
     # ---- ページ側とのやり取り ----
-
-    async def _sig(self, page: Page) -> str:
-        """現在のセレクタで、そのページのコンテンツ署名を得る。"""
-        return await page.evaluate(badge.SIG_CALL, self.selector)
-
-    async def reseed_signatures(self) -> None:
-        """全ページの SPA署名基準を「現在の内容」に取り直す。
-
-        SPA検知を ON にした瞬間やセレクタを変えた直後に呼ぶ。基準を現状に
-        合わせることで、開始/変更の直後に無駄撮りせず、以後の「変化」だけを契機にする。
-        """
-        for pg in list(self.context.pages):
-            try:
-                sig = await self._sig(pg)
-            except Exception:
-                continue
-            self.sig_seen[pg] = sig
-            self.sig_prev[pg] = sig
 
     async def refresh_panels(self) -> None:
         """開いている全ページの操作バーへ現在の状態（記録中/SPA検知/セレクタ）を反映する。
@@ -207,24 +191,21 @@ class CaptureSession:
     async def on_spa_toggle(self, source, token=None) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
 
-        セレクタ未設定では検知対象が無いので no-op（UI 側でも無効化しているが二重防御）。
-        ON にした瞬間は署名基準を現状に取り直し、開始直後の無駄撮りを避ける。
+        セレクタ未設定でも既定ルート（main/article/本文）を監視するため、常に切替可。
+        署名基準の取り直し（開始直後の無駄撮り回避）はページ側（badge.js の spaSyncBaseline）が
+        状態反映のタイミングで行うので、ここでは状態を反転してバーへ反映するだけでよい。
         """
         if not self._authorized(token):
             return
-        if not self.selector:
-            return
         self.spa_on = not self.spa_on
         log(f"[SPA] {'ON' if self.spa_on else 'OFF'}")
-        if self.spa_on:
-            await self.reseed_signatures()
         await self.refresh_panels()
 
     async def on_set_selector(self, source, token=None, value="") -> None:
         """セレクタ入力欄の変更（入力のたびに呼ばれる）。実行時セレクタを更新する。
 
-        空になったら SPA検知を OFF に落とす（検知対象が無いため）。SPA検知中に
-        対象が変わったら署名基準を取り直す（旧セレクタの署名で誤検知しないため）。
+        空にしても SPA検知は落とさない（既定ルート監視に切り替わるため）。SPA検知中に
+        対象が変わったときの署名基準の取り直しは、状態反映を受けたページ側が行う。
         ログは氾濫を避けるためここでは出さず、確定時（on_commit_selector）に出す。
         """
         if not self._authorized(token):
@@ -233,11 +214,28 @@ class CaptureSession:
         if new == self.selector:
             return
         self.selector = new
-        if not new:
-            self.spa_on = False
-        elif self.spa_on:
-            await self.reseed_signatures()
         await self.refresh_panels()
+
+    async def on_spa_changed(self, source, token=None, sig=None) -> None:
+        """SPA検知の通知: ページ側が「落ち着いた中身の変化」を検知したときに呼ばれる。
+
+        記録ON かつ SPA検知ON のときだけ、通知元ページを1枚撮る。落ち着き判定・重複除外
+        （同じ署名は通知しない）はページ側（badge.js）が済ませているので、ここでは記録状態の
+        ゲートと skip_urls だけ見て撮る。token 不一致（操作バー以外）は黙って無視する。
+        """
+        if not self._authorized(token):
+            return
+        if not (self.on and self.spa_on):
+            return
+        pg = source["page"]
+        try:
+            url = pg.url
+        except Exception:
+            return
+        if url in self.config.skip_urls:
+            return
+        log(f"[SPA変化] {url}")
+        spawn_capture(pg, url, self.config, self.selector)
 
     async def on_commit_selector(self, source, token=None, value="") -> None:
         """セレクタ入力の確定（blur / Enter）。最終値をログに残す。
@@ -277,24 +275,25 @@ class CaptureSession:
         await self.context.expose_binding("__eac_spa_toggle", self.on_spa_toggle)
         await self.context.expose_binding("__eac_set_selector", self.on_set_selector)
         await self.context.expose_binding("__eac_commit_selector", self.on_commit_selector)
+        await self.context.expose_binding("__eac_spa_changed", self.on_spa_changed)
         await self.context.expose_binding("__eac_getstate", self.get_state)
-        # badge.js には今回の合言葉（token）を埋め込む。各バインディング呼び出しの照合に使う。
-        await self.context.add_init_script(badge.build_badge_script(self.token))
+        # badge.js には今回の合言葉（token）と SPA検知のデバウンス時間（settle_delay をミリ秒へ）を
+        # 埋め込む。token は各バインディング呼び出しの照合、settle は落ち着き判定に使う。
+        settle_ms = int(self.config.settle_delay * 1000)
+        await self.context.add_init_script(badge.build_badge_script(self.token, settle_ms))
 
     def _prune(self, pages) -> None:
-        """閉じられたページを管理から除去（seen と SPA署名の両方）。"""
+        """閉じられたページを管理から除去する。"""
         for pg in list(self.seen):
             if pg not in pages:
                 del self.seen[pg]
-        for pg in list(self.sig_prev):
-            if pg not in pages:
-                self.sig_prev.pop(pg, None)
-                self.sig_seen.pop(pg, None)
 
     async def run(self, closed: asyncio.Event) -> None:
         """Edge のウィンドウが閉じるまで監視する。
 
-        URL変化・新規タブ・（SPA検知ONなら）中身変化を契機に保存する。
+        URL変化・新規タブを契機に保存する。中身変化（SPA検知）はページ側がイベント駆動で
+        検知し、__eac_spa_changed（on_spa_changed）経由で保存を要求してくるため、この
+        ループでは扱わない（毎tickの署名評価が無くなり負荷が下がる）。
         """
         while not closed.is_set():
             pages = list(self.context.pages)
@@ -307,7 +306,6 @@ class CaptureSession:
             # ON にした瞬間に現在ページが「変化」として検知され撮れる
             #（on_toggle でも即撮りするため通常は先回り）。
             if self.on:
-                spa_active = self.spa_on and bool(self.selector)
                 for pg in pages:
                     try:
                         url = pg.url
@@ -316,26 +314,9 @@ class CaptureSession:
                     if url in self.config.skip_urls:
                         continue
 
-                    url_changed = self.seen.get(pg) != url
-                    if url_changed:
+                    if self.seen.get(pg) != url:
                         self.seen[pg] = url
                         spawn_capture(pg, url, self.config, self.selector)
-
-                    # SPA検知: セレクタ要素の中身の変化を契機に保存。撮るべきかの判定は
-                    # spa_capture_decision（純粋関数）に委譲する（落ち着き判定の詳細はそちら）。
-                    if spa_active:
-                        try:
-                            sig = await self._sig(pg)
-                        except Exception:
-                            sig = None
-                        if sig is not None:
-                            decision = spa_capture_decision(
-                                sig, url_changed, self.sig_seen.get(pg), self.sig_prev.get(pg)
-                            )
-                            self.sig_seen[pg] = decision.sig_seen
-                            if decision.capture:
-                                spawn_capture(pg, url, self.config, self.selector)
-                            self.sig_prev[pg] = sig
 
             await asyncio.sleep(self.config.poll_interval)
 
@@ -377,7 +358,7 @@ async def main(config: Config) -> None:
 
             log(
                 f"Edge を起動しました（記録は{'ON' if session.on else 'OFF（待機）'}で開始）。"
-                "ページ上部の操作バーで記録開始/停止・今すぐ1枚・SPA検知（セレクタ入力時）を"
+                "ページ上部の操作バーで記録開始/停止・今すぐ1枚・SPA検知を"
                 "操作できます（終了するには Edge のウィンドウを閉じてください）"
             )
 
