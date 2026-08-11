@@ -40,7 +40,9 @@ edge-auto-capture/
 ├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG に集約）
 ├─ badge.js               操作バーのページ側JS本体（実ファイル）
 ├─ tests/
-│  └─ smoke_badge.py      操作バーJSのスモークテスト（Edge headless で構築確認）
+│  ├─ smoke_badge.py      操作バーJSのスモークテスト（Edge headless で構築確認）
+│  ├─ test_capture.py     capture.py の純粋関数・設定読み込みのユニットテスト（pytest）
+│  └─ conftest.py         pytest 共通設定
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
 ├─ README.md              このファイル（開発者向け）
@@ -86,6 +88,21 @@ python edge_auto_capture.py
 書き方・調べ方・確認方法（一致件数）など利用者向けの説明は `USAGE.txt` にまとめている。
 
 ### テスト
+
+テストは 2 系統ある。
+
+**1. ユニットテスト（pytest・速い／実 Edge 不要）**
+
+`capture.py` の純粋関数（`safe_name` / `page_label`）と設定読み込み（`load_config`）を検証する。
+docstring/コメントに書かれた「微妙な仕様」（切り詰め・フォールバック・既定値・空値や範囲外値の
+扱い）を回帰から守るのが狙い。
+
+```bash
+pip install -e ".[dev]"
+pytest
+```
+
+**2. スモークテスト（実 Edge headless・遅い）**
 
 操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）が
 例外なく動くかを、システムの Edge を headless で使って確認する。
