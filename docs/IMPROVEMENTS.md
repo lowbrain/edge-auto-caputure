@@ -98,9 +98,14 @@ UI 経由で素通りしていた。
 4. **回帰テスト**を `tests/smoke_badge.py` に追加
    （`host.shadowRoot` が `null` であること）。
 
-> **検証状況**: `pytest`（34 件）と `ruff` は通過。
-> **スモークテストは実 Edge が無い環境のため未実行**（SKIP）。
-> `mode: 'closed'` と `callBinding` の実挙動は Edge のある環境で確認すること。
+> **検証状況**: `pytest`（34 件）と `ruff`（0 件）は通過。
+> 生成スクリプト側も、`closed` 化・`open` の消失・`__eac_debugRoot` の gate・
+> `$CONFIG` 置換を確認済み。
+>
+> **スモークテストは未実行**（開発ホストが macOS で Edge が無く、SKIP になる）。
+> 代替ブラウザを入れての実走は**利用者の判断で省略した**（検証漏れではない）。
+> したがって `mode: 'closed'` と `callBinding` の**実挙動は未確認**であり、
+> Edge のある Windows 環境でスモークを 1 回通すことが残っている。
 
 ### A-5. `cleanup_old_profiles` が同時起動を壊す（中）
 
