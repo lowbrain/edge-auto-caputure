@@ -17,10 +17,10 @@ Microsoft Edge で開いたページを、**記録ONの間だけ**、フルペ�
   署名が安定」かつ「前回保存時と署名が異なる」ときだけ保存する（重複除外＋描画途中の撮影回避）。
   記録ONがマスタースイッチで、SPA検知は記録ON中のみ動く。
 - 操作バーは各ページへ `add_init_script` で注入し、**Shadow DOM** の中に作る。サイト側 CSS の
-  影響を受けず、`document.querySelectorAll` にも紛れ込まないため、全文/一部抜き出しにパネルの
+  影響を受けず、`document.querySelectorAll` にも紛れ込まないため、全文/一部抜き出しにバーの
   文言が混ざらない。スクリーンショット撮影の瞬間だけバーを隠すので、保存物（png/txt/_part.txt）
   にも写り込まない。保存が終わるとバーを一瞬フラッシュして「保存した」ことを知らせる。
-- バー右端の**「透過」トグル**（枠なしの目アイコン）で、パネルを一時的に半透明にして下に隠れた
+- バー右端の**「透過」トグル**（枠なしの目アイコン）で、バーを一時的に半透明にして下に隠れた
   ページ内容を確認できる（見た目だけのローカル状態で、記録状態や保存物には影響しない）。
 
 ## 動作条件
@@ -42,9 +42,11 @@ edge-auto-capture/
 ├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG に集約）
 ├─ badge.js               操作バーのページ側JS本体（実ファイル）
 ├─ tests/
-│  ├─ smoke_badge.py      操作バーJSのスモークテスト（Edge headless で構築確認）
-│  ├─ test_capture.py     capture.py の純粋関数・設定読み込みのユニットテスト（pytest）
-│  └─ conftest.py         pytest 共通設定
+│  ├─ smoke_badge.py         操作バーJSのスモークテスト（Edge headless で構築確認）
+│  ├─ test_capture.py        純粋関数・設定読み込みのユニットテスト（pytest）
+│  ├─ test_spa_decision.py   SPA検知の落ち着き判定のユニットテスト（pytest）
+│  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
+│  └─ conftest.py            pytest 共通設定
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
 ├─ README.md              このファイル（開発者向け）
@@ -95,9 +97,12 @@ python edge_auto_capture.py
 
 **1. ユニットテスト（pytest・速い／実 Edge 不要）**
 
-`capture.py` の純粋関数（`safe_name` / `page_label`）と設定読み込み（`load_config`）を検証する。
-docstring/コメントに書かれた「微妙な仕様」（切り詰め・フォールバック・既定値・空値や範囲外値の
-扱い）を回帰から守るのが狙い。
+実 Edge を使わずに、間違えやすいロジックと「微妙な仕様」を回帰から守る。
+
+- `test_capture.py` … 純粋関数（`safe_name` / `page_label`）と設定読み込み（`load_config`）。
+  切り詰め・フォールバック・既定値・空値や範囲外値の扱いを検証。
+- `test_spa_decision.py` … SPA検知の落ち着き判定（`spa_capture_decision`）。
+- `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合。
 
 ```bash
 pip install -e ".[dev]"
