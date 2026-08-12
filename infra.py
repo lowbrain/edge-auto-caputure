@@ -10,6 +10,7 @@ Playwright やページ操作には依存しないので、実 Edge 無しで im
 """
 
 import shutil
+import subprocess
 import sys
 import tempfile
 from datetime import datetime
@@ -72,15 +73,52 @@ def log(msg: str) -> None:
 
 
 def _message_box(msg: str, title: str = "edge-auto-capture") -> None:
-    """致命的エラーを Windows のメッセージボックスで通知する（失敗しても無視）。
+    """致命的エラーをネイティブのダイアログで通知する（失敗しても無視）。
 
-    コンソールを持たない windowed exe では print が見えないため、
-    起動失敗などはダイアログで利用者に伝える。
+    コンソールを持たない windowed exe（Windows 配布物）では print が見えないため、
+    起動失敗などはダイアログで利用者に伝える。配布対象は Windows だが、開発機の
+    macOS でも同じエラーをダイアログで確認できるよう OS ごとに分岐する。
+    どの経路でも例外は握り潰す（ログ側で確実に残るため、通知は best-effort）。
     """
+    if sys.platform == "darwin":
+        _message_box_macos(msg, title)
+    else:
+        _message_box_windows(msg, title)
+
+
+def _message_box_windows(msg: str, title: str) -> None:
+    """Windows のメッセージボックス（MB_ICONERROR）で通知する。"""
     try:
         import ctypes
 
         ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)  # MB_ICONERROR
+    except Exception:
+        pass
+
+
+def _message_box_macos(msg: str, title: str) -> None:
+    """macOS で osascript を使いエラーダイアログを表示する（開発時の確認用）。
+
+    メッセージ・タイトルは AppleScript 文字列リテラルとして安全に埋め込む
+    （\\ と " をエスケープ）。AppleScript の文字列は生の改行を扱えないため、
+    改行は 'return' 連結（" & return & "）へ置き換える（notify_fatal の
+    複数行メッセージでも欠けずに表示できるように）。osascript が無い/失敗しても無視する。
+    """
+    def esc(s: str) -> str:
+        s = s.replace("\\", "\\\\").replace('"', '\\"')
+        s = s.replace("\r\n", "\n").replace("\r", "\n")
+        return s.replace("\n", '" & return & "')
+
+    script = (
+        f'display dialog "{esc(msg)}" with title "{esc(title)}" '
+        'buttons {"OK"} default button "OK" with icon stop'
+    )
+    try:
+        subprocess.run(
+            ["osascript", "-e", script],
+            check=False,
+            capture_output=True,
+        )
     except Exception:
         pass
 
