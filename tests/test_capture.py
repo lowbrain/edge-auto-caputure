@@ -320,6 +320,62 @@ profile_dir = {prof}
     assert load_config().profile_dir == str(prof)
 
 
+# --------------------------------------------------------------------------- #
+# resolve_writable_dir（D-C1: 書き込み不可の場所で無言終了しない）
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_writable_dir_returns_preferred_when_writable(tmp_path):
+    # 書き込める場所ならそのまま返し、フォルダを作る。
+    preferred = tmp_path / "output"
+    resolved = infra.resolve_writable_dir(preferred)
+    assert resolved == preferred
+    assert preferred.is_dir()
+
+
+def test_resolve_writable_dir_falls_back_when_readonly(monkeypatch, tmp_path):
+    # preferred が書き込み不可なら、LOCALAPPDATA 配下の退避先を返す。
+    readonly = tmp_path / "ro"
+    readonly.mkdir()
+    import os as _os
+
+    _os.chmod(readonly, 0o500)  # r-x（書き込み不可）
+    if _os.access(readonly, _os.W_OK):
+        pytest.skip("この環境では読み取り専用ディレクトリを再現できない（Windows 等）")
+
+    fallback_base = tmp_path / "appdata"
+    monkeypatch.setenv("LOCALAPPDATA", str(fallback_base))
+
+    preferred = readonly / "output"
+    resolved = infra.resolve_writable_dir(preferred)
+    try:
+        assert resolved is not None
+        assert resolved != preferred
+        assert resolved == fallback_base / "edge-auto-capture" / "output"
+        assert resolved.is_dir()
+    finally:
+        _os.chmod(readonly, 0o700)  # tmp_path 掃除のため書き込みを戻す
+
+
+def test_resolve_writable_dir_returns_none_when_nowhere_writable(monkeypatch, tmp_path):
+    # preferred も退避先も書けなければ None（呼び出し側が notify_fatal する）。
+    readonly = tmp_path / "ro"
+    readonly.mkdir()
+    import os as _os
+
+    _os.chmod(readonly, 0o500)
+    if _os.access(readonly, _os.W_OK):
+        pytest.skip("この環境では読み取り専用ディレクトリを再現できない（Windows 等）")
+
+    monkeypatch.setenv("LOCALAPPDATA", str(readonly / "appdata"))
+    monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(readonly / "tmp"))
+
+    try:
+        assert infra.resolve_writable_dir(readonly / "output") is None
+    finally:
+        _os.chmod(readonly, 0o700)
+
+
 def test_cleanup_old_profiles_removes_edge_debug_dirs(monkeypatch, tmp_path):
     # 一時フォルダ内の edge-debug-* を掃除する。
     monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))

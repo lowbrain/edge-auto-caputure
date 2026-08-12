@@ -362,7 +362,13 @@ class CaptureSession:
 
 
 async def main(config: Config) -> None:
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    # output_dir は load_config で書き込み可能な場所へ解決済み（D-C1）だが、その後に
+    # 消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知して抜ける。
+    try:
+        config.output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        notify_fatal(f"保存先フォルダを作成できませんでした: {config.output_dir}\n({e})")
+        return
 
     # プロファイルの置き場所を決める。
     #   profile_dir 未指定（既定）: 毎回まっさらな使い捨てプロファイル。終了時に削除する。
