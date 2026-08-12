@@ -96,6 +96,14 @@ def _browser_candidates(config: Config) -> list[tuple[str, str, str]]:
     return candidates
 
 
+def _downloads_dir(config: Config) -> Path:
+    """利用者のダウンロードを残す保存先（output_dir/downloads）を返す（E-4）。
+
+    撮影成果物（png/txt/log.txt）と混ざらないよう downloads サブフォルダに分ける。
+    """
+    return config.output_dir / "downloads"
+
+
 def _browser_launch_kwargs(
     config: Config, user_data_dir: str, channel: str, executable_path: str = ""
 ) -> dict:
@@ -124,6 +132,12 @@ def _browser_launch_kwargs(
         # 固定ビューポートのエミュレーションを外し、ウィンドウサイズにページを
         # 追従させる（--start-maximized も no_viewport でないと効かない）。
         no_viewport=True,
+        # 利用者が閲覧中に落としたファイルの受け皿を明示する（E-4）。
+        # 既定では Playwright が一時領域へ受け、コンテキストを閉じる際に削除するため、
+        # 終了時に利用者のダウンロードが黙って消える。保存先（output_dir）配下の
+        # downloads フォルダへ確実に残す。フォルダは main() で事前に作成する。
+        accept_downloads=True,
+        downloads_path=str(_downloads_dir(config)),
     )
     if executable_path:
         kwargs["executable_path"] = executable_path
@@ -368,6 +382,9 @@ async def main(config: Config) -> None:
     # 消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知して抜ける。
     try:
         config.output_dir.mkdir(parents=True, exist_ok=True)
+        # ダウンロードの受け皿（output_dir/downloads）も先に用意する（E-4）。
+        # Playwright に downloads_path として渡すため、起動前に存在させておく。
+        _downloads_dir(config).mkdir(parents=True, exist_ok=True)
     except Exception as e:
         notify_fatal(f"保存先フォルダを作成できませんでした: {config.output_dir}\n({e})")
         return
