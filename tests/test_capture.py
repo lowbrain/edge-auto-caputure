@@ -75,6 +75,31 @@ def test_safe_name_truncates_to_max_len():
 
 
 # --------------------------------------------------------------------------- #
+# _step（A-3: 全失敗でも [saved] と出さないための done 集約）
+# --------------------------------------------------------------------------- #
+
+
+def test_step_appends_tag_on_success():
+    done: list[str] = []
+    with capture._step("png", "http://x", done):
+        pass
+    assert done == ["png"]
+
+
+def test_step_does_not_append_on_exception():
+    done: list[str] = []
+    with capture._step("png", "http://x", done):
+        raise RuntimeError("boom")  # _step が握って [skip] ログを出す
+    assert done == []  # 失敗したステップは積まれない
+
+
+def test_step_without_done_still_swallows_exception():
+    # done を渡さない従来の使い方（load / title）でも例外を握ることは変わらない。
+    with capture._step("load", "http://x"):
+        raise RuntimeError("boom")
+
+
+# --------------------------------------------------------------------------- #
 # page_label
 # --------------------------------------------------------------------------- #
 

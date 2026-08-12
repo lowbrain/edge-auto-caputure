@@ -57,14 +57,20 @@ def page_label(title: str, url: str) -> str:
 
 
 @contextmanager
-def _step(tag: str, url: str):
+def _step(tag: str, url: str, done=None):
     """保存処理 1 ステップ分の共通ラッパ。
 
     例外が出ても [skip <tag>] を表示して握り、他ステップの続行を妨げない。
     （png / txt / part の 3 ステップで同じ try/except を書かないための共通化）
+
+    done を渡すと、例外なく完了したときだけ tag を追記する（A-3）。呼び出し側は
+    done に積まれた tag で「実際に何を保存できたか」を判定し、全滅時に誤って
+    [saved] と記録しないようにする。保存物ではない load / title には渡さない。
     """
     try:
         yield
+        if done is not None:
+            done.append(tag)
     except Exception as e:
         log(f"[skip {tag}] {url}  ({e})")
 
@@ -135,13 +141,17 @@ class CaptureRunner:
             title = await page.title()
         stem = f"{ts}_{page_label(title, url)}"              # 3ファイルで同じ接頭辞を共有
 
+        # 実際に保存できたステップの記録（A-3）。png / txt / part だけを積み、
+        # 全滅時に [saved] と嘘のログを残さないための判定材料にする。
+        done: list[str] = []
+
         # 1) フルページ スクリーンショット
         #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、撮影後に
         #    シャッターフラッシュ＋バー復帰。captureEnd は失敗時も戻すため finally で必ず呼ぶ。
         #    同一ページでの撮影重なりによる写り込みを防ぐため、この区間を page 単位のロックで直列化
         #    する（_page_lock 参照。別ページ同士は別ロックなので並行できる）。
         async with self._page_lock(page):
-            with _step("png", url):
+            with _step("png", url, done):
                 try:
                     await try_eval(page, badge.CAPTURE_START_CALL)  # 退避し切るまで待つ
                     await page.screenshot(
@@ -151,7 +161,7 @@ class CaptureRunner:
                     await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
 
         # 2) ページ全文テキスト（操作バーは除外して取得）
-        with _step("txt", url):
+        with _step("txt", url, done):
             text = await page.evaluate(badge.BODY_TEXT_CALL)
             (config.output_dir / f"{stem}.txt").write_text(
                 f"URL: {url}\n\n{text}", encoding="utf-8"
@@ -159,7 +169,7 @@ class CaptureRunner:
 
         # 3) 一部抜き出し（セレクタ設定時のみ）
         if selector:
-            with _step("part", url):
+            with _step("part", url, done):
                 # 操作バーはシャドウ内にあり locator（querySelector 相当）は境界を越えない。
                 # 広いセレクタ（div / body / * など）でもバーの文言は拾わないので隠す必要はない。
                 parts = await page.locator(selector).all_inner_texts()
@@ -171,4 +181,8 @@ class CaptureRunner:
                     encoding="utf-8",
                 )
 
-        log(f"[saved] {stem}.*  <- {url}")
+        # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
+        if done:
+            log(f"[saved] {stem}.*  ({','.join(done)})  <- {url}")
+        else:
+            log(f"[保存できず] {stem}  <- {url}")
