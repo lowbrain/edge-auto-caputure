@@ -23,7 +23,9 @@ Edge の起動・監視・後始末はこのスクリプトが一括で行う（
 構成（役割ごとにモジュール分割）:
   - edge_auto_capture.py … 本ファイル。エントリと監視セッション（CaptureSession）。
   - badge.py / badge.js  … 各ページ上部の操作バー（ページ側 JS 一式）。
-  - capture.py           … 設定読み込み・1ページ分の保存処理・基盤ユーティリティ。
+  - capture.py           … 1ページ分の保存処理（撮影実行器 CaptureRunner）・ページ操作ヘルパ。
+  - config.py            … 設定（Config / config.ini の load_config）。
+  - infra.py             … 基盤ユーティリティ（パス・ログ・致命エラー通知・一時プロファイル掃除）。
 
 事前準備:
   pip install -e .          （または pip install playwright）
