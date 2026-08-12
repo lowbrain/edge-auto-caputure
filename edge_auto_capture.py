@@ -104,6 +104,23 @@ def _downloads_dir(config: Config) -> Path:
     return config.output_dir / "downloads"
 
 
+def _unique_path(directory: Path, name: str) -> Path:
+    """directory/name を返す。既に在れば name(1)/name(2)… と連番を付けて衝突を避ける。
+
+    同名ファイルを続けて落としても上書きしないようにするため（拡張子は保つ）。
+    """
+    target = directory / name
+    if not target.exists():
+        return target
+    stem, suffix = Path(name).stem, Path(name).suffix
+    n = 1
+    while True:
+        cand = directory / f"{stem}({n}){suffix}"
+        if not cand.exists():
+            return cand
+        n += 1
+
+
 def _browser_launch_kwargs(
     config: Config, user_data_dir: str, channel: str, executable_path: str = ""
 ) -> dict:
@@ -132,12 +149,11 @@ def _browser_launch_kwargs(
         # 固定ビューポートのエミュレーションを外し、ウィンドウサイズにページを
         # 追従させる（--start-maximized も no_viewport でないと効かない）。
         no_viewport=True,
-        # 利用者が閲覧中に落としたファイルの受け皿を明示する（E-4）。
-        # 既定では Playwright が一時領域へ受け、コンテキストを閉じる際に削除するため、
-        # 終了時に利用者のダウンロードが黙って消える。保存先（output_dir）配下の
-        # downloads フォルダへ確実に残す。フォルダは main() で事前に作成する。
+        # ダウンロードを受理する（E-4）。既定でも真だが意図を明示する。
+        # ただし accept_downloads / downloads_path だけでは足りない: Playwright は
+        # どちらの場合もコンテキスト終了時にダウンロードを削除するため（実機で確認）、
+        # 別途 download イベントで save_as して退避する（CaptureSession.on_download）。
         accept_downloads=True,
-        downloads_path=str(_downloads_dir(config)),
     )
     if executable_path:
         kwargs["executable_path"] = executable_path
@@ -314,6 +330,26 @@ class CaptureSession:
             return {"recording": False, "spa": False, "selector": ""}
         return {"recording": self.on, "spa": self.spa_on, "selector": self.selector}
 
+    # ---- ダウンロードの退避（E-4） ----
+
+    async def on_download(self, download) -> None:
+        """利用者がブラウザで落としたファイルを保存先へ退避する（E-4）。
+
+        Playwright は既定でダウンロードをコンテキスト終了時に削除する。
+        accept_downloads / downloads_path を指定しても削除される（一時置き場が変わる
+        だけ）ので、ここで save_as して初めて手元に残る。元のファイル名のまま
+        output_dir/downloads へ保存し、同名衝突時は連番を付ける。
+        token 照合は不要（ブラウザ本体が発火するイベントで、ページ側から詐称できない）。
+        """
+        name = download.suggested_filename or "download"
+        target = _unique_path(_downloads_dir(self.config), name)
+        try:
+            await download.save_as(str(target))
+            log(f"[DL] 保存しました: {target.name}")
+        except Exception as e:
+            # 例: 保存前にウィンドウを閉じられ一時ファイルが消えた等。無言にはしない。
+            log(f"[DL] ダウンロードの保存に失敗しました: {name} ({e})")
+
     # ---- セットアップと監視ループ ----
 
     async def setup(self) -> None:
@@ -334,6 +370,9 @@ class CaptureSession:
         # 埋め込む。token は各バインディング呼び出しの照合、settle は落ち着き判定に使う。
         settle_ms = int(self.config.settle_delay * 1000)
         await self.context.add_init_script(badge.build_badge_script(self.token, settle_ms))
+        # ダウンロードは context 単位で拾う（全タブ・以後開く新規タブも自動対象）。
+        # 各ファイルを保存先へ退避しないと終了時に消える（E-4）。
+        self.context.on("download", self.on_download)
 
     def _prune(self, pages) -> None:
         """閉じられたページを管理から除去する。"""

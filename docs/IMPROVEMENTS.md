@@ -325,7 +325,7 @@ SPA 検知を使っていない利用者にも、閲覧しているだけで恒�
 > A-4（`closed` 化）は「**操作される**」問題、こちらは「**検知される**」問題で別軸。
 > ヘルパをグローバルに置かず、`page.evaluate` に関数を直接渡す形にすれば露出を減らせる。
 
-### E-4. ダウンロードしたファイルが消える（影響大）〔**実装済**（実機検証は推奨のまま）〕
+### E-4. ダウンロードしたファイルが消える（影響大）〔**実装済・実機検証済**〕
 
 （旧状態）`_browser_launch_kwargs` の起動オプションに `accept_downloads` / `downloads_path`
 の指定がなかった。Playwright はダウンロードを自前の一時領域へ受け、
@@ -333,13 +333,30 @@ SPA 検知を使っていない利用者にも、閲覧しているだけで恒�
 **終了時に消える**可能性が高かった。「Edge で普通に閲覧してください」と案内している
 ツール（`USAGE.txt`）としては驚きの挙動だった。
 
-**対応**（`_browser_launch_kwargs`）: `accept_downloads=True` を付け、
-`downloads_path` を `output_dir/downloads` に固定した。受け皿フォルダは起動前に
-`main()` で作成する。撮影成果物（png/txt/log.txt）と混ざらないようサブフォルダに分けた。
-起動オプションの組み立ては `tests/test_downloads.py` で回帰を張った。
+> **実機検証で判明した重要点（Playwright 1.60.0 / Chrome）**:
+> 当初案の「`downloads_path` を `output_dir` 配下へ明示するだけ」では**解決しない**。
+> Playwright は `downloads_path` を指定しても**コンテキスト終了時にダウンロードを削除する**
+> （一時置き場が変わるだけ）。実際に検証したところ、終了後に受け皿は空だった。
+> **`download` イベントで `save_as()` して退避して初めて残る。**
 
-> Playwright のバージョンで挙動が異なる可能性があるため、**実機での最終確認は引き続き推奨**。
-> （ダウンロードが実際に `output_dir/downloads` に残るかは実ブラウザでの確認が要る。）
+**対応**（実機検証に基づく最終版）:
+> - `_browser_launch_kwargs`: `accept_downloads=True` を明示（受理する意図）。
+>   `downloads_path` は単独では効かないため付けない。
+> - `CaptureSession.on_download`: `context.on("download")`（context 単位・全タブ対象）で
+>   受け、`output_dir/downloads/<元のファイル名>` へ `save_as` する。同名衝突は連番。
+>   受け皿フォルダは `main()` で起動前に作成する。
+> - 撮影成果物（png/txt/log.txt）と混ざらないよう `downloads` サブフォルダに分けた。
+
+**実機検証の結果**（`edge_auto_capture` の実経路 `setup()` で確認）:
+> - 閉じた後も `output_dir/downloads` にファイルが残る（対照実験として、退避なしでは消えることも確認）。
+> - HTTP の `Content-Disposition`（`filename*=UTF-8''…`）経由なら**日本語ファイル名も正しく保持**（例: `資料.txt`）。
+> - 同名を続けて落とすと `name(1).txt` … と連番になり上書きしない。
+>
+> 既知の軽微な癖: `data:` URL の `download` 属性から落とした場合、Chromium が推定する
+> ファイル名が文字化けすることがある（`data:` 特有で、通常の HTTP ダウンロードでは発生しない）。
+> 退避自体は行われるため消失は起きない。
+
+回帰は `tests/test_downloads.py` で担保（退避先・連番・`save_as` 呼び出しをスタブで検証）。
 
 ### E-5. 非 HTML コンテンツでの挙動が未定義〔**未**〕
 
