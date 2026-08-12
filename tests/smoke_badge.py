@@ -8,7 +8,9 @@
 
 使い方:
     python tests/smoke_badge.py
-終了コード 0=成功 / 1=失敗。Edge を起動できない環境では SKIP（0）で抜ける。
+終了コード 0=成功 / 1=失敗。実アプリと同じく Edge を優先し、無ければ Chrome へ
+フォールバックする（どちらも Chromium 系でバー JS の検証は等価）。Edge も Chrome も
+起動できない環境では SKIP（0）で抜ける。
 """
 
 import sys
@@ -24,18 +26,32 @@ import badge  # noqa: E402
 BADGE_SEL = f'#{badge.BADGE_ID}'
 
 
+# 実アプリ（edge_auto_capture）と同じく Edge を優先し、無ければ Chrome へ回す。
+# 同じ Chromium 系なので、操作バー JS の構築・挙動の検証としては等価。
+_CHANNELS = ("msedge", "chrome")
+
+
 def run() -> int:
     errors: list[str] = []
     with sync_playwright() as p:
-        try:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir="",  # 一時プロファイル（空文字＝Playwrightが用意）
-                channel="msedge",
-                headless=True,
-            )
-        except Exception as e:
-            print(f"SKIP: Edge を起動できませんでした（{e}）")
+        context = None
+        launched = ""
+        last_err: object = None
+        for channel in _CHANNELS:
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir="",  # 一時プロファイル（空文字＝Playwrightが用意）
+                    channel=channel,
+                    headless=True,
+                )
+                launched = channel
+                break
+            except Exception as e:
+                last_err = e
+        if context is None:
+            print(f"SKIP: Edge/Chrome のいずれも起動できませんでした（{last_err}）")
             return 0
+        print(f"（起動ブラウザ: {launched}）")
 
         try:
             page = context.new_page()
