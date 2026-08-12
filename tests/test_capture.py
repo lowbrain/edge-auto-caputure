@@ -9,6 +9,7 @@ docstring/コメントに書かれた「微妙な仕様」（切り詰め・フ�
     pytest
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -343,6 +344,27 @@ profile_dir = {prof}
 """,
     )
     assert load_config().profile_dir == str(prof)
+
+
+# --------------------------------------------------------------------------- #
+# バージョン（D-B1: 出所を infra.__version__ に一本化する）
+# --------------------------------------------------------------------------- #
+
+
+def test_infra_version_is_semverish():
+    # exe / ログに出す唯一の出所。空や壊れた値を弾く。
+    assert re.match(r"^\d+\.\d+\.\d+$", infra.__version__)
+
+
+def test_pyproject_sources_version_from_infra():
+    # pyproject はバージョンを直書きせず infra.__version__ を参照すること。
+    # 直書きに戻すと二重管理になり「片方だけ上げる」事故が起きる（D-B1）。
+    root = Path(__file__).resolve().parent.parent
+    text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert re.search(r'dynamic\s*=\s*\[\s*"version"\s*\]', text)
+    assert re.search(r'attr\s*=\s*"infra\.__version__"', text)
+    # バージョンの直書き行（version = "x.y.z"）が残っていないこと。
+    assert not re.search(r'^\s*version\s*=\s*"', text, re.MULTILINE)
 
 
 # --------------------------------------------------------------------------- #

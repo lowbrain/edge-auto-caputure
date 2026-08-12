@@ -18,6 +18,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# バージョンの単一の出所（D-B1）。pyproject.toml は
+# [tool.setuptools.dynamic] version = {attr = "infra.__version__"} でここを参照する。
+# infra は依存の最下層（Playwright 非依存）なので循環せず、exe / ログ / UI から参照できる。
+__version__ = "0.1.0"
+
 
 def _base_dir() -> Path:
     """設定・保存先の基準フォルダを返す。
