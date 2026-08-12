@@ -14,6 +14,7 @@
 """
 
 import sys
+import time
 from pathlib import Path
 
 # プロジェクト直下（このファイルの親の親）を import パスに入れて badge を読む。
@@ -165,6 +166,25 @@ def run() -> int:
                 errors.append("captureEnd 後にフラッシュが付いていません（A-1 テストの前提が崩れている）")
             if still_flash:
                 errors.append("captureStart 後もフラッシュが残っています（A-1 の回帰）")
+
+            # 9) A-2 の回帰: バーが既に退避済み（capturing）のまま次の captureStart が
+            #    来たとき、transitionend を待たず即座に解決すること。修正前は
+            #    classList.add('capturing') が no-op で transitionend が飛ばず、
+            #    CAP_FALLBACK_MS(500ms) まで無駄に待っていた。
+            #    captureEnd 直後（capturing を外す barTimer が発火する前）に captureStart を
+            #    呼ぶと、バーは capturing のまま capDepth が 1 に戻り、この分岐に入る。
+            page.evaluate(badge.CAPTURE_START_CALL)   # 退避（capturing=true, capDepth=1）
+            page.evaluate(badge.CAPTURE_END_CALL)     # 終了（capDepth=0、直後は capturing 継続）
+            t0 = time.monotonic()
+            page.evaluate(badge.CAPTURE_START_CALL)   # 退避済みからの再退避（A-2: 即解決するはず）
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            page.evaluate(badge.CAPTURE_END_CALL)     # 後始末（capDepth を均衡させる）
+            # 修正あり: 数ms。修正なし: CAP_FALLBACK_MS(500ms) 近く待つ。間を取って 250ms で判定。
+            if elapsed_ms >= 250:
+                errors.append(
+                    f"A-2: 退避済みからの captureStart が {elapsed_ms:.0f}ms 待ちました"
+                    "（transitionend 不発で 500ms 無駄待ちする回帰）"
+                )
         finally:
             context.close()
 
@@ -175,7 +195,8 @@ def run() -> int:
         return 1
     print(
         "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
-        "SPA検知の通知・フラッシュ写り込み防止(A-1)・JSエラー無しを確認しました。"
+        "SPA検知の通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・"
+        "JSエラー無しを確認しました。"
     )
     return 0
 
