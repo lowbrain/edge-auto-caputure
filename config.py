@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from infra import BASE_DIR, log, notify_fatal, set_log_dir
+from infra import BASE_DIR, log, notify_fatal, resolve_writable_dir, set_log_dir
 
 # 設定ファイルのパス（基準フォルダ固定）。
 CONFIG_PATH = BASE_DIR / "config.ini"
@@ -109,8 +109,28 @@ def load_config() -> Config:
         if not output_dir.is_absolute():
             output_dir = BASE_DIR / output_dir
 
+        # 書き込み可能なフォルダへ解決する（D-C1）。権限の無い場所へ展開されても
+        # 無言終了せず、%LOCALAPPDATA% 等へ退避して動き続ける。どこにも書けなければ終了。
+        resolved = resolve_writable_dir(output_dir)
+        if resolved is None:
+            notify_fatal(
+                f"保存先フォルダに書き込めませんでした: {output_dir}\n"
+                "書き込み可能な場所（例: ドキュメント配下）へ移して実行してください。"
+            )
+            sys.exit(1)
+
         # ログも PNG などと同じ保存先へ寄せる（保存先が確定したこの時点で切り替え）。
-        set_log_dir(output_dir)
+        # 先に set_log_dir しておくと、退避の通知が確実に書ける退避先ログへ残る。
+        set_log_dir(resolved)
+
+        # 退避が起きたら、どこへ保存されるのかをログとダイアログの両方で知らせる
+        # （保存先が分からないほうが利用者は困るため）。
+        if resolved != output_dir:
+            notify_fatal(
+                f"保存先 {output_dir} に書き込めないため、{resolved} へ退避して実行します。\n"
+                "権限のある場所（例: ドキュメント配下）へ移すと元の設定で保存できます。"
+            )
+        output_dir = resolved
 
         # 数値項目。範囲を検証し、不正なら理由付き ValueError（下の except で通知＆終了）。
         poll_interval = sec.getfloat("poll_interval", defaults.poll_interval)

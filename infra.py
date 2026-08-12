@@ -9,6 +9,7 @@ Playwright やページ操作には依存しないので、実 Edge 無しで im
 （config.py はここだけに依存し、Edge 無しで設定読み込みを検証できる）。
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -38,6 +39,33 @@ BASE_DIR = _base_dir()
 # ようにする。既定は基準フォルダだが、設定読み込み後に PNG などと同じ保存先
 # （output_dir）へ切り替える（set_log_dir）。設定を読む前の初期ログはここへ出る。
 LOG_PATH = BASE_DIR / "log.txt"
+
+
+def resolve_writable_dir(preferred: Path) -> Optional[Path]:
+    """書き込み可能なフォルダを返す。preferred が使えなければ退避先を試す。
+
+    第三者が exe を C:\\Program Files\\ など書き込み権限の無い場所へ展開した場合、
+    preferred（＝設定された output_dir）への mkdir / 書き込みが PermissionError で
+    失敗する。--noconsole ビルドでは stderr も見えず「ダブルクリックしても何も
+    起きない」状態になる（D-C1）。それを避けるため、preferred が駄目なら
+    %LOCALAPPDATA%（無ければ一時フォルダ）配下へ退避して動き続けられるようにする。
+
+    実際に mkdir して小さなファイルを書ける（そして消せる）ことまで確認した候補だけを
+    返す。どこにも書けなければ None（呼び出し側が notify_fatal して終了する）。
+    退避が起きたかどうかは、返り値が preferred と一致するかで呼び出し側が判定する。
+    """
+    fallback_base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    candidates = [preferred, Path(fallback_base) / "edge-auto-capture" / preferred.name]
+    for cand in candidates:
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / ".eac-write-test"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+            return cand
+        except Exception:
+            continue
+    return None
 
 
 def set_log_dir(directory: Path) -> None:
