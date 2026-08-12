@@ -129,6 +129,26 @@ def run() -> int:
                 )
             except Exception:
                 errors.append("SPA検知の変化通知（__eac_spa_changed）が発火しませんでした")
+
+            # 8) A-1 の回帰: captureEnd 直後に captureStart を呼ぶと、残っていたシャッター
+            #    フラッシュ（.frame.flash）が畳まれ、次のスクショへ赤みが写り込まないこと。
+            #    frame は closed シャドウ内なので __eac_debugRoot() 経由で確認する。
+            def _has_flash() -> bool:
+                return page.evaluate(
+                    "(() => { const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
+                    " const f = sr && sr.querySelector('[data-eac=\"frame\"]');"
+                    " return !!(f && f.classList.contains('flash')); })()"
+                )
+
+            page.evaluate(badge.CAPTURE_END_CALL)     # フラッシュを付ける（撮影直後の合図）
+            had_flash = _has_flash()
+            page.evaluate(badge.CAPTURE_START_CALL)   # 次の退避（A-1: フラッシュを畳む）
+            still_flash = _has_flash()
+            page.evaluate(badge.CAPTURE_END_CALL)     # 状態を戻す（capDepth を均衡させる）
+            if not had_flash:
+                errors.append("captureEnd 後にフラッシュが付いていません（A-1 テストの前提が崩れている）")
+            if still_flash:
+                errors.append("captureStart 後もフラッシュが残っています（A-1 の回帰）")
         finally:
             context.close()
 
@@ -139,7 +159,7 @@ def run() -> int:
         return 1
     print(
         "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
-        "SPA検知の通知・JSエラー無しを確認しました。"
+        "SPA検知の通知・フラッシュ写り込み防止(A-1)・JSエラー無しを確認しました。"
     )
     return 0
 
