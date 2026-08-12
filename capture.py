@@ -81,7 +81,7 @@ class CaptureRunner:
         # 実行中の capture タスクへの強参照を保持する集合。
         # これが無いとイベントループはタスクを弱参照でしか持たず、
         # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
-        self._tasks: "set[asyncio.Task]" = set()
+        self._tasks: set[asyncio.Task] = set()
 
         # ページごとの撮影を直列化するためのロック（page -> Lock）。
         # 同じページで撮影が重なると（例: 「今すぐ1枚」と自動保存がほぼ同時、リダイレクト連鎖）、
@@ -89,7 +89,7 @@ class CaptureRunner:
         # 退避したはずの操作バーが画像へ写り込む。撮影のクリティカル区間（バー退避→撮影→復帰）を
         # このロックで page 単位に直列化して防ぐ。別ページ同士は別ロックなので並行できる。
         # ページが閉じたらエントリは自動で消えるよう WeakKeyDictionary を使う。
-        self._page_locks: "weakref.WeakKeyDictionary[Page, asyncio.Lock]" = (
+        self._page_locks: weakref.WeakKeyDictionary[Page, asyncio.Lock] = (
             weakref.WeakKeyDictionary()
         )
 

@@ -3,7 +3,7 @@ name = "edge-auto-capture"
 version = "0.1.0"
 description = "Edge の URL/タブ変化ごとにスクショと全文テキストを自動保存するツール"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = [
     "playwright",
 ]
@@ -32,7 +32,7 @@ python_files = ["test_*.py"]
 
 [tool.ruff]
 # 対象は分割した3モジュールとテスト。生成物（build/dist/output）は除外。
-target-version = "py38"
+target-version = "py39"
 line-length = 100
 extend-exclude = ["build", "dist", "output"]
 

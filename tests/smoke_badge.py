@@ -67,21 +67,31 @@ def run() -> int:
                 errors.append(f"bodyText の戻り値が不正: {type(body_text)}")
 
             # 4) シャドウホストと、その中身（バー本体）が構築されているか最終確認。
-            #    バーはシャドウ内なので host.shadowRoot 経由で存在を見る。
+            #    シャドウは closed なので host.shadowRoot からは入れない。テスト専用の
+            #    __eac_debugRoot()（token 無しビルドでのみ公開される）経由で中を見る。
             built = page.evaluate(
-                "(() => { const h = document.querySelector(" + repr(BADGE_SEL) + ");"
-                " return !!(h && h.shadowRoot"
-                " && h.shadowRoot.querySelector('[data-eac=\"bar\"]')); })()"
+                "(() => { const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
+                " return !!(sr && sr.querySelector('[data-eac=\"bar\"]')); })()"
             )
             if not built:
                 errors.append("操作バーが構築されていません（build 失敗）")
 
-            # 5) 透過トグル（枠なしアイコン）が存在し、押すたびに ON/OFF が切り替わるか。
+            # 5) A-4 の回帰: シャドウが closed であること。
+            #    open に戻ると、閲覧中サイトのスクリプトが
+            #    document.getElementById(ID).shadowRoot.querySelector(...).click() で
+            #    記録操作を起こせてしまい、token 照合が UI 経由で迂回される。
+            leaked = page.evaluate(
+                "(() => { const h = document.querySelector(" + repr(BADGE_SEL) + ");"
+                " return !!(h && h.shadowRoot); })()"
+            )
+            if leaked:
+                errors.append("シャドウが open です（closed であるべき: A-4 の回帰）")
+
+            # 6) 透過トグル（枠なしアイコン）が存在し、押すたびに ON/OFF が切り替わるか。
             #    透過はローカル状態なので、クリック→バーの 'peek' とボタンの 'on' が付き、
             #    もう一度押すと外れることを確認する（アイコンの装飾切替の土台がこのクラス）。
             peek = page.evaluate(
-                "(() => { const h = document.querySelector(" + repr(BADGE_SEL) + ");"
-                " const sr = h && h.shadowRoot;"
+                "(() => { const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
                 " const btn = sr && sr.querySelector('[data-eac=\"peek\"]');"
                 " const bar = sr && sr.querySelector('[data-eac=\"bar\"]');"
                 " if (!btn || !bar) return 'missing';"
@@ -94,10 +104,15 @@ def run() -> int:
             if peek != "ok":
                 errors.append(f"透過トグルが機能していません: {peek}")
 
-            # 6) SPA検知のイベント駆動監視が通しで動くか。
+            # 7) SPA検知のイベント駆動監視が通しで動くか。
             #    記録側の通知バインディング（__eac_spa_changed）をテスト用のコレクタに差し替え、
             #    SPA検知を ON（セレクタ空＝既定ルート監視）にしてから本文を書き換える。デバウンス
             #    確定後にコレクタが呼ばれれば、MutationObserver→落ち着き→通知の一連が動いている。
+            #
+            #    ここで後から window へ差し込んだ関数が拾われるのは、badge.js の callBinding が
+            #    「退避済み参照が無ければ実行時の window を見る」フォールバックを持つため。
+            #    このテストは expose_binding を公開しないので退避側は空になる。
+            #    フォールバックを外すとこのステップが動かなくなる（外す場合は注入順を変えること）。
             page.evaluate(
                 "window.__spaCalls = [];"
                 "window.__eac_spa_changed = (tok, sig) => { window.__spaCalls.push(sig); };"
@@ -122,7 +137,10 @@ def run() -> int:
         for e in errors:
             print(f"  - {e}")
         return 1
-    print("PASS: 操作バーの構築・ヘルパ動作・透過トグル・JSエラー無しを確認しました。")
+    print(
+        "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
+        "SPA検知の通知・JSエラー無しを確認しました。"
+    )
     return 0
 
 
