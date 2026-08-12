@@ -1,6 +1,6 @@
 # edge-auto-capture
 
-Microsoft Edge で開いたページを、**記録ONの間だけ**、フルページのスクリーンショット(`.png`)と
+Microsoft Edge（無ければ Google Chrome）で開いたページを、**記録ONの間だけ**、フルページのスクリーンショット(`.png`)と
 ページ全文テキスト(`.txt`)へ自動保存するツール。CSS セレクタを指定すれば、ページの一部だけを
 抜き出したテキスト(`_part.txt`)も保存でき、URL が変わらず中身だけ変わる SPA も検知して撮れる。
 
@@ -30,7 +30,7 @@ Microsoft Edge で開いたページを、**記録ONの間だけ**、フルペ�
 ## 動作条件
 
 - Windows
-- Microsoft Edge がインストール済み（`channel="msedge"` でシステムの Edge を使う）
+- Microsoft Edge または Google Chrome がインストール済み（既定は Edge 優先→無ければ Chrome。`config.ini` の `browser` で片方に固定も可能。`channel="msedge"` / `"chrome"` でシステムのブラウザを使う）
 - 開発・ビルド時のみ Python 3.9+（配布した exe の実行に Python は不要）
 
 ## リポジトリ構成
@@ -70,14 +70,16 @@ python edge_auto_capture.py
 ```
 
 挙動は同じフォルダの `config.ini` で設定する（下表）。実際の操作方法は `USAGE.txt` を参照。
-停止は Ctrl+C か Edge のウィンドウを閉じる。
+停止は Ctrl+C かブラウザのウィンドウを閉じる。
 
 ### 設定（config.ini）
 
 | キー | 意味 |
 |------|------|
 | `start_url` | 起動時に最初に開くページ（空なら about:blank） |
-| `edge_path` | Edge 実行ファイルのパス（空なら自動検出） |
+| `browser` | 使うブラウザ（`edge` / `chrome`）。指定するとそのブラウザだけを起動。空なら Edge→Chrome の順で自動選択 |
+| `edge_path` | Edge 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
+| `chrome_path` | Chrome 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `output_dir` | 保存先。相対なら本体/exe と同じ場所基準、絶対パスも可 |
 | `poll_interval` | URL 変化・中身変化を確認する間隔（秒） |
 | `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数 |

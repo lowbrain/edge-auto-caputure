@@ -67,9 +67,41 @@ def _url_key(url: str) -> str:
     return url.split("#", 1)[0]
 
 
-def _edge_launch_kwargs(config: Config, user_data_dir: str) -> dict:
-    """launch_persistent_context に渡す Edge 起動オプションを組み立てる。"""
-    edge_args = [
+# ブラウザの定義: config.browser のキー → (channel, 表示名, 実行パスの config 項目名)。
+#   channel   … Playwright の channel 名（標準インストール先を自動検出。未インストールなら起動時に例外）。
+#   path_attr … 実行ファイルパスを持つ config 項目名（空なら自動検出）。
+BROWSER_BY_KEY = {
+    "edge": ("msedge", "Edge", "edge_path"),
+    "chrome": ("chrome", "Chrome", "chrome_path"),
+}
+# browser 未指定（自動選択）時に試す優先順。
+AUTO_BROWSER_ORDER = ("edge", "chrome")
+
+
+def _browser_candidates(config: Config) -> list[tuple[str, str, str]]:
+    """起動を試すブラウザの候補を (channel, 表示名, 実行パス) の優先順で返す。
+
+    config.browser が指定されていれば、その1つだけ（無ければ起動失敗＝終了）。
+    空なら Edge→Chrome の順で自動フォールバックする。実行パスは対応する
+    config 項目（edge_path / chrome_path）が空でなければそれを使う。
+    """
+    keys = [config.browser] if config.browser else list(AUTO_BROWSER_ORDER)
+    candidates = []
+    for key in keys:
+        channel, label, path_attr = BROWSER_BY_KEY[key]
+        candidates.append((channel, label, getattr(config, path_attr, "")))
+    return candidates
+
+
+def _browser_launch_kwargs(
+    config: Config, user_data_dir: str, channel: str, executable_path: str = ""
+) -> dict:
+    """launch_persistent_context に渡すブラウザ起動オプションを組み立てる。
+
+    channel は "msedge" / "chrome" のいずれか（Chromium系で共通の起動引数を使う）。
+    executable_path が空でなければ、自動検出よりそのパスを優先する。
+    """
+    browser_args = [
         # まっさらなプロファイルで起動する（サインイン/同期/初回セットアップを回避）。
         "--no-first-run",
         "--no-default-browser-check",
@@ -80,18 +112,18 @@ def _edge_launch_kwargs(config: Config, user_data_dir: str) -> dict:
     ]
     kwargs = dict(
         user_data_dir=user_data_dir,
-        channel="msedge",
+        channel=channel,
         headless=False,
-        args=edge_args,
-        # Playwright は既定で --no-sandbox を付け、Edge が黄色い警告バナーを出す。
+        args=browser_args,
+        # Playwright は既定で --no-sandbox を付け、ブラウザが黄色い警告バナーを出す。
         # サンドボックスを有効化してバナーを消す（撮影画像への映り込みも防ぐ）。
         chromium_sandbox=True,
         # 固定ビューポートのエミュレーションを外し、ウィンドウサイズにページを
         # 追従させる（--start-maximized も no_viewport でないと効かない）。
         no_viewport=True,
     )
-    if config.edge_path:
-        kwargs["executable_path"] = config.edge_path
+    if executable_path:
+        kwargs["executable_path"] = executable_path
     return kwargs
 
 
@@ -335,14 +367,28 @@ async def main(config: Config) -> None:
     tmp = tempfile.mkdtemp(prefix="edge-debug-")  # 今回用の一時プロファイル
 
     async with async_playwright() as p:
-        try:
-            context = await p.chromium.launch_persistent_context(
-                **_edge_launch_kwargs(config, tmp)
-            )
-        except Exception as e:
+        # config.browser 指定があればそのブラウザのみ、無ければ Edge→Chrome の順で試す。
+        candidates = _browser_candidates(config)
+        context = None
+        errors: list[str] = []
+        for channel, label, executable_path in candidates:
+            try:
+                context = await p.chromium.launch_persistent_context(
+                    **_browser_launch_kwargs(config, tmp, channel, executable_path)
+                )
+                log(f"{label} を起動しました。")
+                break
+            except Exception as e:
+                # 未インストール等で起動できなければ次の候補へ回す（候補が1つなら終了）。
+                log(f"[skip] {label} を起動できませんでした: {e}")
+                errors.append(f"- {label}: {e}")
+
+        if context is None:
+            tried = " / ".join(label for _, label, _ in candidates)
             notify_fatal(
-                f"Edge を起動できませんでした: {e}\n"
-                "Edge がインストールされているか、config.ini の edge_path を確認してください。"
+                f"ブラウザを起動できませんでした（試行: {tried}）。\n"
+                f"{tried} がインストールされているか確認してください。\n"
+                + "\n".join(errors)
             )
             shutil.rmtree(tmp, ignore_errors=True)
             return
@@ -350,7 +396,7 @@ async def main(config: Config) -> None:
         session = CaptureSession(context, config)
         await session.setup()
 
-        # Edge のウィンドウを閉じたら監視ループを抜けるためのフラグ
+        # ブラウザのウィンドウを閉じたら監視ループを抜けるためのフラグ
         closed = asyncio.Event()
         context.on("close", lambda: closed.set())
 
@@ -364,15 +410,15 @@ async def main(config: Config) -> None:
                     log(f"[skip goto] {config.start_url}  ({e})")
 
             log(
-                f"Edge を起動しました（記録は{'ON' if session.on else 'OFF（待機）'}で開始）。"
+                f"記録は{'ON' if session.on else 'OFF（待機）'}で開始しました。"
                 "ページ上部の操作バーで記録開始/停止・今すぐ1枚・SPA検知を"
-                "操作できます（終了するには Edge のウィンドウを閉じてください）"
+                "操作できます（終了するにはブラウザのウィンドウを閉じてください）"
             )
 
             await session.run(closed)
         finally:
             # Ctrl+C / ウィンドウを閉じた場合のどちらでもここが走る。
-            # 起動した Edge を終了し、一時プロファイルを削除する。
+            # 起動したブラウザを終了し、一時プロファイルを削除する。
             try:
                 await context.close()
             except Exception:
