@@ -222,6 +222,23 @@ output_dir = {out}
     assert c.start_url == "about:blank"
 
 
+def test_load_config_reads_bom_prefixed_file(monkeypatch, tmp_path):
+    # メモ帳保存等で BOM が付いても読めること（A-6）。utf-8 のままだと最初の見出しが
+    # 壊れて MissingSectionHeaderError → 起動不能になっていた。
+    out = tmp_path / "out"
+    cfg = tmp_path / "config.ini"
+    # utf-8-sig で書くと先頭に BOM が付く。
+    cfg.write_text(
+        f"[capture]\noutput_dir = {out}\nstart_url = https://example.com\n",
+        encoding="utf-8-sig",
+    )
+    assert cfg.read_bytes().startswith(b"\xef\xbb\xbf")  # BOM が付いていることを確認
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg)
+    c = load_config()
+    assert c.start_url == "https://example.com"
+    assert c.output_dir == out
+
+
 def test_load_config_missing_file_exits(monkeypatch, tmp_path):
     monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "does-not-exist.ini")
     with pytest.raises(SystemExit) as e:
