@@ -81,7 +81,7 @@ python edge_auto_capture.py
 | `edge_path` | Edge 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `chrome_path` | Chrome 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `output_dir` | 保存先。相対なら本体/exe と同じ場所基準、絶対パスも可 |
-| `poll_interval` | URL 変化・中身変化を確認する間隔（秒） |
+| `poll_interval` | URL/タブ変化を確認する間隔（秒）。中身変化（SPA検知）はページ側のイベント駆動なのでこの間隔に依らない |
 | `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数 |
 | `load_timeout` | ページ読み込み待ちの上限（ミリ秒） |
 | `skip_urls` | 撮らない URL（カンマ区切り） |
