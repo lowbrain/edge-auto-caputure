@@ -39,6 +39,10 @@ Windows PC へ配る」（`README.md` の「配布方法」）を前提とする
 MIT / Apache-2.0 / 社内限定の独自条項、いずれにせよ**明示が必要**。
 これは配布の前提条件。
 
+**現状の対応**: **MIT License** を採用（著作権表示: 2026 lowbrain・個人名義）。
+`LICENSE` を追加し、`pyproject.toml` に `license`/分類子、`README.md` にライセンス節を追記済み。
+配布時は `build.ps1` が `LICENSE` を `dist\` へ `LICENSE.txt` として同梱する。
+
 ### D-A2. サードパーティライセンス表記がない
 
 `build.ps1` は `--collect-all playwright` で
@@ -46,7 +50,10 @@ MIT / Apache-2.0 / 社内限定の独自条項、いずれにせよ**明示が�
 Apache-2.0 は再配布時にライセンス本文と著作権表示の同梱を求める。
 
 配布フォルダに `THIRD-PARTY-NOTICES.txt` を置くこと。
-`pip-licenses` 等で依存の一覧を吐き、`build.ps1` で `dist\` へコピーする 1 行を足せば自動化できる。
+
+**現状の対応**: `build.ps1` が `pip-licenses` で依存のライセンス一覧を
+`dist\edge-auto-capture\THIRD-PARTY-NOTICES.txt` に生成するところまで実装済み
+（`pip-licenses` を用意できない環境では警告を出して配布自体は続行）。
 
 ### D-A3. 保存物のプライバシー注意書きがない（実務上いちばん効く）
 
@@ -162,6 +169,36 @@ D-C1 とセットで追記すること。
 > 年額のコストと発行手続きが要るため、これは技術判断ではなく**組織判断**。
 > 配布規模が小さいなら、配布先の IT 部門に事前に許可リスト登録してもらう運用でも回せる。
 
+**現状の対応**: `build.ps1` に署名ステップの受け口を用意済み。証明書を入手したら
+`-CertPath`（PFX）または `-CertThumbprint`（証明書ストア／EV トークン）を渡すだけで
+署名できる。指定が無ければ素通りし、未署名で配布される（挙動は従来どおり）。
+
+#### 配布先 IT へ許可登録を依頼する連絡テンプレート
+
+証明書を取得しない間、企業環境でブロックされる場合はこのテンプレートで許可登録を依頼する。
+`< >` は配布ごとに埋める。SHA256 は `build.ps1` が出力する `*.zip.sha256` の値を使う。
+
+```
+件名: 業務ツール「edge-auto-capture」の実行許可のお願い
+
+<IT 部門ご担当者> 様
+
+業務調査で使用するツール「edge-auto-capture」を配布します。
+現時点でコードサイニング署名が無いため、SmartScreen / AppLocker / WDAC / Intune の
+ポリシーによってはブロックされる可能性があります。以下の実行ファイルの許可登録
+（許可リストへの追加）をご検討いただけますでしょうか。
+
+- ツール名 : edge-auto-capture
+- 用途     : Web ページのスクリーンショット・テキストの自動保存（社内調査用）
+- 配布物   : edge-auto-capture.zip（PyInstaller onedir 形式・未署名）
+- 実行ファイル: edge-auto-capture.exe
+- SHA256(zip): <build.ps1 が出力した SHA256 値>
+- 依存      : Microsoft Edge / Google Chrome（同梱の Playwright ドライバ経由）
+- 配布元    : <配布者名・連絡先>
+
+ご不明点があればお知らせください。よろしくお願いいたします。
+```
+
 ### D-D2. アンチウイルスの誤検知
 
 PyInstaller 製バイナリはヒューリスティックで誤検知されやすい傾向がある。
@@ -173,7 +210,9 @@ PyInstaller 製バイナリはヒューリスティックで誤検知されや�
 ### D-D3. 完全性の検証手段がない
 
 ZIP の **SHA256 を併記**すること。受け取り側が「正しいものを受け取ったか」を確認できる。
-`build.ps1` の最後に `Get-FileHash` を出力する数行で済む。
+
+**現状の対応**: `build.ps1` が配布用 `edge-auto-capture.zip` を生成し、
+`Get-FileHash` でその SHA256 を `edge-auto-capture.zip.sha256` に併記するところまで実装済み。
 
 ---
 

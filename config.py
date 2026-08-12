@@ -58,6 +58,7 @@ class Config:
     skip_urls: tuple[str, ...] = ("about:blank", "")   # 撮らないURL
     target_selector: str = ""               # 一部抜き出しの CSS セレクタ（空ならスキップ）
     start_recording: bool = False           # 起動直後に記録を開始するか（False=待機状態で起動）
+    profile_dir: str = ""                    # 再利用するブラウザプロファイルの場所（空なら毎回使い捨て）
 
 
 def load_config() -> Config:
@@ -75,6 +76,8 @@ def load_config() -> Config:
       - edge_path / chrome_path が空 → 自動検出（空が正常値）。値があれば
         起動する各ブラウザの実行ファイルとしてそのパスを使う。
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
+      - profile_dir が空 → 毎回まっさらな使い捨てプロファイル（既定・従来どおり）。
+        値があれば、そのフォルダを再利用（相対パスは基準フォルダ基準に固定）。
       - browser が空 → 自動選択（Edge→Chrome）。edge/chrome 以外の値
         → メッセージ表示して終了（ValueError）。
       - 数値の範囲が不正（poll_interval<=0 / settle_delay<0 / load_timeout<=0）
@@ -123,6 +126,18 @@ def load_config() -> Config:
         # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
         urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
 
+        # 再利用プロファイルの場所。空なら毎回使い捨て（既定の挙動を据え置く）。
+        # 指定時のみ、相対パスは基準フォルダ基準に固定して絶対パス文字列で保持する
+        # （output_dir と同じ扱い。書き込み可能な exe 隣を既定基準にできる）。
+        raw_profile = sec.get("profile_dir", "").strip()
+        if raw_profile:
+            profile_path = Path(raw_profile)
+            if not profile_path.is_absolute():
+                profile_path = BASE_DIR / profile_path
+            profile_dir = str(profile_path)
+        else:
+            profile_dir = ""
+
         return Config(
             start_url=sec.get("start_url", defaults.start_url).strip() or "about:blank",
             browser=_normalize_browser(sec.get("browser", defaults.browser)),
@@ -135,6 +150,7 @@ def load_config() -> Config:
             skip_urls=tuple(urls) + ("",),
             target_selector=sec.get("target_selector", "").strip(),
             start_recording=sec.getboolean("start_recording", defaults.start_recording),
+            profile_dir=profile_dir,
         )
     except (configparser.Error, KeyError, ValueError) as e:
         notify_fatal(

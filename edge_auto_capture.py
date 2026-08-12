@@ -46,6 +46,7 @@ import json
 import secrets
 import shutil
 import tempfile
+from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import Page, async_playwright
@@ -363,8 +364,20 @@ class CaptureSession:
 async def main(config: Config) -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
 
-    cleanup_old_profiles()
-    tmp = tempfile.mkdtemp(prefix="edge-debug-")  # 今回用の一時プロファイル
+    # プロファイルの置き場所を決める。
+    #   profile_dir 未指定（既定）: 毎回まっさらな使い捨てプロファイル。終了時に削除する。
+    #   profile_dir 指定        : そのフォルダを再利用する（ログイン状態などを保持）。削除しない。
+    if config.profile_dir:
+        user_data_dir = config.profile_dir
+        Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+        ephemeral = False
+        # 使い捨て分（edge-debug-*）だけを掃除する。再利用プロファイルは掃除対象外
+        # （命名も置き場所も別なので glob に一致しないが、念のため除外指定も渡す）。
+        cleanup_old_profiles(keep=Path(user_data_dir))
+    else:
+        cleanup_old_profiles()
+        user_data_dir = tempfile.mkdtemp(prefix="edge-debug-")  # 今回用の一時プロファイル
+        ephemeral = True
 
     async with async_playwright() as p:
         # config.browser 指定があればそのブラウザのみ、無ければ Edge→Chrome の順で試す。
@@ -374,7 +387,7 @@ async def main(config: Config) -> None:
         for channel, label, executable_path in candidates:
             try:
                 context = await p.chromium.launch_persistent_context(
-                    **_browser_launch_kwargs(config, tmp, channel, executable_path)
+                    **_browser_launch_kwargs(config, user_data_dir, channel, executable_path)
                 )
                 log(f"{label} を起動しました。")
                 break
@@ -390,7 +403,8 @@ async def main(config: Config) -> None:
                 f"{tried} がインストールされているか確認してください。\n"
                 + "\n".join(errors)
             )
-            shutil.rmtree(tmp, ignore_errors=True)
+            if ephemeral:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
             return
 
         session = CaptureSession(context, config)
@@ -418,12 +432,14 @@ async def main(config: Config) -> None:
             await session.run(closed)
         finally:
             # Ctrl+C / ウィンドウを閉じた場合のどちらでもここが走る。
-            # 起動したブラウザを終了し、一時プロファイルを削除する。
+            # 起動したブラウザを終了する。使い捨てプロファイルのみ削除し、
+            # 再利用プロファイル（profile_dir 指定）は次回のために残す。
             try:
                 await context.close()
             except Exception:
                 pass
-            shutil.rmtree(tmp, ignore_errors=True)
+            if ephemeral:
+                shutil.rmtree(user_data_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

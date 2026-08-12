@@ -15,6 +15,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 
 def _base_dir() -> Path:
@@ -129,12 +130,20 @@ def notify_fatal(msg: str) -> None:
     _message_box(msg)
 
 
-def cleanup_old_profiles() -> None:
+def cleanup_old_profiles(keep: Optional[Path] = None) -> None:
     """前回までに残った一時プロファイル（edge-debug-*）を掃除する。
 
     使用中のフォルダは削除に失敗しても無視する（ignore_errors=True）。
+
+    keep を渡すと、そのフォルダは掃除対象から除外する（再利用する永続
+    プロファイル [F-C1] を誤って消さないための安全弁）。永続プロファイルは
+    通常 edge-debug-* とは別名・別置き場所なので glob には一致しないが、
+    利用者が一時フォルダ配下に edge-debug- で始まる名前を指定した場合の保険。
     """
+    keep_resolved = keep.resolve() if keep is not None else None
     base = Path(tempfile.gettempdir())
     for d in base.glob("edge-debug-*"):
         if d.is_dir():
+            if keep_resolved is not None and d.resolve() == keep_resolved:
+                continue
             shutil.rmtree(d, ignore_errors=True)
