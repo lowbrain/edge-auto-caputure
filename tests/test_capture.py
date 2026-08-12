@@ -264,3 +264,79 @@ output_dir = {out}
     with pytest.raises(SystemExit) as e:
         load_config()
     assert e.value.code == 1
+
+
+# --------------------------------------------------------------------------- #
+# profile_dir（F-C1: プロファイル永続化のオプトイン）
+# --------------------------------------------------------------------------- #
+
+
+def test_config_default_profile_dir_is_empty():
+    # 既定は空＝毎回まっさらな使い捨てプロファイル（従来どおりの挙動）。
+    assert Config().profile_dir == ""
+
+
+def test_load_config_profile_dir_empty_stays_empty(monkeypatch, tmp_path):
+    # 項目行はあるが値が空 → 使い捨て（空のまま）。
+    out = tmp_path / "out"
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        f"""[capture]
+output_dir = {out}
+profile_dir =
+""",
+    )
+    assert load_config().profile_dir == ""
+
+
+def test_load_config_profile_dir_relative_resolves_under_base_dir(monkeypatch, tmp_path):
+    # 相対パスは BASE_DIR 基準の絶対パス文字列へ固定される（output_dir と同じ扱い）。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        """[capture]
+output_dir = out
+profile_dir = myprofile
+""",
+    )
+    c = load_config()
+    assert c.profile_dir == str(tmp_path / "myprofile")
+    assert Path(c.profile_dir).is_absolute()
+
+
+def test_load_config_profile_dir_absolute_is_kept(monkeypatch, tmp_path):
+    # 絶対パス指定はそのまま保持する。
+    prof = tmp_path / "abs-profile"
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        f"""[capture]
+output_dir = {tmp_path / "out"}
+profile_dir = {prof}
+""",
+    )
+    assert load_config().profile_dir == str(prof)
+
+
+def test_cleanup_old_profiles_removes_edge_debug_dirs(monkeypatch, tmp_path):
+    # 一時フォルダ内の edge-debug-* を掃除する。
+    monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))
+    (tmp_path / "edge-debug-a").mkdir()
+    (tmp_path / "edge-debug-b").mkdir()
+    infra.cleanup_old_profiles()
+    assert not (tmp_path / "edge-debug-a").exists()
+    assert not (tmp_path / "edge-debug-b").exists()
+
+
+def test_cleanup_old_profiles_keeps_excluded_dir(monkeypatch, tmp_path):
+    # keep で渡した永続プロファイルは、名前が edge-debug-* に一致しても消さない（A-5 衝突回避）。
+    monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))
+    keep = tmp_path / "edge-debug-keep"
+    other = tmp_path / "edge-debug-other"
+    keep.mkdir()
+    other.mkdir()
+    infra.cleanup_old_profiles(keep=keep)
+    assert keep.exists()
+    assert not other.exists()

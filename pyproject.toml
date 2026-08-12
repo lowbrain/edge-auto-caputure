@@ -4,6 +4,10 @@ version = "0.1.0"
 description = "Edge の URL/タブ変化ごとにスクショと全文テキストを自動保存するツール"
 readme = "README.md"
 requires-python = ">=3.9"
+license = { text = "MIT" }
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+]
 dependencies = [
     "playwright",
 ]
@@ -33,7 +37,9 @@ python_files = ["test_*.py"]
 [tool.ruff]
 # 対象は分割した3モジュールとテスト。生成物（build/dist/output）は除外。
 target-version = "py39"
-line-length = 100
+# 日本語コメント主体で、ruff は全角文字を表示幅2カラムで数える（E501 が当たりやすい）。
+# コードの実体より余裕を持たせ、コメント行が幅超過で頻繁に引っかからないよう 120 にする。
+line-length = 120
 extend-exclude = ["build", "dist", "output"]
 
 [tool.ruff.lint]

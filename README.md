@@ -87,6 +87,7 @@ python edge_auto_capture.py
 | `skip_urls` | 撮らない URL（カンマ区切り） |
 | `target_selector` | 一部抜き出し／SPA検知の対象 CSS セレクタの初期値（バーで実行時に変更可・空可） |
 | `start_recording` | 起動直後に記録を開始するか（`false`=待機で起動、`true`=起動時から記録ON） |
+| `profile_dir` | 再利用するブラウザプロファイルの場所（空なら毎回まっさらな使い捨て＝既定）。指定するとログイン状態などを保存し次回へ引き継ぐ。相対なら本体/exe と同じ場所基準。指定フォルダに Cookie・認証情報がディスク保存される点に注意 |
 
 ### CSSセレクタ（実装上の注意）
 
@@ -141,23 +142,54 @@ Python 未導入の Windows PC でも動く、単一 EXE（フォルダ形式）
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-PyInstaller が `dist\edge-auto-capture\` を生成し、`config.ini` と `USAGE.txt` を
-exe の隣へ同梱する。ページ側 JS の `badge.js` は `--add-data` で `_internal\` に同梱され、
+PyInstaller が `dist\edge-auto-capture\` を生成し、`config.ini` / `USAGE.txt` /
+依存ライセンス表記（`THIRD-PARTY-NOTICES.txt`）/ `LICENSE`（あれば）を exe の隣へ同梱する。
+ページ側 JS の `badge.js` は `--add-data` で `_internal\` に同梱され、
 実行時は `sys._MEIPASS` から読み込まれる（`badge.py` `capture.py` は import から自動で辿られる）。
+最後に配布用の `dist\edge-auto-capture.zip` と、その `*.zip.sha256`（完全性確認用）を作る。
+
+#### コードサイニング署名（任意）
+
+証明書を持っている場合はビルド時に署名できる。指定が無ければ署名ステップは素通りし、
+現状どおり未署名で配布される。
+
+```bash
+# PFX ファイルで署名
+powershell -ExecutionPolicy Bypass -File build.ps1 -CertPath cert.pfx -CertPassword ****
+# 証明書ストア上の証明書を拇印で指定（EV トークン等）
+powershell -ExecutionPolicy Bypass -File build.ps1 -CertThumbprint <THUMBPRINT>
+```
 
 ### 配布方法
 
-`dist\edge-auto-capture\` を **フォルダごと ZIP** にして配る。中身:
+生成された `dist\edge-auto-capture.zip` を配る（中身は `dist\edge-auto-capture\`）。フォルダ構成:
 
 ```
 edge-auto-capture\
-├─ edge-auto-capture.exe   ダブルクリックで起動
-├─ config.ini              利用者が編集可能
-├─ USAGE.txt               利用者向けの使い方
-├─ _internal\              ランタイム + playwright ドライバ + badge.js（必須・触らない）
-└─ output\                 実行後に生成される保存先
+├─ edge-auto-capture.exe      ダブルクリックで起動
+├─ config.ini                 利用者が編集可能
+├─ USAGE.txt                  利用者向けの使い方
+├─ THIRD-PARTY-NOTICES.txt    同梱依存（Playwright 等）のライセンス表記
+├─ LICENSE.txt                本体のライセンス（LICENSE がある場合）
+├─ _internal\                 ランタイム + playwright ドライバ + badge.js（必須・触らない）
+└─ output\                    実行後に生成される保存先
+```
+
+配布物の完全性は同梱の `edge-auto-capture.zip.sha256` で確認できる:
+
+```powershell
+(Get-FileHash -Algorithm SHA256 edge-auto-capture.zip).Hash
 ```
 
 > `_internal\` は動作に必須。exe だけ取り出しても動かない。
 > 未署名 exe のため初回に Windows SmartScreen 警告が出る場合がある
-> （「詳細情報」→「実行」で起動可能）。
+> （「詳細情報」→「実行」で起動可能）。企業環境では警告ではなくブロックに
+> なることがある（AppLocker / WDAC / Intune）。その場合は配布先 IT への
+> 許可登録が要る（`docs/DISTRIBUTION.md` の依頼テンプレート参照）。
+
+## ライセンス
+
+本ツールは [MIT License](LICENSE)（著作権表示: 2026 lowbrain）で公開する。
+
+同梱する [Playwright](https://playwright.dev/) は Apache-2.0。再配布時のライセンス表記は
+`build.ps1` が生成する `THIRD-PARTY-NOTICES.txt` に含めて配布物へ同梱する。
