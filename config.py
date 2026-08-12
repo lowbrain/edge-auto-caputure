@@ -95,7 +95,10 @@ def load_config() -> Config:
     defaults = Config()
     parser = configparser.ConfigParser()
     try:
-        parser.read(CONFIG_PATH, encoding="utf-8")
+        # utf-8-sig: BOM 有無どちらでも読む（A-6）。USAGE.txt が「メモ帳で編集」と
+        # 案内しており、メモ帳保存で BOM が混入すると utf-8 では最初のセクション見出しが
+        # 壊れ MissingSectionHeaderError になる。BOM を吸収して原因不明の起動失敗を防ぐ。
+        parser.read(CONFIG_PATH, encoding="utf-8-sig")
         sec = parser["capture"]
 
         # 保存先。値が空ならカレントへ落ちないよう既定へ戻す（配布先で編集ミスが起きても安全側に）。
