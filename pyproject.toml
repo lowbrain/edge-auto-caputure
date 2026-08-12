@@ -1,6 +1,8 @@
 [project]
 name = "edge-auto-capture"
-version = "0.1.0"
+# バージョンの出所は infra.__version__ に一本化する（D-B1）。ここに直書きすると
+# コードと二重管理になり、片方だけ上げる事故が起きるため dynamic で参照する。
+dynamic = ["version"]
 description = "Edge の URL/タブ変化ごとにスクショと全文テキストを自動保存するツール"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -27,6 +29,10 @@ build-backend = "setuptools.build_meta"
 # 役割ごとに分割したトップレベル・モジュール群（パッケージフォルダは作らない）。
 # ページ側 JS 本体は badge.js（データファイル）で、配布 exe には build.ps1 が同梱する。
 py-modules = ["edge_auto_capture", "badge", "capture", "config", "infra"]
+
+[tool.setuptools.dynamic]
+# バージョンは infra.__version__ を出所にする（project.dynamic と対）。
+version = { attr = "infra.__version__" }
 
 [tool.pytest.ini_options]
 # テストは tests/ 配下。実 Edge を要するスモーク（smoke_*）は既定の収集から外し、

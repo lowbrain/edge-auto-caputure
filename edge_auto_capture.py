@@ -54,7 +54,7 @@ from playwright.async_api import Page, async_playwright
 import badge
 from capture import CaptureRunner, try_eval
 from config import Config, load_config
-from infra import cleanup_old_profiles, log, notify_fatal
+from infra import __version__, cleanup_old_profiles, log, notify_fatal
 
 
 def _url_key(url: str) -> str:
@@ -454,7 +454,7 @@ if __name__ == "__main__":
     config = load_config()
 
     # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
-    log("=== edge-auto-capture 起動 ===")
+    log(f"=== edge-auto-capture v{__version__} 起動 ===")
     try:
         asyncio.run(main(config))
     except KeyboardInterrupt:
