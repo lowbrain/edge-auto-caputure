@@ -301,8 +301,15 @@
       // 前回の「復帰待ち」が残っていれば取り消し、退避状態を維持する（撮影が重なっても
       // 途中でバーが降りてきて次のスクショに写り込まないように）。
       if (barTimer) { clearTimeout(barTimer); barTimer = null; }
+      // A-1: 直前の撮影のシャッターフラッシュ（.frame.flash, CSS 500ms）が残っていると、
+      // 次のスクショに赤みとして写り込む。復帰待ちを消すのと同時にフラッシュも畳む。
+      if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+      if (els.frame) els.frame.classList.remove('flash');
       if (capDepth > 1) { resolve(); return; }   // 既に退避済み（別の撮影が進行中）
       const bar = els.bar;
+      // A-2: バーが既に capturing（退避済み）なら classList.add は no-op で transitionend が
+      // 飛ばず、CAP_FALLBACK_MS(500ms) まで無駄に待つ。退避済みなら即解決して待たない。
+      if (bar.classList.contains('capturing')) { resolve(); return; }
       let done = false;
       const finish = () => {
         if (done) return;
