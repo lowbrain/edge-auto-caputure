@@ -14,6 +14,30 @@ from infra import BASE_DIR, log, notify_fatal, set_log_dir
 # 設定ファイルのパス（基準フォルダ固定）。
 CONFIG_PATH = BASE_DIR / "config.ini"
 
+# browser 設定で受け付ける値 → 正規化後のキー（大文字小文字・別名を吸収）。
+# 空文字は「未指定（自動選択）」を表し、ここには含めない。
+_BROWSER_ALIASES = {
+    "edge": "edge",
+    "msedge": "edge",
+    "chrome": "chrome",
+    "googlechrome": "chrome",
+}
+
+
+def _normalize_browser(raw: str) -> str:
+    """browser 設定値を "edge" / "chrome" / "" に正規化する。
+
+    空なら "" を返す（自動選択）。未対応の値は ValueError で弾く。
+    """
+    if not raw:
+        return ""
+    key = raw.strip().lower().replace(" ", "")
+    if key not in _BROWSER_ALIASES:
+        raise ValueError(
+            f"browser は edge か chrome を指定してください（現在: {raw}）"
+        )
+    return _BROWSER_ALIASES[key]
+
 
 @dataclass
 class Config:
@@ -23,8 +47,10 @@ class Config:
     無い場合、load_config() はここの値へフォールバックする。
     """
 
-    start_url: str = "about:blank"          # Edge 起動時に最初に開くページ
-    edge_path: str = ""                     # Edge 実行ファイルのパス（空なら channel="msedge"）
+    start_url: str = "about:blank"          # ブラウザ起動時に最初に開くページ
+    browser: str = ""                       # 使うブラウザ（"edge"/"chrome"。空なら Edge→Chrome の順で自動選択）
+    edge_path: str = ""                     # Edge 実行ファイルのパス（空なら自動検出＝channel="msedge"）
+    chrome_path: str = ""                   # Chrome 実行ファイルのパス（空なら自動検出＝channel="chrome"）
     output_dir: Path = Path("output")       # 保存先フォルダ（png / txt / log.txt もここ）
     poll_interval: float = 1.0              # URL変化を確認する間隔（秒）
     settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
@@ -46,8 +72,11 @@ def load_config() -> Config:
       - 数値項目の値だけが空（例: poll_interval =）→ 変換に失敗し終了（ValueError）。
       - output_dir の値が空 → 既定値（output）へフォールバックする
         （空だと Path('.') でカレントへ保存してしまう事故を防ぐ）。
-      - edge_path など他の文字列項目が空 → 空文字がそのまま入る（空が正常値）。
+      - edge_path / chrome_path が空 → 自動検出（空が正常値）。値があれば
+        起動する各ブラウザの実行ファイルとしてそのパスを使う。
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
+      - browser が空 → 自動選択（Edge→Chrome）。edge/chrome 以外の値
+        → メッセージ表示して終了（ValueError）。
       - 数値の範囲が不正（poll_interval<=0 / settle_delay<0 / load_timeout<=0）
         → メッセージ表示して終了（暴走・無意味値を防ぐ）。
     """
@@ -96,7 +125,9 @@ def load_config() -> Config:
 
         return Config(
             start_url=sec.get("start_url", defaults.start_url).strip() or "about:blank",
+            browser=_normalize_browser(sec.get("browser", defaults.browser)),
             edge_path=sec.get("edge_path", "").strip(),
+            chrome_path=sec.get("chrome_path", "").strip(),
             output_dir=output_dir,
             poll_interval=poll_interval,
             settle_delay=settle_delay,
