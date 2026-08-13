@@ -47,7 +47,7 @@
 |------|------|------|------|------|
 | ★1 | **実機 smoke 検証**（`A-4`/`A-1`/`A-2` の実挙動） | — | 検証のみ | 下記「未検証事項」参照。**Windows/実 Edge で 1 回通すのが最初のタスク** |
 | ★2 | `E-4` ダウンロード消失 | IMPROVEMENTS E-4 | 1 行＋検証 | `accept_downloads` / `downloads_path` 未指定。利用者影響が大きい。**実機検証が先** |
-| ★3 | `D-A3` プライバシー注記（＋`D-C2`/`D-B3`） | DISTRIBUTION | 小 | **配布前必須で唯一残っている**。`USAGE.txt`（Shift-JIS）へ追記。文面は法務確認が要るかも |
+| ~~★3~~ | ~~`D-A3` プライバシー注記（＋`D-C2`/`D-B3`）~~ | DISTRIBUTION | 小 | ✅**済**。`USAGE.txt`「■ ご利用にあたって」節へ追記（免責＋保存物の説明、問い合わせ非対応も明記）。個人〜身内利用前提で軽量な文面に留めた |
 | ★4 | `B-6` MutationObserver 常時稼働 | IMPROVEMENTS B-6 | badge.js 小 | SPA 検知を使わない人にも常時負荷。単独で入れられる |
 | 5 | 依存のピン留め | IMPROVEMENTS C | 極小 | `pyproject.toml:13-14` が `["playwright"]` のみ。配布ビルドの再現性 |
 | 6 | CI（pytest+ruff）＋ smoke の `--strict` | IMPROVEMENTS D | 小 | smoke は今 Edge/Chrome 不在で SKIP=0＝CI で無意味に緑になる |
@@ -110,7 +110,7 @@
    握り潰しそのものを消す作業ではなかった。`ruff` も `B008` を意図的に ignore している。
 
 4. **`USAGE.txt` は Shift-JIS** — 編集する場合は文字コードを維持すること
-   （`README.md` / `docs/` は UTF-8）。`D-A3` の追記でここを触る点に注意。
+   （`README.md` / `docs/` は UTF-8）。`D-A3`/`D-B3` の追記で既にここを触っている。以後の編集も同様に注意。
 
 5. **バインディング名は 2 箇所に存在** — `badge.py:120-126` の `BIND_*` と
    `badge.js` 内の `BINDING_NAMES` / `callBinding('__eac_*')`。言語境界のため一元化できていない。
