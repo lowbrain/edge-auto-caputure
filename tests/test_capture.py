@@ -102,6 +102,45 @@ def test_step_without_done_still_swallows_exception():
 
 
 # --------------------------------------------------------------------------- #
+# try_eval のハング保護（E-6: 返ってこない evaluate で worker を止めない）
+# --------------------------------------------------------------------------- #
+
+
+class _HangingPage:
+    """evaluate が永遠に返らないページ代役（ページのメインスレッド停止を模す）。"""
+
+    def __init__(self) -> None:
+        self.eval_started = False
+
+    async def evaluate(self, js, *args):
+        self.eval_started = True
+        await asyncio.Event().wait()  # 誰も set しない＝永久に待つ
+
+
+def test_try_eval_gives_up_after_timeout():
+    # timeout を渡すと、返らない evaluate でも打ち切って戻る（例外も握る）。
+    async def scenario():
+        page = _HangingPage()
+        # timeout が無ければここで永久にハングする。wait_for で全体を縛って検証。
+        await asyncio.wait_for(
+            capture.try_eval(page, "never()", timeout=0.05), timeout=1
+        )
+        assert page.eval_started  # 実際に evaluate へ入ったうえで打ち切ったこと
+
+    asyncio.run(scenario())
+
+
+def test_try_eval_without_timeout_would_hang():
+    # timeout=None（既定）だと打ち切りが無いことの対比確認。0.1 秒待っても終わらない。
+    async def scenario():
+        page = _HangingPage()
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(capture.try_eval(page, "never()"), timeout=0.1)
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
 # page_label
 # --------------------------------------------------------------------------- #
 
@@ -129,6 +168,7 @@ def test_config_defaults():
     assert c.start_url == "about:blank"
     assert c.output_dir == Path("output")
     assert c.poll_interval == 1.0
+    assert c.eval_timeout == 5000
     assert c.start_recording is False
     assert "" in c.skip_urls  # 空URLは常にスキップ対象
 
@@ -157,6 +197,7 @@ output_dir = {out}
 poll_interval = 2.5
 settle_delay = 0.4
 load_timeout = 3000
+eval_timeout = 4000
 skip_urls = about:blank, https://skip.me
 target_selector = .price
 start_recording = true
@@ -168,6 +209,7 @@ start_recording = true
     assert c.poll_interval == 2.5
     assert c.settle_delay == 0.4
     assert c.load_timeout == 3000
+    assert c.eval_timeout == 4000
     # 指定した skip_urls ＋ 常に付く空URL。
     assert c.skip_urls == ("about:blank", "https://skip.me", "")
     assert c.target_selector == ".price"
@@ -189,6 +231,7 @@ output_dir = {out}
     assert c.poll_interval == d.poll_interval
     assert c.settle_delay == d.settle_delay
     assert c.load_timeout == d.load_timeout
+    assert c.eval_timeout == d.eval_timeout
     assert c.start_recording is d.start_recording
     assert c.start_url == "about:blank"
 
@@ -292,6 +335,8 @@ output_dir =
         "settle_delay = -0.5",
         "load_timeout = 0",
         "load_timeout = -100",
+        "eval_timeout = 0",
+        "eval_timeout = -100",
     ],
 )
 def test_load_config_out_of_range_numbers_exit(monkeypatch, tmp_path, line):
