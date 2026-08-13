@@ -258,16 +258,15 @@ SPA 検知を使っていない利用者にも、閲覧しているだけで恒�
 - **`badge.py` の import 時 I/O**〔未〕 — `badge.py:114` の `BADGE_SCRIPT = build_badge_script()` は
   module import 時に `badge.js` を読む。実運用では使わない（スモークテスト専用）ので、
   遅延生成にすると凍結環境での失敗経路が 1 つ減る。
-- **`build.ps1` が依存を二重管理**〔未〕 — pyproject に `[build]` extras があるのに
-  `pip install pyinstaller playwright` を直書き（`build.ps1:24`）。
-  `pip install -e ".[build]"` に寄せると一元化できる。
-- **依存がピン留めされていない**〔未〕 — `pyproject.toml:13-14` は `dependencies = ["playwright"]` のみ。
-  **配布用 exe をビルドするたびに、その時点の最新 Playwright が入る。**
-  Playwright は API 変更も browser 対応バージョンの変更も相応の頻度で入るため、
-  「先月のビルドは動いたのに今月のは動かない」が起こり得て、原因究明も難しい。
-  `playwright>=1.40,<2` のような範囲指定に加え、**配布ビルド用には `constraints.txt` で
-  厳密固定**して再現可能なビルドにする。配布物である以上、後者は特に価値がある
-  （`DISTRIBUTION.md` D-B1 のバージョン表示と噛み合う）。
+- **`build.ps1` が依存を二重管理**〔済〕 — 旧 `pip install pyinstaller playwright` の直書きを
+  `pip install -e ".[build]"` に寄せた（`build.ps1`）。playwright は base の dependencies、
+  pyinstaller は `[build]` extras から入り、版は pyproject に一元化された（下記ピン留めが効く）。
+- **依存がピン留めされていない**〔済〕 — `pyproject.toml` の `dependencies` を
+  `["playwright>=1.60,<2"]` に変更。**動作確認済みの版（.venv 実測 1.60.0）を下限**にして
+  未検証の旧版を弾き、**メジャー更新（`<2`）**へ自動で飛び移らせない。これで
+  「先月のビルドは動いたのに今月のは動かない」を宣言側で防ぐ。
+  厳密な1点固定は互換範囲の宣言を潰すため pyproject には書かない方針（完全再現が必要になったら
+  `constraints.txt` / `build.ps1` の `==` 固定で対応する）。`DISTRIBUTION.md` D-B1 のバージョン表示と噛み合う。
 
 ---
 
