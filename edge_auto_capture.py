@@ -47,6 +47,7 @@ import asyncio
 import json
 import secrets
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -56,7 +57,13 @@ from playwright.async_api import Page, async_playwright
 import badge
 from capture import CaptureRunner, try_eval
 from config import Config, load_config
-from infra import __version__, cleanup_old_profiles, log, notify_fatal
+from infra import (
+    __version__,
+    acquire_single_instance_lock,
+    cleanup_old_profiles,
+    log,
+    notify_fatal,
+)
 
 
 def _url_key(url: str) -> str:
@@ -513,6 +520,18 @@ if __name__ == "__main__":
 
     # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
     log(f"=== edge-auto-capture v{__version__} 起動 ===")
+
+    # 多重起動を入口で止める（D-C4）。二度押しで 2 つ目が起動すると、output/・
+    # log.txt・使い捨てプロファイル（A-5）を先行インスタンスと奪い合うため、
+    # ブラウザを起こす前・掃除（cleanup_old_profiles）が走る前にここで抑止する。
+    if not acquire_single_instance_lock():
+        notify_fatal(
+            "edge-auto-capture はすでに起動しています。\n"
+            "二重に起動することはできません。すでに開いているウィンドウをご確認ください。"
+        )
+        log("=== 終了（多重起動を抑止） ===")
+        sys.exit(1)
+
     try:
         asyncio.run(main(config))
     except KeyboardInterrupt:

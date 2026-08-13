@@ -442,13 +442,20 @@ def test_resolve_writable_dir_returns_none_when_nowhere_writable(monkeypatch, tm
 
 
 def test_cleanup_old_profiles_removes_edge_debug_dirs(monkeypatch, tmp_path):
-    # 一時フォルダ内の edge-debug-* を掃除する。
+    # 一時フォルダ内の（十分古い）edge-debug-* を掃除する。
     monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))
-    (tmp_path / "edge-debug-a").mkdir()
-    (tmp_path / "edge-debug-b").mkdir()
+    import os as _os
+
+    a = tmp_path / "edge-debug-a"
+    b = tmp_path / "edge-debug-b"
+    a.mkdir()
+    b.mkdir()
+    old = infra.datetime.now().timestamp() - infra._PROFILE_STALE_AGE_SECONDS - 60
+    _os.utime(a, (old, old))
+    _os.utime(b, (old, old))
     infra.cleanup_old_profiles()
-    assert not (tmp_path / "edge-debug-a").exists()
-    assert not (tmp_path / "edge-debug-b").exists()
+    assert not a.exists()
+    assert not b.exists()
 
 
 def test_cleanup_old_profiles_keeps_excluded_dir(monkeypatch, tmp_path):
@@ -458,9 +465,89 @@ def test_cleanup_old_profiles_keeps_excluded_dir(monkeypatch, tmp_path):
     other = tmp_path / "edge-debug-other"
     keep.mkdir()
     other.mkdir()
+    # 既定の mtime 保護に引っかからないよう、両方とも十分古い扱いにする。
+    old = infra.datetime.now().timestamp() - infra._PROFILE_STALE_AGE_SECONDS - 60
+    import os as _os
+
+    _os.utime(keep, (old, old))
+    _os.utime(other, (old, old))
     infra.cleanup_old_profiles(keep=keep)
     assert keep.exists()
     assert not other.exists()
+
+
+def test_cleanup_old_profiles_removes_only_old_dirs(monkeypatch, tmp_path):
+    # A-5: 新しい（別インスタンス使用中かもしれない）プロファイルは残し、
+    # 十分古いものだけを掃除する。
+    monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))
+    import os as _os
+
+    fresh = tmp_path / "edge-debug-fresh"
+    stale = tmp_path / "edge-debug-stale"
+    fresh.mkdir()
+    stale.mkdir()
+    now = infra.datetime.now().timestamp()
+    _os.utime(fresh, (now, now))  # たった今更新（＝使用中かも）
+    old = now - infra._PROFILE_STALE_AGE_SECONDS - 60
+    _os.utime(stale, (old, old))
+    infra.cleanup_old_profiles()
+    assert fresh.exists()
+    assert not stale.exists()
+
+
+def test_cleanup_old_profiles_removes_fresh_when_age_zero(monkeypatch, tmp_path):
+    # min_age_seconds=0 なら mtime 保護は無効になり、従来どおり全削除される。
+    monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))
+    (tmp_path / "edge-debug-a").mkdir()
+    infra.cleanup_old_profiles(min_age_seconds=0)
+    assert not (tmp_path / "edge-debug-a").exists()
+
+
+# --------------------------------------------------------------------------- #
+# 多重起動抑止（D-C4）: アプリ全体で 1 プロセスだけ起動を許すファイルロック。
+# 実プロセスは起こさず、ロックファイルの排他制御そのものをユニットで検証する。
+# --------------------------------------------------------------------------- #
+
+
+def _reset_single_instance(monkeypatch, tmp_path):
+    """ロック置き場を tmp へ向け、モジュール保持ハンドルを初期化する。"""
+    monkeypatch.setattr(infra.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(infra, "_single_instance_handle", None, raising=False)
+
+
+def test_acquire_single_instance_lock_first_call_succeeds(monkeypatch, tmp_path):
+    _reset_single_instance(monkeypatch, tmp_path)
+    try:
+        assert infra.acquire_single_instance_lock() is True
+        assert infra._single_instance_handle is not None
+    finally:
+        if infra._single_instance_handle is not None:
+            infra._single_instance_handle.close()
+
+
+def test_acquire_single_instance_lock_second_process_blocked(monkeypatch, tmp_path):
+    # 同一プロセスは同じハンドルを共有してしまうため、2 つ目の「別プロセス」は
+    # 生のファイルディスクリプタで直接ロックを試み、弾かれることを確かめる。
+    _reset_single_instance(monkeypatch, tmp_path)
+    assert infra.acquire_single_instance_lock() is True
+    rival = open(infra.single_instance_lock_path(), "w")
+    try:
+        assert infra._try_lock(rival) is False
+    finally:
+        rival.close()
+        if infra._single_instance_handle is not None:
+            infra._single_instance_handle.close()
+
+
+def test_acquire_single_instance_lock_idempotent(monkeypatch, tmp_path):
+    # 同一プロセス内で二度呼んでも True（既に自分が保持している）。
+    _reset_single_instance(monkeypatch, tmp_path)
+    try:
+        assert infra.acquire_single_instance_lock() is True
+        assert infra.acquire_single_instance_lock() is True
+    finally:
+        if infra._single_instance_handle is not None:
+            infra._single_instance_handle.close()
 
 
 # --------------------------------------------------------------------------- #
