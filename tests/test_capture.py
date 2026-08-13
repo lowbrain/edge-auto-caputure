@@ -9,6 +9,7 @@ docstring/コメントに書かれた「微妙な仕様」（切り詰め・フ�
     pytest
 """
 
+import asyncio
 import re
 from pathlib import Path
 
@@ -17,7 +18,7 @@ import pytest
 import capture
 import config as config_mod
 import infra
-from capture import page_label, safe_name
+from capture import CaptureRunner, page_label, safe_name
 from config import Config, load_config
 
 
@@ -460,3 +461,119 @@ def test_cleanup_old_profiles_keeps_excluded_dir(monkeypatch, tmp_path):
     infra.cleanup_old_profiles(keep=keep)
     assert keep.exists()
     assert not other.exists()
+
+
+# --------------------------------------------------------------------------- #
+# CaptureRunner の合流（B-3: 撮影キュー無制限の防止）
+#
+# spawn は「ページごとに実行中1件＋保留1件（最新で置き換え）」に合流させる。
+# 実 Edge を使わず、_capture をスタブ化して「実際に何件・どの params で走ったか」だけを
+# 見ることで、合流ロジックそのものを速いユニットテストで回帰から守る。
+# --------------------------------------------------------------------------- #
+
+
+class _FakePage:
+    """WeakKeyDictionary のキーになれる最小のページ代役（weakref 可能な実体）。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"<FakePage {self.name}>"
+
+
+def _recording_runner(gate: "asyncio.Event | None" = None):
+    """_capture を「呼び出し記録用スタブ」に差し替えた CaptureRunner を返す。
+
+    gate を渡すと各撮影は gate がセットされるまで待つ（撮影を in-flight に保ち、
+    その間に来た spawn が合流することを確かめるため）。戻り値の calls に
+    (page, url, selector) が実行順で積まれる。
+    """
+    runner = CaptureRunner()
+    calls: list[tuple] = []
+
+    async def stub(page, url, config, selector=""):
+        calls.append((page, url, selector))
+        if gate is not None:
+            await gate.wait()
+
+    runner._capture = stub  # インスタンス属性がクラスメソッドを上書きする
+    return runner, calls
+
+
+def test_spawn_coalesces_synchronous_burst():
+    # worker が動き出す前に連続 spawn した分は、最新1件へ合流する。
+    async def scenario():
+        runner, calls = _recording_runner()
+        page = _FakePage("p")
+        cfg = Config()
+        for i in range(5):
+            runner.spawn(page, f"url-{i}", cfg)
+        assert len(runner._tasks) == 1  # ページごとに worker は1つだけ
+        await asyncio.wait_for(runner._workers[page], timeout=1)
+        assert calls == [(page, "url-4", "")]  # 走るのは最後の1件だけ
+
+    asyncio.run(scenario())
+
+
+def test_spawn_coalesces_requests_during_capture():
+    # 撮影中(in-flight)に来た複数要求は、最新1件だけに合流して次に走る。
+    async def scenario():
+        gate = asyncio.Event()
+        runner, calls = _recording_runner(gate)
+        page = _FakePage("p")
+        cfg = Config()
+
+        runner.spawn(page, "url-1", cfg)
+        worker = runner._workers[page]
+        for _ in range(5):  # 第1撮影を gate 待ちまで進める
+            await asyncio.sleep(0)
+        assert calls == [(page, "url-1", "")]  # 1件目が in-flight
+
+        # 撮影中に3回要求 → _pending は最新(url-4, sel-4)で上書きされる
+        runner.spawn(page, "url-2", cfg, "sel-2")
+        runner.spawn(page, "url-3", cfg, "sel-3")
+        runner.spawn(page, "url-4", cfg, "sel-4")
+
+        gate.set()  # 1件目を解放。worker がループして最新1件だけを撮る
+        await asyncio.wait_for(worker, timeout=1)
+
+        # 4回積んでも走ったのは2件（in-flight の1 + 合流後の最新1）。selector も最新。
+        assert calls == [(page, "url-1", ""), (page, "url-4", "sel-4")]
+        assert page not in runner._workers  # 空になったら worker は退場
+        assert page not in runner._pending
+
+    asyncio.run(scenario())
+
+
+def test_spawn_different_pages_run_independently():
+    # 別ページは別 worker。互いに合流せず、それぞれ撮られる。
+    async def scenario():
+        runner, calls = _recording_runner()
+        p1, p2 = _FakePage("1"), _FakePage("2")
+        cfg = Config()
+        runner.spawn(p1, "a", cfg)
+        runner.spawn(p2, "b", cfg)
+        assert len(runner._tasks) == 2  # ページごとに worker
+        await asyncio.wait_for(asyncio.gather(*list(runner._tasks)), timeout=1)
+        assert sorted(c[1] for c in calls) == ["a", "b"]
+
+    asyncio.run(scenario())
+
+
+def test_spawn_restarts_worker_after_drain():
+    # 保留を撃ち尽くして worker が退場した後の spawn は、新しい worker を立てて走る
+    #（終了と再要求の競合で取りこぼさないことの確認）。
+    async def scenario():
+        runner, calls = _recording_runner()
+        page = _FakePage("p")
+        cfg = Config()
+        runner.spawn(page, "first", cfg)
+        await asyncio.wait_for(runner._workers[page], timeout=1)
+        assert page not in runner._workers  # drain 後に退場
+
+        runner.spawn(page, "second", cfg)  # 再度 spawn → 新 worker
+        await asyncio.wait_for(runner._workers[page], timeout=1)
+        assert [c[1] for c in calls] == ["first", "second"]
+
+    asyncio.run(scenario())
