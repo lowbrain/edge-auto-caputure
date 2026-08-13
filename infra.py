@@ -163,7 +163,17 @@ def notify_fatal(msg: str) -> None:
     _message_box(msg)
 
 
-def cleanup_old_profiles(keep: Optional[Path] = None) -> None:
+# 使い捨てプロファイルを「掃除対象」とみなす下限の経過時間（秒）。
+# これより新しい edge-debug-* は、別インスタンスが今まさに使用中の可能性が高いので
+# 触らない（A-5 同時起動衝突の保険）。通常は D-C4 の多重起動抑止で他インスタンスが
+# そもそも起動しないため発火しないが、抑止をすり抜けた場合の最後の砦として残す。
+_PROFILE_STALE_AGE_SECONDS = 3 * 60 * 60  # 3 時間
+
+
+def cleanup_old_profiles(
+    keep: Optional[Path] = None,
+    min_age_seconds: float = _PROFILE_STALE_AGE_SECONDS,
+) -> None:
     """前回までに残った一時プロファイル（edge-debug-*）を掃除する。
 
     使用中のフォルダは削除に失敗しても無視する（ignore_errors=True）。
@@ -172,11 +182,82 @@ def cleanup_old_profiles(keep: Optional[Path] = None) -> None:
     プロファイル [F-C1] を誤って消さないための安全弁）。永続プロファイルは
     通常 edge-debug-* とは別名・別置き場所なので glob には一致しないが、
     利用者が一時フォルダ配下に edge-debug- で始まる名前を指定した場合の保険。
+
+    min_age_seconds より新しいフォルダは掃除しない（A-5）。多重起動が抑止を
+    すり抜けた場合でも、別インスタンスが使用中の新しいプロファイルを消して
+    稼働中の Edge を壊さないための保険。mtime が取れないものは安全側に倒して残す。
     """
     keep_resolved = keep.resolve() if keep is not None else None
+    now = datetime.now().timestamp()
     base = Path(tempfile.gettempdir())
     for d in base.glob("edge-debug-*"):
         if d.is_dir():
             if keep_resolved is not None and d.resolve() == keep_resolved:
                 continue
+            try:
+                age = now - d.stat().st_mtime
+            except OSError:
+                # mtime が取れない（消えた/権限）なら触らない（安全側）。
+                continue
+            if age < min_age_seconds:
+                continue
             shutil.rmtree(d, ignore_errors=True)
+
+
+# 取得した単一起動ロックのハンドル。プロセスが生きている間、OS ロックを保持し続ける
+# ために参照を残す（ガベージコレクトで閉じるとロックが外れてしまう）。プロセス終了
+# 時に OS が自動解放するので、クラッシュしてもロックが残り続けることはない。
+_single_instance_handle = None
+
+
+def single_instance_lock_path() -> Path:
+    """単一起動ロックファイルの置き場所（アプリ全体で 1 つ・利用者ごと）。
+
+    一時フォルダは Windows では利用者ごと（%TEMP%）なので、同一利用者の
+    二重起動だけを弾く。output/ と log.txt を共有するのはこの単位なので過不足ない。
+    """
+    return Path(tempfile.gettempdir()) / "edge-auto-capture.lock"
+
+
+def acquire_single_instance_lock() -> bool:
+    """アプリ全体で 1 プロセスだけ起動を許す（D-C4 多重起動抑止）。
+
+    取得できたら True、既に他インスタンスが保持していれば False を返す。
+    第三者は反応が無いと二度押しするため、2 つ目が起動して output/・log.txt・
+    使い捨てプロファイル（A-5）を奪い合うのを入口で止める。
+
+    OS のファイルロック（POSIX: flock / Windows: msvcrt）を使う。プロセスが
+    終了すると OS が自動でロックを外すので、クラッシュ後に残ったロックファイルが
+    次回起動を妨げることはない。取得したハンドルはモジュール変数に保持し、
+    プロセス寿命の間は閉じない。
+    """
+    global _single_instance_handle
+    if _single_instance_handle is not None:
+        return True  # 二重取得はしない（既に自分が保持）。
+    try:
+        handle = open(single_instance_lock_path(), "w")
+    except OSError:
+        # ロックファイルすら作れない環境では、多重起動抑止を諦めて起動を通す
+        # （抑止は best-effort。ここで止めると正常起動まで塞いでしまう）。
+        return True
+    if not _try_lock(handle):
+        handle.close()
+        return False
+    _single_instance_handle = handle
+    return True
+
+
+def _try_lock(handle) -> bool:
+    """開いたファイルに OS の排他ロックを非ブロッキングで掛ける。掛けられたら True。"""
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
