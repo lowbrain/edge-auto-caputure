@@ -4,8 +4,10 @@
 - ファイル名スラッグの生成（safe_name / page_label）
 - 1 ページ分の保存（png / txt / _part.txt）を担う撮影実行器（CaptureRunner）
 
-撮影の実行時状態（実行中タスク・ページ単位ロック）は、以前モジュールグローバルだったが、
-CaptureRunner のインスタンスが own する（1 監視セッションに 1 個。状態の所在を明確にする）。
+撮影の実行時状態（実行中タスク・ページ単位ワーカー・保留要求）は、以前モジュール
+グローバルだったが、CaptureRunner のインスタンスが own する（1 監視セッションに 1 個。
+状態の所在を明確にする）。同一ページの撮影はワーカーで直列化し、進行中に来た要求は
+「保留1件・最新で置き換え」に合流させる（B-3: キュー無制限の防止）。
 ページ側 JS の呼び出し式・文言は badge モジュールに集約してあり、ここから参照する。
 """
 
@@ -78,46 +80,73 @@ def _step(tag: str, url: str, done=None):
 class CaptureRunner:
     """1 監視セッション分の撮影実行器。
 
-    撮影のバックグラウンドタスクと、ページ単位の撮影ロックを own する。以前は
-    モジュールグローバル（_tasks / _page_locks）だったものをここへ集約し、状態が
-    セッションに閉じる（テスト時の持ち越しや、複数セッション時の共有事故を避ける）。
+    撮影のバックグラウンドタスクを own する。以前はモジュールグローバル（_tasks 等）
+    だったものをここへ集約し、状態がセッションに閉じる（テスト時の持ち越しや、
+    複数セッション時の共有事故を避ける）。
+
+    撮影は **ページごとに1つのワーカー**で直列化し、進行中に来た新しい要求は
+    「保留1件・最新で置き換え」に合流させる（B-3: キュー無制限の防止）。
+    更新の激しいダッシュボードで SPA 検知 ON にしても、あるページのキューは
+    「実行中1件＋保留1件」で構造的に頭打ちになり、フルページ PNG がディスクを
+    食い潰さない。中間フレームは捨てるが、要求後の状態は必ず撮れるので撮り逃さない。
     """
 
     def __init__(self) -> None:
-        # 実行中の capture タスクへの強参照を保持する集合。
+        # 実行中の worker タスクへの強参照を保持する集合。
         # これが無いとイベントループはタスクを弱参照でしか持たず、
         # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
         self._tasks: set[asyncio.Task] = set()
 
-        # ページごとの撮影を直列化するためのロック（page -> Lock）。
-        # 同じページで撮影が重なると（例: 「今すぐ1枚」と自動保存がほぼ同時、リダイレクト連鎖）、
-        # 一方の captureEnd がバーを復帰させた直後にもう一方が screenshot 中、という並びが起き得て、
-        # 退避したはずの操作バーが画像へ写り込む。撮影のクリティカル区間（バー退避→撮影→復帰）を
-        # このロックで page 単位に直列化して防ぐ。別ページ同士は別ロックなので並行できる。
+        # ページごとの「最新の保留要求」(url, config, selector)。新しい要求で上書き
+        # するのが coalesce の本体。撮影中に何度要求が来ても、次に走るのは最後の1件だけ。
         # ページが閉じたらエントリは自動で消えるよう WeakKeyDictionary を使う。
-        self._page_locks: weakref.WeakKeyDictionary[Page, asyncio.Lock] = (
+        self._pending: weakref.WeakKeyDictionary[Page, tuple[str, Config, str]] = (
             weakref.WeakKeyDictionary()
         )
 
-    def _page_lock(self, page: Page) -> asyncio.Lock:
-        """そのページ用の撮影ロックを返す（無ければ作る）。"""
-        lock = self._page_locks.get(page)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._page_locks[page] = lock
-        return lock
+        # ページごとに走っている worker タスク。存在すれば新規起動せず、既存 worker が
+        # 現在の撮影を終えたあと _pending を拾う。1 ページ＝1 worker なので同ページの
+        # 撮影は完全に直列化される（＝以前の page 単位ロックは不要になった）。
+        self._workers: weakref.WeakKeyDictionary[Page, asyncio.Task] = (
+            weakref.WeakKeyDictionary()
+        )
 
     def spawn(self, page: Page, url: str, config: Config, selector: str = "") -> None:
-        """_capture() をバックグラウンドタスクとして起動し、参照を保持する。
+        """撮影要求を投入する（ページごとに合流。B-3）。
 
+        最新要求で _pending を上書きし、そのページの worker が居なければ起動する。
         撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は _capture() のスクショ処理が
-        内部で行うので、ここでは起動と参照保持だけを担う。
+        内部で行うので、ここでは要求の登録と worker 起動だけを担う。
         selector は _part.txt 抜き出しの対象（実行時のバー入力値）を _capture() へ渡す。
-        タスクを _tasks に入れて GC を防ぎ、完了時に取り除く。
+
+        この関数は同期で、内部に await が無い＝不可分に実行される。worker の終了
+        シーケンス（_worker 参照）も不可分なので、両者は「前か後」でしか噛み合わず、
+        要求が宙に浮く取りこぼしは起きない。
         """
-        task = asyncio.create_task(self._capture(page, url, config, selector))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._pending[page] = (url, config, selector)
+        if page not in self._workers:
+            task = asyncio.create_task(self._worker(page))
+            self._workers[page] = task
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _worker(self, page: Page) -> None:
+        """1 ページ分の撮影ワーカー。_pending が尽きるまで最新要求を1件ずつ撮る。
+
+        撮影中に spawn が _pending を何度上書きしても、次のループで拾うのは最後の1件
+        だけ（＝合流）。_pending が空になったら、その場（await を挟まず）で _workers から
+        自分を外して終了する。この「pop が None → _workers から除去 → return」の区間に
+        await が無いことが、spawn 側との競合を防ぐ肝（下の説明どおり不可分に実行される）。
+        """
+        while True:
+            req = self._pending.pop(page, None)
+            if req is None:
+                # ここから return まで await を挟まない。この間に spawn は割り込めないので、
+                # 「空を見て終了しようとした矢先に新要求が来て取りこぼす」競合は起きない。
+                self._workers.pop(page, None)
+                return
+            url, config, selector = req
+            await self._capture(page, url, config, selector)
 
     async def _capture(self, page: Page, url: str, config: Config, selector: str = "") -> None:
         # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
@@ -148,17 +177,16 @@ class CaptureRunner:
         # 1) フルページ スクリーンショット
         #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、撮影後に
         #    シャッターフラッシュ＋バー復帰。captureEnd は失敗時も戻すため finally で必ず呼ぶ。
-        #    同一ページでの撮影重なりによる写り込みを防ぐため、この区間を page 単位のロックで直列化
-        #    する（_page_lock 参照。別ページ同士は別ロックなので並行できる）。
-        async with self._page_lock(page):
-            with _step("png", url, done):
-                try:
-                    await try_eval(page, badge.CAPTURE_START_CALL)  # 退避し切るまで待つ
-                    await page.screenshot(
-                        path=str(config.output_dir / f"{stem}.png"), full_page=True
-                    )
-                finally:
-                    await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
+        #    同一ページの撮影は worker が1件ずつ直列化するので（_worker 参照）、退避中に別撮影が
+        #    割り込んで操作バーが写り込むことはない。別ページ同士は別 worker なので並行できる。
+        with _step("png", url, done):
+            try:
+                await try_eval(page, badge.CAPTURE_START_CALL)  # 退避し切るまで待つ
+                await page.screenshot(
+                    path=str(config.output_dir / f"{stem}.png"), full_page=True
+                )
+            finally:
+                await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
 
         # 2) ページ全文テキスト（操作バーは除外して取得）
         with _step("txt", url, done):
