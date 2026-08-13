@@ -185,6 +185,36 @@ def run() -> int:
                     f"A-2: 退避済みからの captureStart が {elapsed_ms:.0f}ms 待ちました"
                     "（transitionend 不発で 500ms 無駄待ちする回帰）"
                 )
+
+            # 10) B-6 の回帰: MutationObserver を常時稼働から「必要なときだけ」に変えた。
+            #     (a) バー再構築監視は body の childList のみ（subtree なし）に絞ったので、
+            #         host を body 直下から消しても付け直されること。
+            #     (b) SPA検知監視は spaActive の切り替わりで observe/disconnect する。
+            #         SPA検知OFF（記録OFF）にした後は、DOM が変化しても通知が飛ばないこと。
+            page.evaluate("document.querySelector(" + repr(BADGE_SEL) + ").remove()")
+            try:
+                page.wait_for_selector(BADGE_SEL, state="attached", timeout=3000)
+            except Exception:
+                errors.append("B-6(a): host を削除してもバーが再構築されませんでした")
+
+            # (b) いったん SPA ON で監視が繋がっている状態から OFF へ落とし、以降の DOM 変化で
+            #     通知（__eac_spa_changed）が増えないことを確認する（Observer が切断されている）。
+            page.evaluate("window.__eacApplyState(true, true, '')")   # 記録ON・SPA ON（接続）
+            page.evaluate("window.__eacApplyState(false, false, '')")  # 記録OFF・SPA OFF（切断）
+            page.evaluate("window.__spaCalls = [];")
+            for i in range(5):
+                page.evaluate(
+                    "document.body.appendChild(Object.assign("
+                    "document.createElement('div'), { textContent: 'b6-" + str(i) + "-' + Date.now() }))"
+                )
+            # settleMs(300ms) を十分に超えて待ち、それでも通知ゼロなら切断できている。
+            time.sleep(1.0)
+            leaked_calls = page.evaluate("window.__spaCalls.length")
+            if leaked_calls:
+                errors.append(
+                    f"B-6(b): SPA検知OFF後も DOM 変化で通知が来ました（{leaked_calls}件・"
+                    "Observer が切断されていない）"
+                )
         finally:
             context.close()
 
@@ -196,7 +226,7 @@ def run() -> int:
     print(
         "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
         "SPA検知の通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・"
-        "JSエラー無しを確認しました。"
+        "Observer の必要時のみ稼働(B-6)・JSエラー無しを確認しました。"
     )
     return 0
 

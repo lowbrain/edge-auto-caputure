@@ -209,7 +209,16 @@ SPA 経由では sleep を省くのが素直。
 利用者が `https://example.com` を指定してもクエリやパスが付いた瞬間に効かない。
 前方一致か `fnmatch` のワイルドカードにすると期待どおり動く。
 
-### B-6. MutationObserver が常時稼働している（実害あり）〔**未**〕
+### B-6. MutationObserver が常時稼働している（実害あり）〔**済**〕
+
+**対応済み**（下の「対処」どおりに実装。`badge.js` から常時稼働の 2 つを撤去し、
+バー再構築は `ensureBarObserver`（`document.body` の `childList` のみ・body 確定後に一度張る）、
+SPA 検知は `spaObserverConnect` / `spaObserverDisconnect`（`spaActive()` の切り替わりで
+`spaSyncBaseline` 内から接続/切断）へ移した。SPA 検知OFF・記録OFF の間は Observer が
+存在しないため発火ゼロ。`tests/smoke_badge.py` に回帰ステップ 10 を追加
+（(a) host 削除でバー再構築、(b) SPA 検知OFF後は DOM 変化で通知が飛ばない）。）
+
+以下は対応前の記録。
 
 `badge.js:556` と `badge.js:562` の 2 つの `MutationObserver` が、
 **記録OFF・SPA検知OFF でも、全タブ・全ページで無条件に動き続ける**。

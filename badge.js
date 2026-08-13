@@ -107,10 +107,12 @@
   let spaNavPending = false;   // 直近の遷移（pushState等）を消化中か（基準取り直しのみ・通知しない）
   let spaPrevActive = false;   // 直前の「監視中(spaOn && recording)」状態
   let spaPrevSelector = '';    // 直前のセレクタ（変更検知で基準取り直し）
+  let spaObserver = null;      // SPA監視の MutationObserver（監視中のときだけ接続する。B-6）
 
   let host = null;         // ページ側 DOM に置くシャドウホスト（本文取得時の非表示もこれを操作）
   let shadow = null;       // host.shadowRoot（フォーカス判定・要素取得に使う）
   let els = null;          // シャドウ内の主要要素をまとめた参照
+  let barObserver = null;  // バー再構築監視の MutationObserver（body 確定後に一度だけ張る。B-6）
 
   // シャドウホストの最小限のスタイル。画面上端いっぱいに敷いて重なり順と当たり判定の
   // 透過だけをインライン !important で固定する（サイト側 CSS に負けない）。見た目は
@@ -350,6 +352,16 @@
     }, BAR_RETURN_MS);
   }
 
+  // B-6: バーが消えたら付け直すための監視。host は body の直接の子として append するので、
+  // body の childList（直下の追加/削除）だけ見れば足りる。subtree は使わない（文書全体の
+  // あらゆる変化で発火させない＝閲覧中の恒常負荷を避ける）。add_init_script 時点では body が
+  // まだ無いことがあるため、build が body へ append できた後（＝body 確定後）に一度だけ張る。
+  function ensureBarObserver() {
+    if (barObserver || !document.body) return;
+    barObserver = new MutationObserver(() => { if (!document.getElementById(ID)) build(); });
+    barObserver.observe(document.body, { childList: true });
+  }
+
   function build() {
     if (!document.body || document.getElementById(ID)) return;
     // 遷移直後に誤った状態（待機中）を一瞬見せないよう、先に現在の状態
@@ -404,6 +416,8 @@
       els.sel.addEventListener('change', () => callBinding('__eac_commit_selector', TOK, els.sel.value));
 
       document.body.appendChild(host);
+      // B-6: バーが site の再描画で消えたら付け直すための監視を張る（body 確定後の今だけ）。
+      ensureBarObserver();
       // 作り直したバーでは件数を必ず数え直させる（同じセレクタでも新しい要素は空のため）。
       countedSel = null;
       // 取得した現在の状態で最初から正しく描画する。
@@ -482,6 +496,10 @@
   // 監視中(spaActive)へ切り替わった直後、またはセレクタが変わった直後は、現在の内容を
   // 「基準」に取り直す（開始/変更の直後に無駄撮りしないため）。Python 側で行っていた
   // reseed 相当をページ側で行う。apply から毎回呼ぶが、基準の再計算は遷移時だけ走る。
+  //
+  // B-6: SPA 監視の MutationObserver は、この spaActive の切り替わりに合わせて
+  // observe / disconnect する。SPA検知を使っていない間（記録OFF or SPA検知OFF）は
+  // Observer が動かないので、閲覧しているだけの利用者にコールバックのコストがかからない。
   function spaSyncBaseline() {
     const nowActive = spaActive();
     const sel = (selector || '').trim();
@@ -491,8 +509,24 @@
       spaNavPending = false;
       spaLastSig = spaSignature();
     }
+    // 切り替わりの検知は spaPrevActive を更新する前に行う（下で更新）。
+    if (nowActive && !spaPrevActive) spaObserverConnect();
+    else if (!nowActive && spaPrevActive) spaObserverDisconnect();
     spaPrevActive = nowActive;
     spaPrevSelector = sel;
+  }
+
+  // SPA 監視 Observer の接続/切断。DOM 変化（childList / characterData）を捉えて
+  // デバウンス確定する。属性変化は監視しない（クラス切替などの無関係な更新で
+  // タイマーを張り直さないため）。Observer は初回接続時に一度だけ生成して使い回す。
+  // 監視対象は documentElement（無ければ body、さらに document）へフォールバックする。
+  function spaObserverConnect() {
+    if (!spaObserver) spaObserver = new MutationObserver(spaSchedule);
+    const root = document.documentElement || document.body || document;
+    spaObserver.observe(root, { childList: true, subtree: true, characterData: true });
+  }
+  function spaObserverDisconnect() {
+    if (spaObserver) spaObserver.disconnect();
   }
 
   // 変化を1件受けてデバウンスタイマーを張り直す。ただし連続変化が SPA_MAX_WAIT_MS を超えたら
@@ -549,18 +583,12 @@
   } else {
     build();
   }
-  // サイト側の再描画でバーが消えても付け直す。
-  // 注入直後は documentElement がまだ無いページ（about:blank 等）があるため、
-  // 監視対象は documentElement → document の順でフォールバックする（常に有効な Node）。
-  const _root = document.documentElement || document;
-  new MutationObserver(() => { if (!document.getElementById(ID)) build(); })
-    .observe(_root, { childList: true, subtree: true });
-
-  // SPA検知の監視。DOM 変化（childList / characterData）を捉えてデバウンス確定する。
-  // 属性変化は監視しない（クラス切替などの無関係な更新でタイマーを張り直さないため）。
-  // バーはシャドウ内なので、その内部変化（撮影退避・透過切替など）はこの監視に混ざらない。
-  new MutationObserver(() => spaSchedule())
-    .observe(_root, { childList: true, subtree: true, characterData: true });
+  // B-6: 以前はここで 2 つの MutationObserver（バー再構築・SPA検知）を documentElement に
+  // subtree で常時張っていたが、閲覧しているだけの利用者にも恒常的な負荷がかかっていた。
+  //   - バー再構築 → build 内 ensureBarObserver（body の childList のみ・body 確定後に張る）
+  //   - SPA検知   → spaSyncBaseline 内 spaObserverConnect/Disconnect（監視中のときだけ接続）
+  // へ移した。SPA検知の署名は body 側の変化で決まるので、documentElement 常時監視は不要。
+  //
   // ルート変化（SPA の画面遷移）のフック。pushState / replaceState を包み、popstate /
   // hashchange も拾う。いずれも onRoute（基準取り直し）へ回す。
   const hookHistory = (name) => {
