@@ -10,8 +10,12 @@ license = { text = "MIT" }
 classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
+# 配布ビルドの再現性のためバージョンを縛る（ROADMAP 第3群「依存の未ピン留め」）。
+#   >=1.60 : 動作確認済みの版（.venv 実測）。これ未満は未検証なので許可しない。
+#   <2     : メジャー更新（API 総入れ替えの恐れ）へ自動で飛び移らせない。
+# 厳密な1点固定は互換範囲の宣言を潰すためここには書かない。必要なら constraints で行う。
 dependencies = [
-    "playwright",
+    "playwright>=1.60,<2",
 ]
 
 [project.optional-dependencies]

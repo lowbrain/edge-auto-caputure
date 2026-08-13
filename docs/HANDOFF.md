@@ -49,7 +49,7 @@
 | ★2 | `E-4` ダウンロード消失 | IMPROVEMENTS E-4 | 1 行＋検証 | `accept_downloads` / `downloads_path` 未指定。利用者影響が大きい。**実機検証が先** |
 | ~~★3~~ | ~~`D-A3` プライバシー注記（＋`D-C2`/`D-B3`）~~ | DISTRIBUTION | 小 | ✅**済**。`USAGE.txt`「■ ご利用にあたって」節へ追記（免責＋保存物の説明、問い合わせ非対応も明記）。個人〜身内利用前提で軽量な文面に留めた |
 | ★4 | `B-6` MutationObserver 常時稼働 | IMPROVEMENTS B-6 | badge.js 小 | SPA 検知を使わない人にも常時負荷。単独で入れられる |
-| 5 | 依存のピン留め | IMPROVEMENTS C | 極小 | `pyproject.toml:13-14` が `["playwright"]` のみ。配布ビルドの再現性 |
+| ~~5~~ | ~~依存のピン留め~~ | IMPROVEMENTS C | 極小 | ✅**済**。`pyproject.toml` を `["playwright>=1.60,<2"]` に、`build.ps1` を `pip install -e ".[build]"` に寄せて版を一元化 |
 | 6 | CI（pytest+ruff）＋ smoke の `--strict` | IMPROVEMENTS D | 小 | smoke は今 Edge/Chrome 不在で SKIP=0＝CI で無意味に緑になる |
 | 7 | `A-5` 使い捨てプロファイルの同時起動衝突 | IMPROVEMENTS A-5 | 小 | `keep=` で再利用分は守れたが `edge-debug-*` 同士は未対応 |
 | 8 | `B-1`/`B-2` URL 監視のイベント駆動化 | IMPROVEMENTS B | 中〜大 | `poll_interval` を消せる。ブランチ主旨の完遂 |

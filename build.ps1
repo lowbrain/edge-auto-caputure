@@ -21,7 +21,10 @@ $root = $PSScriptRoot   # このスクリプトのあるフォルダ＝プロジ
 Set-Location -Path $root
 
 Write-Host "[1/5] ビルド用の依存を確認します (pyinstaller / playwright) ..."
-pip install pyinstaller playwright
+# 依存は pyproject に一本化する（版の二重管理を避ける）。
+#   playwright  : base の dependencies（>=1.60,<2 の範囲指定が効く）
+#   pyinstaller : [build] extras
+pip install -e ".[build]"
 if ($LASTEXITCODE -ne 0) { Write-Host "依存のインストールに失敗しました。" -ForegroundColor Red; exit 1 }
 
 Write-Host "[2/5] PyInstaller でビルドします ..."
