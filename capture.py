@@ -16,6 +16,7 @@ import re
 import weakref
 from contextlib import contextmanager
 from datetime import datetime
+from typing import Optional
 
 from playwright.async_api import Page
 
@@ -27,10 +28,18 @@ from infra import log
 NAME_MAX_LEN = 80
 
 
-async def try_eval(page: Page, js: str) -> None:
-    """ページ側 JS を実行。失敗しても無視する（操作バーの表示/非表示など副次処理用）。"""
+async def try_eval(page: Page, js: str, timeout: Optional[float] = None) -> None:
+    """ページ側 JS を実行。失敗しても無視する（操作バーの表示/非表示など副次処理用）。
+
+    timeout（秒）を渡すと、その時間内に返らなければ諦める（E-6: ページのメインスレッドが
+    詰まって evaluate が戻らないと worker が永久に止まるのを防ぐ）。打ち切りは TimeoutError
+    になるが、この関数は元々あらゆる例外を握って無視するので呼び出し側は続行できる。
+    """
     try:
-        await page.evaluate(js)
+        if timeout is None:
+            await page.evaluate(js)
+        else:
+            await asyncio.wait_for(page.evaluate(js), timeout=timeout)
     except Exception:
         pass
 
@@ -179,18 +188,27 @@ class CaptureRunner:
         #    シャッターフラッシュ＋バー復帰。captureEnd は失敗時も戻すため finally で必ず呼ぶ。
         #    同一ページの撮影は worker が1件ずつ直列化するので（_worker 参照）、退避中に別撮影が
         #    割り込んで操作バーが写り込むことはない。別ページ同士は別 worker なので並行できる。
+        eval_timeout = config.eval_timeout / 1000               # ミリ秒 → 秒（E-6）
         with _step("png", url, done):
             try:
-                await try_eval(page, badge.CAPTURE_START_CALL)  # 退避し切るまで待つ
+                # 退避し切るまで待つ。ページが固まって戻らない場合は eval_timeout で打ち切り、
+                # 退避の合図に永久に張り付いて worker を止めない（E-6）。
+                await try_eval(page, badge.CAPTURE_START_CALL, eval_timeout)
                 await page.screenshot(
                     path=str(config.output_dir / f"{stem}.png"), full_page=True
                 )
             finally:
-                await try_eval(page, badge.CAPTURE_END_CALL)     # フラッシュ＋復帰（必ず実行）
+                # フラッシュ＋復帰（必ず実行）。ここも同じく打ち切り付きで待つ。
+                await try_eval(page, badge.CAPTURE_END_CALL, eval_timeout)
 
         # 2) ページ全文テキスト（操作バーは除外して取得）
+        #    evaluate はタイムアウト引数を持たず set_default_timeout も効かないため、
+        #    asyncio.wait_for で打ち切る（E-6）。戻らないと _step の外＝worker が止まる。
+        #    打ち切りの TimeoutError は _step が握って [skip txt] を出し、worker は次へ進む。
         with _step("txt", url, done):
-            text = await page.evaluate(badge.BODY_TEXT_CALL)
+            text = await asyncio.wait_for(
+                page.evaluate(badge.BODY_TEXT_CALL), timeout=config.eval_timeout / 1000
+            )
             (config.output_dir / f"{stem}.txt").write_text(
                 f"URL: {url}\n\n{text}", encoding="utf-8"
             )
