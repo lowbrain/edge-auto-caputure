@@ -56,7 +56,7 @@ from typing import Optional
 from playwright.async_api import Page, async_playwright
 
 import badge
-from capture import CaptureRunner, try_eval
+from capture import CaptureRunner, group_folder_name, group_stamp, group_subdir, try_eval
 from config import Config, load_config
 from infra import (
     __version__,
@@ -104,12 +104,14 @@ def _browser_candidates(config: Config) -> list[tuple[str, str, str]]:
     return candidates
 
 
-def _downloads_dir(config: Config) -> Path:
-    """利用者のダウンロードを残す保存先（output_dir/downloads）を返す（E-4）。
+def _downloads_dir(config: Config, group_id: str = "") -> Path:
+    """利用者のダウンロードを残す保存先を返す（E-4）。
 
     撮影成果物（png/txt/log.txt）と混ざらないよう downloads サブフォルダに分ける。
+    保存物と同じく系譜（lineage）ごとにまとめるため、group_id 採番済みなら
+    output_dir/lineage-<id>/downloads、未採番(空)なら output_dir/downloads を返す。
     """
-    return config.output_dir / "downloads"
+    return group_subdir(config.output_dir, group_id) / "downloads"
 
 
 def _unique_path(directory: Path, name: str) -> Path:
@@ -180,7 +182,7 @@ class GroupState:
     on: bool          # 記録中か（このグループの自動保存マスタースイッチ）
     spa_on: bool      # SPA検知（中身変化を契機に保存）
     selector: str     # 検知/抜き出しの対象 CSS セレクタ
-    id: int = 0       # ログで系譜を見分けるための連番（起動ごと 1 から。既定 0＝未採番）
+    id: str = ""      # 系譜を作った時刻（ミリ秒まで・区切りなし）。フォルダ名/ログの識別子。空＝未採番
 
 
 class CaptureSession:
@@ -213,7 +215,6 @@ class CaptureSession:
         # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。
         self.groups: dict[Page, GroupState] = {}  # root ページ -> そのグループの状態
         self.page_root: dict[Page, Page] = {}     # 各ページ -> 所属グループの root（メモ化）
-        self._group_seq = 0                       # 系譜の採番カウンタ（ログ識別用）
         # --- ページごとの追跡情報 ---
         self.seen: dict[Page, str] = {}           # page -> 直近のURL
 
@@ -250,9 +251,8 @@ class CaptureSession:
     # ---- タブ系譜（グループ）の解決 ----
 
     def _make_group(self, on: bool, spa_on: bool, selector: str) -> GroupState:
-        """連番 id を採番して GroupState を作る（ログで系譜を見分けるため）。"""
-        self._group_seq += 1
-        return GroupState(on=on, spa_on=spa_on, selector=selector, id=self._group_seq)
+        """GroupState を作る。id は「作った時刻（ミリ秒まで・区切りなし）」で、フォルダ名/ログに使う。"""
+        return GroupState(on=on, spa_on=spa_on, selector=selector, id=group_stamp())
 
     async def _find_root(self, page) -> Page:
         """page の所属グループの root ページを opener 連鎖から求める。
@@ -289,7 +289,7 @@ class CaptureSession:
         if grp is None:
             grp = self._make_group(on=False, spa_on=False, selector=self.config.target_selector)
             self.groups[root] = grp
-            log(f"[系譜#{grp.id}] 新しいタブを認識しました（初期は待機）")
+            log(f"[{group_folder_name(grp.id)}] 新しいタブを認識しました（初期は待機）")
         return grp
 
     def _group_pages(self, root: Page) -> list[Page]:
@@ -309,7 +309,7 @@ class CaptureSession:
             return None
         if url in self.config.skip_urls:
             return None
-        self.runner.spawn(pg, url, self.config, grp.selector, f"系譜#{grp.id}")
+        self.runner.spawn(pg, url, self.config, grp.selector, grp.id)
         return url
 
     async def on_toggle(self, source, token=None) -> None:
@@ -327,7 +327,8 @@ class CaptureSession:
             where = source["page"].url
         except Exception:
             where = ""
-        log(f"[記録] {'開始' if grp.on else '停止'} 系譜#{grp.id}" + (f"  {where}" if where else ""))
+        log(f"[記録] {'開始' if grp.on else '停止'} {group_folder_name(grp.id)}"
+            + (f"  {where}" if where else ""))
         await self.refresh_panels()
         if grp.on:
             root = self.page_root[source["page"]]
@@ -348,7 +349,7 @@ class CaptureSession:
         grp = await self._resolve_group(source["page"])
         url = self._shoot(source["page"], grp)
         if url is not None:
-            log(f"[手動] 系譜#{grp.id}  {url}")
+            log(f"[手動] {group_folder_name(grp.id)}  {url}")
 
     async def on_spa_toggle(self, source, token=None) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
@@ -361,7 +362,7 @@ class CaptureSession:
             return
         grp = await self._resolve_group(source["page"])
         grp.spa_on = not grp.spa_on
-        log(f"[SPA] {'ON' if grp.spa_on else 'OFF'} 系譜#{grp.id}")
+        log(f"[SPA] {'ON' if grp.spa_on else 'OFF'} {group_folder_name(grp.id)}")
         await self.refresh_panels()
 
     async def on_set_selector(self, source, token=None, value="") -> None:
@@ -395,7 +396,7 @@ class CaptureSession:
             return
         url = self._shoot(source["page"], grp)
         if url is not None:
-            log(f"[SPA変化] 系譜#{grp.id}  {url}")
+            log(f"[SPA変化] {group_folder_name(grp.id)}  {url}")
 
     async def on_commit_selector(self, source, token=None, value="") -> None:
         """セレクタ入力の確定（blur / Enter）。最終値をログに残す。
@@ -407,7 +408,7 @@ class CaptureSession:
             return
         grp = await self._resolve_group(source["page"])
         new = (value or "").strip()
-        log(f"[セレクタ] {'クリア' if not new else repr(new)} 系譜#{grp.id}")
+        log(f"[セレクタ] {'クリア' if not new else repr(new)} {group_folder_name(grp.id)}")
 
     async def get_state(self, source, token=None) -> dict:
         """操作バーが描画前に現在の状態を問い合わせるためのバインディング。
@@ -434,15 +435,27 @@ class CaptureSession:
 
         Playwright は既定でダウンロードをコンテキスト終了時に削除する。
         accept_downloads / downloads_path を指定しても削除される（一時置き場が変わる
-        だけ）ので、ここで save_as して初めて手元に残る。元のファイル名のまま
-        output_dir/downloads へ保存し、同名衝突時は連番を付ける。
+        だけ）ので、ここで save_as して初めて手元に残る。元のファイル名のまま、撮影物と
+        同じく系譜（lineage）ごとの output_dir/lineage-<id>/downloads へ保存し、同名衝突時は連番を付ける。
+        どの系譜かは発生元ページ（download.page）の所属グループで決める。
         token 照合は不要（ブラウザ本体が発火するイベントで、ページ側から詐称できない）。
         """
         name = download.suggested_filename or "download"
-        target = _unique_path(_downloads_dir(self.config), name)
+        # 発生元ページの系譜を解決（取れなければ未採番＝空 として output_dir/downloads へ）。
+        group_id = ""
         try:
+            page = download.page
+            if page is not None:
+                group_id = (await self._resolve_group(page)).id
+        except Exception:
+            group_id = ""
+        dl_dir = _downloads_dir(self.config, group_id)
+        try:
+            dl_dir.mkdir(parents=True, exist_ok=True)
+            target = _unique_path(dl_dir, name)
             await download.save_as(str(target))
-            log(f"[DL] 保存しました: {target.name}")
+            log(f"[DL] {group_folder_name(group_id)} 保存しました: {target.name}" if group_id
+                else f"[DL] 保存しました: {target.name}")
         except Exception as e:
             # 例: 保存前にウィンドウを閉じられ一時ファイルが消えた等。無言にはしない。
             log(f"[DL] ダウンロードの保存に失敗しました: {name} ({e})")
@@ -547,7 +560,7 @@ class CaptureSession:
                 key = _url_key(url)
                 if self.seen.get(pg) != key:
                     self.seen[pg] = key
-                    self.runner.spawn(pg, url, self.config, grp.selector, f"系譜#{grp.id}")
+                    self.runner.spawn(pg, url, self.config, grp.selector, grp.id)
 
             await asyncio.sleep(self.config.poll_interval)
 
@@ -557,9 +570,8 @@ async def main(config: Config) -> None:
     # 消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知して抜ける。
     try:
         config.output_dir.mkdir(parents=True, exist_ok=True)
-        # ダウンロードの受け皿（output_dir/downloads）も先に用意する（E-4）。
-        # Playwright に downloads_path として渡すため、起動前に存在させておく。
-        _downloads_dir(config).mkdir(parents=True, exist_ok=True)
+        # 撮影物・ダウンロードは系譜（lineage）ごとの output_dir/lineage-<id>/ 以下へ保存する。
+        # これらのサブフォルダは保存時に必要に応じて作るため、ここでは output_dir だけ用意する。
     except Exception as e:
         notify_fatal(f"保存先フォルダを作成できませんでした: {config.output_dir}\n({e})")
         return

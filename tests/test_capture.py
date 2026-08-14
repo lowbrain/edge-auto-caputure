@@ -624,7 +624,7 @@ def _recording_runner(gate: "asyncio.Event | None" = None):
     runner = CaptureRunner()
     calls: list[tuple] = []
 
-    async def stub(page, url, config, selector="", group_label=""):
+    async def stub(page, url, config, selector="", group_id=""):
         calls.append((page, url, selector))
         if gate is not None:
             await gate.wait()
@@ -745,11 +745,11 @@ class _RecRunner:
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
-        self.labels: list[str] = []
+        self.group_ids: list[int] = []
 
-    def spawn(self, page, url, config, selector="", group_label=""):
+    def spawn(self, page, url, config, selector="", group_id=""):
         self.calls.append((page, url, selector))
-        self.labels.append(group_label)
+        self.group_ids.append(group_id)
 
 
 def _make_session(pages, roots=None, config=None):
@@ -875,26 +875,40 @@ def test_spa_changed_gated_by_group_state():
     asyncio.run(scenario())
 
 
-def test_shoot_passes_group_label_to_spawn():
-    # 撮影要求には「系譜#<id>」ラベルが渡り、保存ログでタブを見分けられる。
+def test_shoot_passes_group_id_to_spawn():
+    # 撮影要求にはグループの id（作成時刻）が渡り、保存先フォルダ/ログで系譜を見分けられる。
     from edge_auto_capture import GroupState
 
     async def scenario():
         r = _GroupPage("r")
-        s = _make_session([r], roots={r: GroupState(on=True, spa_on=True, selector="", id=7)})
+        s = _make_session(
+            [r], roots={r: GroupState(on=True, spa_on=True, selector="", id="20260814101105674")}
+        )
         await s.on_spa_changed({"page": r}, token=s.token)
-        assert s.runner.labels == ["系譜#7"]
+        assert s.runner.group_ids == ["20260814101105674"]
 
     asyncio.run(scenario())
 
 
-def test_make_group_assigns_incrementing_ids():
-    # 新規グループには 1 から連番の id が振られる（ログの系譜識別用）。
+def test_group_subdir_and_folder_name():
+    # 採番済みは output_dir/lineage-<id>、未採番(空)は output_dir 直下。
+    from pathlib import Path
+
+    from capture import group_folder_name, group_subdir
+
+    out = Path("/tmp/out")
+    assert group_folder_name("20260814101105674") == "lineage-20260814101105674"
+    assert group_subdir(out, "20260814101105674") == out / "lineage-20260814101105674"
+    assert group_subdir(out, "") == out
+
+
+def test_make_group_id_is_timestamp():
+    # 新規グループの id は「作成時刻（ミリ秒まで）」の文字列（ログ/フォルダ識別用）。
     async def scenario():
         s = _make_session([])
-        g1 = s._make_group(on=False, spa_on=False, selector="")
-        g2 = s._make_group(on=True, spa_on=False, selector="")
-        assert (g1.id, g2.id) == (1, 2)
+        g = s._make_group(on=False, spa_on=False, selector="")
+        # 例: 20260814101105674（YYYYMMDDHHMMSSmmm・区切りなし＝17桁）
+        assert re.fullmatch(r"\d{17}", g.id)
 
     asyncio.run(scenario())
 

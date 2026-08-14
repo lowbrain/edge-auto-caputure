@@ -33,7 +33,7 @@ class _RecRunner:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
 
-    def spawn(self, page, url, config, selector="", group_label=""):
+    def spawn(self, page, url, config, selector="", group_id=""):
         self.calls.append((page, url, selector))
 
 
