@@ -649,9 +649,12 @@ async def main(config: Config) -> None:
         session = CaptureSession(context, config)
         await session.setup()
 
-        # ブラウザのウィンドウを閉じたら監視ループを抜けるためのフラグ
+        # ブラウザのウィンドウを閉じたら監視ループを抜けるためのフラグ。
+        # playwright は close を「context を引数に」発火する（emit(Events.Close, self)）。
+        # 0 引数ラムダだと呼び出し時に TypeError となり closed.set() が走らず、
+        # run() の await closed.wait() を抜けられない。引数を捨てる *_ で受ける。
         closed = asyncio.Event()
-        context.on("close", lambda: closed.set())
+        context.on("close", lambda *_: closed.set())
 
         try:
             # 最初のページで start_url を開く（about:blank ならそのまま）
