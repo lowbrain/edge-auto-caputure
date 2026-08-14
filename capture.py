@@ -120,19 +120,22 @@ class CaptureRunner:
             weakref.WeakKeyDictionary()
         )
 
-    def spawn(self, page: Page, url: str, config: Config, selector: str = "") -> None:
+    def spawn(
+        self, page: Page, url: str, config: Config, selector: str = "", group_label: str = ""
+    ) -> None:
         """撮影要求を投入する（ページごとに合流。B-3）。
 
         最新要求で _pending を上書きし、そのページの worker が居なければ起動する。
         撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は _capture() のスクショ処理が
         内部で行うので、ここでは要求の登録と worker 起動だけを担う。
         selector は _part.txt 抜き出しの対象（実行時のバー入力値）を _capture() へ渡す。
+        group_label は保存ログにどの系譜（タブ）の保存かを併記するための識別子（任意・空可）。
 
         この関数は同期で、内部に await が無い＝不可分に実行される。worker の終了
         シーケンス（_worker 参照）も不可分なので、両者は「前か後」でしか噛み合わず、
         要求が宙に浮く取りこぼしは起きない。
         """
-        self._pending[page] = (url, config, selector)
+        self._pending[page] = (url, config, selector, group_label)
         if page not in self._workers:
             task = asyncio.create_task(self._worker(page))
             self._workers[page] = task
@@ -154,10 +157,12 @@ class CaptureRunner:
                 # 「空を見て終了しようとした矢先に新要求が来て取りこぼす」競合は起きない。
                 self._workers.pop(page, None)
                 return
-            url, config, selector = req
-            await self._capture(page, url, config, selector)
+            url, config, selector, group_label = req
+            await self._capture(page, url, config, selector, group_label)
 
-    async def _capture(self, page: Page, url: str, config: Config, selector: str = "") -> None:
+    async def _capture(
+        self, page: Page, url: str, config: Config, selector: str = "", group_label: str = ""
+    ) -> None:
         # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
         # 実行時に変えられるため、config 固定値ではなく呼び出し時の値を使う
         #（初期値は config.target_selector）。空なら _part.txt はスキップ。
@@ -228,7 +233,9 @@ class CaptureRunner:
                 )
 
         # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
+        # group_label が渡っていれば、どの系譜（タブ）の保存かも併記する。
+        who = f"{group_label} " if group_label else ""
         if done:
-            log(f"[saved] {stem}.*  ({','.join(done)})  <- {url}")
+            log(f"[saved] {who}{stem}.*  ({','.join(done)})  <- {url}")
         else:
-            log(f"[保存できず] {stem}  <- {url}")
+            log(f"[保存できず] {who}{stem}  <- {url}")
