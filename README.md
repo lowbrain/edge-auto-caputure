@@ -10,8 +10,10 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
 
 ## 仕組み（概要）
 
-- 記録ON中、Playwright が `poll_interval` ごとに各ページの URL/タブ変化を検知し、変化ごとに
-  capture（`png` / `txt`、セレクタ指定時は `_part.txt`）を走らせる。Edge の起動・監視・終了・
+- 記録ON中、Playwright が各ページの URL/タブ変化を**イベント駆動**で検知し（URL変化は
+  `page.on("framenavigated")`、新規タブは `context.on("page")`、ページ消滅は `page.on("close")`）、
+  変化ごとに capture（`png` / `txt`、セレクタ指定時は `_part.txt`）を走らせる。ポーリング間隔
+  （旧 `poll_interval`）は廃止し、変化から撮影までの遅延も無くした。Edge の起動・監視・終了・
   一時プロファイルの後始末までを一括で行う（毎回まっさらな一時プロファイルで起動）。
 - **タブ系譜（グループ）ごとの独立制御**: 記録ON/OFF・SPA検知・セレクタは、セッション全体で
   共有せず「タブ系譜」ごとに独立して持つ。系譜とは、起動時の最初のタブ（または手動で開いた別タブ）と、
@@ -91,7 +93,6 @@ python edge_auto_capture.py
 | `edge_path` | Edge 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `chrome_path` | Chrome 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `output_dir` | 保存先。相対なら本体/exe と同じ場所基準、絶対パスも可 |
-| `poll_interval` | URL/タブ変化を確認する間隔（秒）。中身変化（SPA検知）はページ側のイベント駆動なのでこの間隔に依らない |
 | `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数 |
 | `load_timeout` | ページ読み込み待ちの上限（ミリ秒） |
 | `skip_urls` | 撮らない URL（カンマ区切り） |

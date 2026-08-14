@@ -217,17 +217,21 @@ class CaptureSession:
         self.page_root: dict[Page, Page] = {}     # 各ページ -> 所属グループの root（メモ化）
         # --- ページごとの追跡情報 ---
         self.seen: dict[Page, str] = {}           # page -> 直近のURL
+        # framenavigated / close を配線済みのページ（二重配線を防ぐ。B-1）
+        self._tracked: set[Page] = set()
 
     # ---- ページ側とのやり取り ----
 
     async def refresh_panels(self) -> None:
         """開いている全ページの操作バーへ、そのページのグループの状態を反映する。
 
-        新規タブ（初期は待機表示で描画）や、サイト側の再描画で作り直されたバーも、
-        毎 tick これを呼ぶことで追従する。状態はグループごとに違うため、ページ単位で
-        自分のグループの値を配る。
+        記録ON/OFF・SPA検知・セレクタが変わった各コールバックがこれを呼ぶ。新規タブや
+        サイト側の再描画で作り直されたバーは、バー自身が __eac_getstate で自己同期する
+        （badge.js）ため、ここでの毎tick配布は不要（B-1/B-2 でポーリングを廃止）。状態は
+        グループごとに違うため、ページ単位で自分のグループの値を配る。ページ数ぶんを直列に
+        待たず asyncio.gather で並列に流す。
         """
-        for pg in list(self.context.pages):
+        async def _apply(pg) -> None:
             grp = await self._resolve_group(pg)
             flag = "true" if grp.on else "false"
             spa_flag = "true" if grp.spa_on else "false"
@@ -236,6 +240,8 @@ class CaptureSession:
                 pg,
                 f"window.__eacApplyState && window.__eacApplyState({flag}, {spa_flag}, {sel})",
             )
+
+        await asyncio.gather(*(_apply(pg) for pg in list(self.context.pages)))
 
     # ---- expose_binding で公開するコールバック ----
     #
@@ -471,6 +477,8 @@ class CaptureSession:
         start_recording に従う（以後手動で開かれるタブは on_new_page で初期OFFの独立グループになる）。
         """
         # 起動時の各ページ（通常は1枚）を root とし、start_recording に従うグループを用意する。
+        # あわせて URL変化・消滅の監視を配線する（この後 main() が行う start_url への goto の
+        # framenavigated も拾えるよう、goto より前に張っておく。B-1）。
         for pg in self.context.pages:
             self.page_root[pg] = pg
             self.groups[pg] = self._make_group(
@@ -478,6 +486,7 @@ class CaptureSession:
                 spa_on=False,
                 selector=self.config.target_selector,
             )
+            self._track_page(pg)
         # バインディング名は badge.py の BIND_* に集約（badge.js 側の呼び出し名と一致）。
         await self.context.expose_binding(badge.BIND_TOGGLE, self.on_toggle)
         await self.context.expose_binding(badge.BIND_SHOT, self.on_shot)
@@ -497,72 +506,90 @@ class CaptureSession:
         self.context.on("page", self.on_new_page)
 
     async def on_new_page(self, page) -> None:
-        """新しく開いたページの所属グループを確定する。
+        """新しく開いたページの所属グループを確定し、URL変化・消滅の監視を配線する（B-1）。
 
         opener を辿って既存グループへ合流させるか、無ければ初期OFFの独立グループを作る
         （_resolve_group がメモ化まで行う）。合流先グループが記録中なら、そのページを即撮り
-        して撮り始めの体感を良くする（ポーリングでも次tickで拾えるが先回りする）。
+        する（撮り始めの体感を良くする）。以後の遷移は framenavigated が拾う。
+        """
+        self._track_page(page)
+        await self._shoot_if_changed(page)
+
+    # ---- URL変化・消滅のイベント配線（B-1: ポーリング廃止） ----
+
+    def _track_page(self, page) -> None:
+        """このページの URL 変化（framenavigated）と消滅（close）をイベントで拾う。
+
+        起動時から開いているページは setup() が、以後開くページは on_new_page が呼ぶ。
+        二重配線を防ぐため _tracked で一度きりにする。framenavigated は同一ドキュメント
+        遷移（history.pushState 等）でも発火するため、SPA のURLルーティングも拾える。
+        """
+        if page in self._tracked:
+            return
+        self._tracked.add(page)
+        page.on("framenavigated", lambda frame, pg=page: self._on_navigated(pg, frame))
+        page.on("close", lambda *_a, pg=page: self._on_page_closed(pg))
+
+    async def _on_navigated(self, page, frame) -> None:
+        """ページの遷移通知。メインフレームの遷移のときだけ、変化していれば撮る。
+
+        子フレーム（iframe 等）の遷移では撮らない（ページ本体のURLは変わっていない）。
+        """
+        if frame is not page.main_frame:
+            return
+        await self._shoot_if_changed(page)
+
+    async def _shoot_if_changed(self, page) -> None:
+        """記録ONのグループのページを、前回と違うURLになっていれば1枚撮る。
+
+        フラグメント（#...）だけの変化（scroll-spy）は撮り直さない。記録OFFのグループでは
+        seen を更新しないので、ON にした瞬間に現在ページが「変化」として検知され撮れる
+        （on_toggle でも即撮りするため通常は先回り）。skip_urls と url 取得失敗を弾く。
         """
         grp = await self._resolve_group(page)
-        if grp.on:
-            url = self._shoot(page, grp)
-            if url is not None:
-                self.seen[page] = _url_key(url)
+        if not grp.on:
+            return
+        try:
+            url = page.url
+        except Exception:
+            return
+        if url in self.config.skip_urls:
+            return
+        key = _url_key(url)
+        if self.seen.get(page) != key:
+            self.seen[page] = key
+            self.runner.spawn(page, url, self.config, grp.selector, grp.id)
 
-    def _prune(self, pages) -> None:
-        """閉じられたページを管理から除去する。
+    def _on_page_closed(self, page) -> None:
+        """閉じられたページを管理から除去する（毎tickの _prune を置き換え）。
 
-        seen / page_root から消し、どの生存ページからも参照されなくなった root の
-        グループ状態も捨てる（root ページ自身が閉じても、ポップアップが残る間は保持する）。
+        seen / page_root / _tracked から消し、どの生存ページからも参照されなくなった
+        root のグループ状態も捨てる（root ページ自身が閉じても、ポップアップが残る間は保持する）。
         """
-        live = set(pages)
-        for pg in list(self.seen):
-            if pg not in live:
-                del self.seen[pg]
-        for pg in list(self.page_root):
-            if pg not in live:
-                del self.page_root[pg]
+        self.seen.pop(page, None)
+        self.page_root.pop(page, None)
+        self._tracked.discard(page)
         alive_roots = set(self.page_root.values())
         for root in list(self.groups):
             if root not in alive_roots:
                 del self.groups[root]
 
     async def run(self, closed: asyncio.Event) -> None:
-        """Edge のウィンドウが閉じるまで監視する。
+        """ブラウザのウィンドウが閉じるまで待つ（イベント駆動。ポーリング無し。B-1/B-2）。
 
-        URL変化・新規タブを契機に保存する。中身変化（SPA検知）はページ側がイベント駆動で
-        検知し、__eac_spa_changed（on_spa_changed）経由で保存を要求してくるため、この
-        ループでは扱わない（毎tickの署名評価が無くなり負荷が下がる）。
+        URL変化は page.on("framenavigated")、新規タブは context.on("page")、ページ消滅は
+        page.on("close")、中身変化（SPA検知）は __eac_spa_changed（on_spa_changed）が、
+        それぞれイベントで保存を要求する。このメソッド自身は毎tickの URL 比較も状態配布も
+        行わず、閉じるまで待つだけ（poll_interval は廃止）。
         """
-        while not closed.is_set():
-            pages = list(self.context.pages)
-            self._prune(pages)
+        # 起動直後の一掃: 既に読み込み済みで今後 framenavigated が来ない初期ページを、
+        # 記録ONなら1枚撮る（旧ループの最初のtick相当）。start_url への goto が既に
+        # framenavigated を出して撮っていれば seen で重複を弾く。念のため配線も冪等に確認。
+        for pg in list(self.context.pages):
+            self._track_page(pg)
+            await self._shoot_if_changed(pg)
 
-            # 各バーへ、そのページのグループの状態を反映（新規タブ・再描画にも毎 tick 追従）
-            await self.refresh_panels()
-
-            # 各ページを、それが属するグループの記録状態で判定して保存する。記録OFFの
-            # グループでは seen を更新しないので、ON にした瞬間に現在ページが「変化」として
-            # 検知され撮れる（on_toggle でも即撮りするため通常は先回り）。
-            for pg in pages:
-                grp = await self._resolve_group(pg)
-                if not grp.on:
-                    continue
-                try:
-                    url = pg.url
-                except Exception:
-                    continue
-                if url in self.config.skip_urls:
-                    continue
-
-                # フラグメント（#...）を除いたキーで「同じページか」を判定する。
-                # scroll-spy によるハッシュだけの変化では撮り直さない。
-                key = _url_key(url)
-                if self.seen.get(pg) != key:
-                    self.seen[pg] = key
-                    self.runner.spawn(pg, url, self.config, grp.selector, grp.id)
-
-            await asyncio.sleep(self.config.poll_interval)
+        await closed.wait()
 
 
 async def main(config: Config) -> None:

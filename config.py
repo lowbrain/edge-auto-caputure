@@ -52,7 +52,6 @@ class Config:
     edge_path: str = ""                     # Edge 実行ファイルのパス（空なら自動検出＝channel="msedge"）
     chrome_path: str = ""                   # Chrome 実行ファイルのパス（空なら自動検出＝channel="chrome"）
     output_dir: Path = Path("output")       # 保存先フォルダ（png / txt / log.txt もここ）
-    poll_interval: float = 1.0              # URL変化を確認する間隔（秒）
     settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
     load_timeout: int = 5000                # ページ読み込み待ちの上限（ミリ秒）
     eval_timeout: int = 5000                # ページ側 JS 実行（本文取得・撮影合図）の上限（ミリ秒。E-6）
@@ -71,7 +70,7 @@ def load_config() -> Config:
       - config.ini / [capture] セクションが無い    → メッセージ表示して終了。
       - 項目の「行そのものが無い」                 → Config の既定値を使う
         （sec.get / getfloat / getint の第2引数が既定値）。
-      - 数値項目の値だけが空（例: poll_interval =）→ 変換に失敗し終了（ValueError）。
+      - 数値項目の値だけが空（例: settle_delay =）→ 変換に失敗し終了（ValueError）。
       - output_dir の値が空 → 既定値（output）へフォールバックする
         （空だと Path('.') でカレントへ保存してしまう事故を防ぐ）。
       - edge_path / chrome_path が空 → 自動検出（空が正常値）。値があれば
@@ -81,7 +80,7 @@ def load_config() -> Config:
         値があれば、そのフォルダを再利用（相対パスは基準フォルダ基準に固定）。
       - browser が空 → 自動選択（Edge→Chrome）。edge/chrome 以外の値
         → メッセージ表示して終了（ValueError）。
-      - 数値の範囲が不正（poll_interval<=0 / settle_delay<0 / load_timeout<=0
+      - 数値の範囲が不正（settle_delay<0 / load_timeout<=0
         / eval_timeout<=0）→ メッセージ表示して終了（暴走・無意味値を防ぐ）。
     """
     if not CONFIG_PATH.exists():
@@ -137,12 +136,9 @@ def load_config() -> Config:
         output_dir = resolved
 
         # 数値項目。範囲を検証し、不正なら理由付き ValueError（下の except で通知＆終了）。
-        poll_interval = sec.getfloat("poll_interval", defaults.poll_interval)
         settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
         load_timeout = sec.getint("load_timeout", defaults.load_timeout)
         eval_timeout = sec.getint("eval_timeout", defaults.eval_timeout)
-        if poll_interval <= 0:
-            raise ValueError(f"poll_interval は正の数にしてください（現在: {poll_interval}）")
         if settle_delay < 0:
             raise ValueError(f"settle_delay は 0 以上にしてください（現在: {settle_delay}）")
         if load_timeout <= 0:
@@ -171,7 +167,6 @@ def load_config() -> Config:
             edge_path=sec.get("edge_path", "").strip(),
             chrome_path=sec.get("chrome_path", "").strip(),
             output_dir=output_dir,
-            poll_interval=poll_interval,
             settle_delay=settle_delay,
             load_timeout=load_timeout,
             eval_timeout=eval_timeout,

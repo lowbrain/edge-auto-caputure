@@ -52,7 +52,7 @@
 | ~~5~~ | ~~依存のピン留め~~ | IMPROVEMENTS C | 極小 | ✅**済**。`pyproject.toml` を `["playwright>=1.60,<2"]` に、`build.ps1` を `pip install -e ".[build]"` に寄せて版を一元化 |
 | 6 | CI（pytest+ruff）＋ smoke の `--strict` | IMPROVEMENTS D | 小 | smoke は今 Edge/Chrome 不在で SKIP=0＝CI で無意味に緑になる |
 | 7 | `A-5` 使い捨てプロファイルの同時起動衝突 | IMPROVEMENTS A-5 | 小 | `keep=` で再利用分は守れたが `edge-debug-*` 同士は未対応 |
-| 8 | `B-1`/`B-2` URL 監視のイベント駆動化 | IMPROVEMENTS B | 中〜大 | `poll_interval` を消せる。ブランチ主旨の完遂 |
+| ~~8~~ | ~~`B-1`/`B-2` URL 監視のイベント駆動化~~ | IMPROVEMENTS B | 中〜大 | ✅**済**。`framenavigated`/`context.on("page")`/`close` へ置換し `poll_interval` を撤去。ブランチ主旨の完遂 |
 | 9 | `B-3`/`E-6` キュー上限・ハング保護 | IMPROVEMENTS | 中 | 長時間運用の安全弁 |
 
 `D-B1` の exe プロパティ埋め込み（PyInstaller `--version-file`・Windows 固有）も任意で残っている。
