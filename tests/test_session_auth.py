@@ -12,12 +12,46 @@ import asyncio
 import pytest
 
 from config import Config
-from edge_auto_capture import CaptureSession, _url_key
+from edge_auto_capture import CaptureSession, GroupState, _url_key
 
 
 def _session() -> CaptureSession:
     # context はここでは使わない（コールバックが token 照合で早期 return する経路のみ検証）。
     return CaptureSession(context=None, config=Config())
+
+
+class _Page:
+    """opener() を持つ最小のページ代役（グループ解決・撮影経路の検証用）。"""
+
+    url = "https://example.test/"
+
+    async def opener(self):
+        return None
+
+
+class _RecRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def spawn(self, page, url, config, selector="", group_id=""):
+        self.calls.append((page, url, selector))
+
+
+def _seeded_session(**state) -> tuple[CaptureSession, _Page]:
+    """1 ページを root として seed 済みのセッションと、その root ページを返す。
+
+    state は GroupState の初期値（on / spa_on / selector）。runner は記録用スタブへ差し替える。
+    """
+    s = _session()
+    s.runner = _RecRunner()
+    page = _Page()
+    s.page_root[page] = page
+    s.groups[page] = GroupState(
+        on=state.get("on", False),
+        spa_on=state.get("spa_on", False),
+        selector=state.get("selector", ""),
+    )
+    return s, page
 
 
 def test_token_is_random_per_session():
@@ -35,50 +69,44 @@ def test_authorized_matches_only_exact_token():
 
 
 def test_toggle_ignored_without_token():
+    # 合言葉不一致では source も触らず早期 return する（グループを作りも変えもしない）。
     s = _session()
-    before = s.on
     asyncio.run(s.on_toggle(None, token="wrong"))
-    assert s.on == before  # 記録状態は変わらない
+    assert s.groups == {}  # 何のグループ状態も生まれない
 
 
 def test_set_selector_ignored_without_token():
     s = _session()
     asyncio.run(s.on_set_selector(None, token="wrong", value=".evil"))
-    assert s.selector == ""  # 外部から書き換えられない
+    assert s.groups == {}  # 外部からセレクタを書き換えられない
 
 
 def test_spa_changed_ignored_without_token():
     # 合言葉不一致（操作バー以外）からの変化通知は無視する（source を触らず早期 return）。
     s = _session()
-    s.on = True
-    s.spa_on = True
     asyncio.run(s.on_spa_changed(None, token="wrong", sig="x"))  # 例外なく無視される
+    assert s.groups == {}
 
 
 def test_spa_changed_ignored_when_not_recording():
-    # 正規 token でも、記録OFF なら撮らない（記録ON がマスタースイッチ）。
-    s = _session()
-    s.on = False
-    s.spa_on = True
-    asyncio.run(s.on_spa_changed(None, token=s.token, sig="x"))  # 記録OFF なので無視される
+    # 正規 token でも、そのページのグループが記録OFF なら撮らない（記録ON がマスタースイッチ）。
+    s, page = _seeded_session(on=False, spa_on=True)
+    asyncio.run(s.on_spa_changed({"page": page}, token=s.token, sig="x"))
+    assert s.runner.calls == []  # 記録OFF なので撮らない
 
 
 @pytest.mark.parametrize("token", ["wrong", None, ""])
 def test_get_state_hides_real_state_without_token(token):
-    s = _session()
-    s.on = True
-    s.spa_on = True
-    s.selector = ".secret"
+    # 不一致には実際の状態を返さず既定値を返す（外部への情報漏れを防ぐ）。source も触らない。
+    s, page = _seeded_session(on=True, spa_on=True, selector=".secret")
     state = asyncio.run(s.get_state(None, token=token))
-    # 不一致には実際の状態を返さず既定値を返す（外部への情報漏れを防ぐ）。
     assert state == {"recording": False, "spa": False, "selector": ""}
 
 
 def test_get_state_returns_real_state_with_token():
-    s = _session()
-    s.on = True
-    s.selector = ".ok"
-    state = asyncio.run(s.get_state(None, token=s.token))
+    # 正規 token では、問い合わせ元ページが属するグループの実状態を返す。
+    s, page = _seeded_session(on=True, spa_on=False, selector=".ok")
+    state = asyncio.run(s.get_state({"page": page}, token=s.token))
     assert state == {"recording": True, "spa": False, "selector": ".ok"}
 
 

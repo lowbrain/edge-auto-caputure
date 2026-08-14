@@ -624,7 +624,7 @@ def _recording_runner(gate: "asyncio.Event | None" = None):
     runner = CaptureRunner()
     calls: list[tuple] = []
 
-    async def stub(page, url, config, selector=""):
+    async def stub(page, url, config, selector="", group_id=""):
         calls.append((page, url, selector))
         if gate is not None:
             await gate.wait()
@@ -707,5 +707,249 @@ def test_spawn_restarts_worker_after_drain():
         runner.spawn(page, "second", cfg)  # 再度 spawn → 新 worker
         await asyncio.wait_for(runner._workers[page], timeout=1)
         assert [c[1] for c in calls] == ["first", "second"]
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# タブ系譜グループ（CaptureSession）
+#
+# 記録ON/OFF・SPA検知・セレクタは「opener 連鎖で決まるグループ」ごとに独立して持つ。
+# 実 Edge を使わず、opener() を返すフェイクページと spawn 記録用スタブで、グループの
+# 合流・独立性・SPA ゲートを速いユニットテストで回帰から守る。
+# --------------------------------------------------------------------------- #
+
+
+class _GroupPage:
+    """opener() を持つ最小のページ代役（グループ解決テスト用）。"""
+
+    def __init__(self, name: str, url: str = "https://example.test/", opener=None) -> None:
+        self.name = name
+        self.url = url
+        self._opener = opener
+
+    async def opener(self):
+        return self._opener
+
+    def __repr__(self) -> str:
+        return f"<GroupPage {self.name}>"
+
+
+class _FakeContext:
+    def __init__(self, pages) -> None:
+        self.pages = list(pages)
+
+
+class _RecRunner:
+    """runner.spawn(page, url, config, selector) を記録するだけのスタブ。"""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.group_ids: list[int] = []
+
+    def spawn(self, page, url, config, selector="", group_id=""):
+        self.calls.append((page, url, selector))
+        self.group_ids.append(group_id)
+
+
+def _make_session(pages, roots=None, config=None):
+    """フェイク context を持つ CaptureSession を作る。
+
+    roots: {page: GroupState} を渡すと、setup() の種入れ相当（page_root/groups の登録）を
+    済ませた状態にする。runner は記録用スタブへ、refresh_panels は no-op へ差し替える。
+    """
+    from edge_auto_capture import CaptureSession
+
+    session = CaptureSession(_FakeContext(pages), config or Config())
+    session.runner = _RecRunner()
+
+    async def _noop():
+        return None
+
+    session.refresh_panels = _noop  # 実 evaluate を避ける（グループ判定だけ検証する）
+    for pg, state in (roots or {}).items():
+        session.page_root[pg] = pg
+        session.groups[pg] = state
+    return session
+
+
+def test_manual_tab_becomes_independent_off_group():
+    # opener=None の手動タブは、それ自身が root の新グループ・初期OFFになる。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        root = _GroupPage("root")
+        manual = _GroupPage("manual", opener=None)
+        session = _make_session(
+            [root, manual], roots={root: GroupState(on=True, spa_on=False, selector="")}
+        )
+        grp = await session._resolve_group(manual)
+        assert grp.on is False  # 勝手に撮らない
+        assert session.page_root[manual] is manual  # 自分が root
+        assert grp is not session.groups[root]  # root グループとは別物
+
+    asyncio.run(scenario())
+
+
+def test_popup_joins_parent_group():
+    # opener=root のポップアップは root と同じグループに合流し、状態を共有する。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        root = _GroupPage("root")
+        popup = _GroupPage("popup", opener=root)
+        session = _make_session(
+            [root, popup], roots={root: GroupState(on=True, spa_on=True, selector="#x")}
+        )
+        grp = await session._resolve_group(popup)
+        assert grp is session.groups[root]  # 同一グループ（状態共有）
+        assert session.page_root[popup] is root
+
+    asyncio.run(scenario())
+
+
+def test_grandchild_popup_resolves_to_root_group():
+    # ポップアップのポップアップ（孫）も root グループへ合流する（推移性）。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        root = _GroupPage("root")
+        child = _GroupPage("child", opener=root)
+        grand = _GroupPage("grand", opener=child)
+        session = _make_session(
+            [root, child, grand], roots={root: GroupState(on=False, spa_on=False, selector="")}
+        )
+        grp = await session._resolve_group(grand)
+        assert grp is session.groups[root]
+        assert session.page_root[grand] is root
+
+    asyncio.run(scenario())
+
+
+def test_toggle_one_group_does_not_affect_another():
+    # あるグループの記録ON/OFFは、無関係な別グループに波及しない。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r1 = _GroupPage("r1")
+        r2 = _GroupPage("r2")
+        session = _make_session(
+            [r1, r2],
+            roots={
+                r1: GroupState(on=False, spa_on=False, selector=""),
+                r2: GroupState(on=False, spa_on=False, selector=""),
+            },
+        )
+        await session.on_toggle({"page": r1}, token=session.token)
+        assert session.groups[r1].on is True   # 押した側だけON
+        assert session.groups[r2].on is False  # 別グループは不変
+        # ONにした瞬間、r1 グループの現存ページ（r1）が即撮りされる
+        assert [c[0] for c in session.runner.calls] == [r1]
+
+    asyncio.run(scenario())
+
+
+def test_spa_changed_gated_by_group_state():
+    # on_spa_changed はそのページのグループが on かつ spa_on のときだけ撮る。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        # on=True, spa_on=True → 撮る
+        r = _GroupPage("r")
+        s = _make_session([r], roots={r: GroupState(on=True, spa_on=True, selector="#s")})
+        await s.on_spa_changed({"page": r}, token=s.token)
+        assert s.runner.calls == [(r, r.url, "#s")]
+
+        # spa_on=False → 撮らない
+        r2 = _GroupPage("r2")
+        s2 = _make_session([r2], roots={r2: GroupState(on=True, spa_on=False, selector="")})
+        await s2.on_spa_changed({"page": r2}, token=s2.token)
+        assert s2.runner.calls == []
+
+        # on=False → 撮らない
+        r3 = _GroupPage("r3")
+        s3 = _make_session([r3], roots={r3: GroupState(on=False, spa_on=True, selector="")})
+        await s3.on_spa_changed({"page": r3}, token=s3.token)
+        assert s3.runner.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_shoot_passes_group_id_to_spawn():
+    # 撮影要求にはグループの id（作成時刻）が渡り、保存先フォルダ/ログで系譜を見分けられる。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r = _GroupPage("r")
+        s = _make_session(
+            [r], roots={r: GroupState(on=True, spa_on=True, selector="", id="20260814101105674")}
+        )
+        await s.on_spa_changed({"page": r}, token=s.token)
+        assert s.runner.group_ids == ["20260814101105674"]
+
+    asyncio.run(scenario())
+
+
+def test_group_subdir_and_folder_name():
+    # 採番済みは output_dir/lineage-<id>、未採番(空)は output_dir 直下。
+    from pathlib import Path
+
+    from capture import group_folder_name, group_subdir
+
+    out = Path("/tmp/out")
+    assert group_folder_name("20260814101105674") == "lineage-20260814101105674"
+    assert group_subdir(out, "20260814101105674") == out / "lineage-20260814101105674"
+    assert group_subdir(out, "") == out
+
+
+def test_make_group_id_is_timestamp():
+    # 新規グループの id は「作成時刻（ミリ秒まで）」の文字列（ログ/フォルダ識別用）。
+    async def scenario():
+        s = _make_session([])
+        g = s._make_group(on=False, spa_on=False, selector="")
+        # 例: 20260814101105674（YYYYMMDDHHMMSSmmm・区切りなし＝17桁）
+        assert re.fullmatch(r"\d{17}", g.id)
+
+    asyncio.run(scenario())
+
+
+def test_get_state_returns_group_state():
+    # get_state は問い合わせ元ページのグループの状態を返す（token 一致時）。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r = _GroupPage("r")
+        s = _make_session([r], roots={r: GroupState(on=True, spa_on=True, selector="#c")})
+        state = await s.get_state({"page": r}, token=s.token)
+        assert state == {"recording": True, "spa": True, "selector": "#c"}
+        # token 不一致には既定（状態を漏らさない）
+        assert await s.get_state({"page": r}, token="wrong") == {
+            "recording": False, "spa": False, "selector": ""
+        }
+
+    asyncio.run(scenario())
+
+
+def test_prune_drops_group_when_all_pages_closed():
+    # ページが全て閉じたグループは、状態が捨てられる（root が閉じても系譜が残れば保持）。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        root = _GroupPage("root")
+        popup = _GroupPage("popup", opener=root)
+        session = _make_session(
+            [root, popup], roots={root: GroupState(on=True, spa_on=False, selector="")}
+        )
+        await session._resolve_group(popup)  # popup を root グループへ合流させる
+
+        # root だけ閉じる（popup は生存）→ グループは残る
+        session._prune([popup])
+        assert root in session.groups
+        assert session.page_root.get(popup) is root
+
+        # popup も閉じる → 参照ゼロでグループ破棄
+        session._prune([])
+        assert session.groups == {}
+        assert session.page_root == {}
 
     asyncio.run(scenario())

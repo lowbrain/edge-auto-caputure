@@ -16,6 +16,7 @@ import re
 import weakref
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import Page
@@ -26,6 +27,43 @@ from infra import log
 
 # safe_name() がファイル名スラッグを切り詰める最大長。
 NAME_MAX_LEN = 80
+
+
+def now_stamp() -> str:
+    """現在時刻を「YYYY-MM-DD_HH-MM-SS-mmm」（ミリ秒まで）で返す。
+
+    保存ファイル名の接頭辞に使う（人が時系列で見分けやすいよう区切り付き）。
+    """
+    now = datetime.now()
+    return f"{now:%Y-%m-%d_%H-%M-%S}-{now.strftime('%f')[:3]}"
+
+
+def group_stamp() -> str:
+    """系譜（lineage）の id を「YYYYMMDDHHMMSSmmm」（ミリ秒まで・区切りなし）で返す。
+
+    系譜を新たに作った時刻をそのまま id にする。区切り記号を入れないので `lineage-<id>` の
+    <id> 部分は連続した数字になる（例: 20260814102028731）。
+    """
+    now = datetime.now()
+    return f"{now:%Y%m%d%H%M%S}{now.strftime('%f')[:3]}"
+
+
+def group_folder_name(group_id: str) -> str:
+    """系譜（lineage）の表示名を返す（フォルダ名とログ表記で共用）。
+
+    id は系譜を新たに作った時刻（ミリ秒まで・区切りなし）。`lineage-<id>` の形にして、
+    フォルダ名とログのトークンを一致させ、ログから保存フォルダをそのまま辿れるようにする。
+    """
+    return f"lineage-{group_id}"
+
+
+def group_subdir(output_dir: Path, group_id: str) -> Path:
+    """系譜（lineage）ごとの保存先サブフォルダを返す。
+
+    保存物を系譜ごとにまとめるための共通規約（`output_dir/lineage-<id>`）。edge_auto_capture の
+    ダウンロード退避先もこれに揃える。group_id が空（未採番）なら output_dir 直下を返す。
+    """
+    return output_dir / group_folder_name(group_id) if group_id else output_dir
 
 
 async def try_eval(page: Page, js: str, timeout: Optional[float] = None) -> None:
@@ -120,19 +158,23 @@ class CaptureRunner:
             weakref.WeakKeyDictionary()
         )
 
-    def spawn(self, page: Page, url: str, config: Config, selector: str = "") -> None:
+    def spawn(
+        self, page: Page, url: str, config: Config, selector: str = "", group_id: str = ""
+    ) -> None:
         """撮影要求を投入する（ページごとに合流。B-3）。
 
         最新要求で _pending を上書きし、そのページの worker が居なければ起動する。
         撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は _capture() のスクショ処理が
         内部で行うので、ここでは要求の登録と worker 起動だけを担う。
         selector は _part.txt 抜き出しの対象（実行時のバー入力値）を _capture() へ渡す。
+        group_id は保存先サブフォルダ（lineage-<id>）と保存ログの系譜表記に使う識別子。
+        id は系譜を作った時刻（ミリ秒まで）。空文字なら未採番として output_dir 直下へ保存する。
 
         この関数は同期で、内部に await が無い＝不可分に実行される。worker の終了
         シーケンス（_worker 参照）も不可分なので、両者は「前か後」でしか噛み合わず、
         要求が宙に浮く取りこぼしは起きない。
         """
-        self._pending[page] = (url, config, selector)
+        self._pending[page] = (url, config, selector, group_id)
         if page not in self._workers:
             task = asyncio.create_task(self._worker(page))
             self._workers[page] = task
@@ -154,19 +196,19 @@ class CaptureRunner:
                 # 「空を見て終了しようとした矢先に新要求が来て取りこぼす」競合は起きない。
                 self._workers.pop(page, None)
                 return
-            url, config, selector = req
-            await self._capture(page, url, config, selector)
+            url, config, selector, group_id = req
+            await self._capture(page, url, config, selector, group_id)
 
-    async def _capture(self, page: Page, url: str, config: Config, selector: str = "") -> None:
+    async def _capture(
+        self, page: Page, url: str, config: Config, selector: str = "", group_id: str = ""
+    ) -> None:
         # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
         # 実行時に変えられるため、config 固定値ではなく呼び出し時の値を使う
         #（初期値は config.target_selector）。空なら _part.txt はスキップ。
         # ファイル名は「日時（ミリ秒まで）_ページタイトル」。ミリ秒付き日時で一意性と
         # 時系列順を保証し、末尾のタイトルは人がページを見分けるための情報。
         # ts は await より前に確定させる。タイトルはページ読み込み後に確定させる。
-        now = datetime.now()
-        ms = now.strftime("%f")[:3]                          # マイクロ秒の先頭3桁＝ミリ秒
-        ts = f"{now:%Y-%m-%d_%H-%M-%S}-{ms}"                 # 例: 2026-08-11_14-30-25-123
+        ts = now_stamp()                                     # 例: 2026-08-11_14-30-25-123
 
         # 読み込み完了を待つ（タイムアウトしても続行）
         with _step("load", url):
@@ -178,6 +220,11 @@ class CaptureRunner:
         with _step("title", url):
             title = await page.title()
         stem = f"{ts}_{page_label(title, url)}"              # 3ファイルで同じ接頭辞を共有
+
+        # 保存先は系譜（lineage）ごとのサブフォルダ（output_dir/lineage-<id>）。未採番なら直下。
+        # 3ファイルとも同じフォルダへ。フォルダが無ければ作る（失敗しても各 _step が握って skip）。
+        save_dir = group_subdir(config.output_dir, group_id)
+        save_dir.mkdir(parents=True, exist_ok=True)
 
         # 実際に保存できたステップの記録（A-3）。png / txt / part だけを積み、
         # 全滅時に [saved] と嘘のログを残さないための判定材料にする。
@@ -195,7 +242,7 @@ class CaptureRunner:
                 # 退避の合図に永久に張り付いて worker を止めない（E-6）。
                 await try_eval(page, badge.CAPTURE_START_CALL, eval_timeout)
                 await page.screenshot(
-                    path=str(config.output_dir / f"{stem}.png"), full_page=True
+                    path=str(save_dir / f"{stem}.png"), full_page=True
                 )
             finally:
                 # フラッシュ＋復帰（必ず実行）。ここも同じく打ち切り付きで待つ。
@@ -209,7 +256,7 @@ class CaptureRunner:
             text = await asyncio.wait_for(
                 page.evaluate(badge.BODY_TEXT_CALL), timeout=config.eval_timeout / 1000
             )
-            (config.output_dir / f"{stem}.txt").write_text(
+            (save_dir / f"{stem}.txt").write_text(
                 f"URL: {url}\n\n{text}", encoding="utf-8"
             )
 
@@ -222,13 +269,15 @@ class CaptureRunner:
                 # 空文字（該当なし要素）は落とす。
                 parts = [p for p in parts if p.strip()]
                 body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
-                (config.output_dir / f"{stem}_part.txt").write_text(
+                (save_dir / f"{stem}_part.txt").write_text(
                     f"URL: {url}\nSELECTOR: {selector}\n\n{body}",
                     encoding="utf-8",
                 )
 
         # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
+        # group_id が採番済みなら、どの系譜（lineage）の保存かも併記する（＝保存先フォルダ名）。
+        who = f"{group_folder_name(group_id)} " if group_id else ""
         if done:
-            log(f"[saved] {stem}.*  ({','.join(done)})  <- {url}")
+            log(f"[saved] {who}{stem}.*  ({','.join(done)})  <- {url}")
         else:
-            log(f"[保存できず] {stem}  <- {url}")
+            log(f"[保存できず] {who}{stem}  <- {url}")

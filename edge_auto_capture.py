@@ -49,13 +49,14 @@ import secrets
 import shutil
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from playwright.async_api import Page, async_playwright
 
 import badge
-from capture import CaptureRunner, try_eval
+from capture import CaptureRunner, group_folder_name, group_stamp, group_subdir, try_eval
 from config import Config, load_config
 from infra import (
     __version__,
@@ -103,12 +104,14 @@ def _browser_candidates(config: Config) -> list[tuple[str, str, str]]:
     return candidates
 
 
-def _downloads_dir(config: Config) -> Path:
-    """利用者のダウンロードを残す保存先（output_dir/downloads）を返す（E-4）。
+def _downloads_dir(config: Config, group_id: str = "") -> Path:
+    """利用者のダウンロードを残す保存先を返す（E-4）。
 
     撮影成果物（png/txt/log.txt）と混ざらないよう downloads サブフォルダに分ける。
+    保存物と同じく系譜（lineage）ごとにまとめるため、group_id 採番済みなら
+    output_dir/lineage-<id>/downloads、未採番(空)なら output_dir/downloads を返す。
     """
-    return config.output_dir / "downloads"
+    return group_subdir(config.output_dir, group_id) / "downloads"
 
 
 def _unique_path(directory: Path, name: str) -> Path:
@@ -167,12 +170,31 @@ def _browser_launch_kwargs(
     return kwargs
 
 
+@dataclass
+class GroupState:
+    """タブ系譜（グループ）1 つぶんの実行時状態。
+
+    グループ = root ページ（起動時の最初のタブ、または手動で開いた別タブ）と、そこから
+    window.open / target="_blank" で派生したポップアップ/ウィンドウの一族。各グループが
+    記録ON/OFF・SPA検知・対象セレクタを独立して持ち、系譜内のページはこの状態を共有する。
+    """
+
+    on: bool          # 記録中か（このグループの自動保存マスタースイッチ）
+    spa_on: bool      # SPA検知（中身変化を契機に保存）
+    selector: str     # 検知/抜き出しの対象 CSS セレクタ
+    id: str = ""      # 系譜を作った時刻（ミリ秒まで・区切りなし）。フォルダ名/ログの識別子。空＝未採番
+
+
 class CaptureSession:
     """1 回の起動ぶんの監視セッション。
 
-    実行時状態（記録中/SPA検知/セレクタ）と、それを共有する各コールバック・監視ループを
-    まとめて持つ。以前は main() 内のネスト関数群だったものをクラスへ集約し、状態の
-    所在を明確にして main() を薄くする。
+    タブ系譜（グループ）ごとの実行時状態（記録中/SPA検知/セレクタ）と、それを操作する各
+    コールバック・監視ループをまとめて持つ。以前は main() 内のネスト関数群だったものを
+    クラスへ集約し、状態の所在を明確にして main() を薄くする。
+
+    状態はセッション全体で共有せず、ページの opener 連鎖で決まるグループ単位に持つ
+    （groups / page_root）。各ページの操作バーは自分の属するグループの状態を表示・操作し、
+    無関係な別タブ（手動で開いたもの）は初期OFFの独立グループになる。
 
     SPA検知の中身変化の検出はページ側（badge.js）がイベント駆動で行い、落ち着いた変化を
     __eac_spa_changed で通知してくる。ここではその通知を受けて撮る（毎tickの署名評価は無い）。
@@ -189,25 +211,27 @@ class CaptureSession:
         self.token = secrets.token_hex(16)
         # 撮影の実行器（実行中タスク・ページ単位ロックを own する）。1 セッションに 1 個。
         self.runner = CaptureRunner()
-        # --- 実行時状態 ---
-        self.on = config.start_recording          # 記録中か（自動保存のマスタースイッチ）
-        self.spa_on = False                       # SPA検知（中身変化を契機に保存）
-        self.selector = config.target_selector    # 検知/抜き出しの対象 CSS セレクタ
+        # --- グループ単位の実行時状態 ---
+        # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。
+        self.groups: dict[Page, GroupState] = {}  # root ページ -> そのグループの状態
+        self.page_root: dict[Page, Page] = {}     # 各ページ -> 所属グループの root（メモ化）
         # --- ページごとの追跡情報 ---
         self.seen: dict[Page, str] = {}           # page -> 直近のURL
 
     # ---- ページ側とのやり取り ----
 
     async def refresh_panels(self) -> None:
-        """開いている全ページの操作バーへ現在の状態（記録中/SPA検知/セレクタ）を反映する。
+        """開いている全ページの操作バーへ、そのページのグループの状態を反映する。
 
         新規タブ（初期は待機表示で描画）や、サイト側の再描画で作り直されたバーも、
-        毎 tick これを呼ぶことで追従する。
+        毎 tick これを呼ぶことで追従する。状態はグループごとに違うため、ページ単位で
+        自分のグループの値を配る。
         """
-        flag = "true" if self.on else "false"
-        spa_flag = "true" if self.spa_on else "false"
-        sel = json.dumps(self.selector)  # 日本語/記号を含んでも安全に JS リテラル化
         for pg in list(self.context.pages):
+            grp = await self._resolve_group(pg)
+            flag = "true" if grp.on else "false"
+            spa_flag = "true" if grp.spa_on else "false"
+            sel = json.dumps(grp.selector)  # 日本語/記号を含んでも安全に JS リテラル化
             await try_eval(
                 pg,
                 f"window.__eacApplyState && window.__eacApplyState({flag}, {spa_flag}, {sel})",
@@ -224,11 +248,60 @@ class CaptureSession:
         """操作バーからの正規の呼び出しか（合言葉が一致するか）を判定する。"""
         return isinstance(token, str) and secrets.compare_digest(token, self.token)
 
-    def _shoot(self, pg) -> Optional[str]:
+    # ---- タブ系譜（グループ）の解決 ----
+
+    def _make_group(self, on: bool, spa_on: bool, selector: str) -> GroupState:
+        """GroupState を作る。id は「作った時刻（ミリ秒まで・区切りなし）」で、フォルダ名/ログに使う。"""
+        return GroupState(on=on, spa_on=spa_on, selector=selector, id=group_stamp())
+
+    async def _find_root(self, page) -> Page:
+        """page の所属グループの root ページを opener 連鎖から求める。
+
+        既知の root（page_root に載っているページ）に達したらそれを、opener が None に達したら
+        その末端ページ自身を root とする。opener 取得に失敗したら、その時点のページを root 扱い
+        にする（系譜を辿れないページは、それ自身を独立グループの起点にする）。
+        """
+        p = page
+        while True:
+            known = self.page_root.get(p)
+            if known is not None:
+                return known
+            try:
+                parent = await p.opener()
+            except Exception:
+                return p
+            if parent is None:
+                return p
+            p = parent
+
+    async def _resolve_group(self, page) -> GroupState:
+        """page が属するグループの状態を返す（無ければ新規グループを OFF で作る）。
+
+        opener を辿って root を決めてメモ化する。root のグループがまだ無い＝手動で開かれた
+        新規タブなので、初期OFF（無関係タブを勝手に撮らない）の独立グループを作る。起動時の
+        最初のグループは setup() が start_recording に従って先に用意している。
+        """
+        root = self.page_root.get(page)
+        if root is None:
+            root = await self._find_root(page)
+            self.page_root[page] = root
+        grp = self.groups.get(root)
+        if grp is None:
+            grp = self._make_group(on=False, spa_on=False, selector=self.config.target_selector)
+            self.groups[root] = grp
+            log(f"[{group_folder_name(grp.id)}] 新しいタブを認識しました（初期は待機）")
+        return grp
+
+    def _group_pages(self, root: Page) -> list[Page]:
+        """root を共有する現存ページ（＝同じグループのページ）を返す。"""
+        return [pg for pg in self.context.pages if self.page_root.get(pg) is root]
+
+    def _shoot(self, pg, grp: "GroupState") -> Optional[str]:
         """1ページを撮る。url 取得失敗と skip_urls を弾き、撮れば url を返す（弾けば None）。
 
         「url 取得 → skip 判定 → runner.spawn」の定型を1か所に集約する（各コールバックと監視
         ループで同じ並びを書かないため）。記録状態のゲートは呼び出し側の責務（ここでは見ない）。
+        撮影対象の抜き出しセレクタは、そのページが属するグループの selector を使う。
         """
         try:
             url = pg.url
@@ -236,23 +309,31 @@ class CaptureSession:
             return None
         if url in self.config.skip_urls:
             return None
-        self.runner.spawn(pg, url, self.config, self.selector)
+        self.runner.spawn(pg, url, self.config, grp.selector, grp.id)
         return url
 
     async def on_toggle(self, source, token=None) -> None:
-        """「記録開始／停止」ボタン: 記録状態を反転する。
+        """「記録開始／停止」ボタン: 押したページのグループの記録状態を反転する。
 
-        ON にした瞬間は現在開いている全ページを即撮影し、seen を現在 URL に
+        ON にした瞬間は同じグループの現存ページを即撮影し、seen を現在 URL に
         そろえる（撮り始めの体感を良くしつつ、直後のループでの二重取りも防ぐ）。
+        他のグループ（無関係な別タブ）の記録状態は変えない。
         """
         if not self._authorized(token):
             return
-        self.on = not self.on
-        log(f"[記録] {'開始' if self.on else '停止'}")
+        grp = await self._resolve_group(source["page"])
+        grp.on = not grp.on
+        try:
+            where = source["page"].url
+        except Exception:
+            where = ""
+        log(f"[記録] {'開始' if grp.on else '停止'} {group_folder_name(grp.id)}"
+            + (f"  {where}" if where else ""))
         await self.refresh_panels()
-        if self.on:
-            for pg in list(self.context.pages):
-                url = self._shoot(pg)
+        if grp.on:
+            root = self.page_root[source["page"]]
+            for pg in self._group_pages(root):
+                url = self._shoot(pg, grp)
                 if url is not None:
                     self.seen[pg] = _url_key(url)
 
@@ -265,9 +346,10 @@ class CaptureSession:
         """
         if not self._authorized(token):
             return
-        url = self._shoot(source["page"])
+        grp = await self._resolve_group(source["page"])
+        url = self._shoot(source["page"], grp)
         if url is not None:
-            log(f"[手動] {url}")
+            log(f"[手動] {group_folder_name(grp.id)}  {url}")
 
     async def on_spa_toggle(self, source, token=None) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
@@ -278,8 +360,9 @@ class CaptureSession:
         """
         if not self._authorized(token):
             return
-        self.spa_on = not self.spa_on
-        log(f"[SPA] {'ON' if self.spa_on else 'OFF'}")
+        grp = await self._resolve_group(source["page"])
+        grp.spa_on = not grp.spa_on
+        log(f"[SPA] {'ON' if grp.spa_on else 'OFF'} {group_folder_name(grp.id)}")
         await self.refresh_panels()
 
     async def on_set_selector(self, source, token=None, value="") -> None:
@@ -291,26 +374,29 @@ class CaptureSession:
         """
         if not self._authorized(token):
             return
+        grp = await self._resolve_group(source["page"])
         new = (value or "").strip()
-        if new == self.selector:
+        if new == grp.selector:
             return
-        self.selector = new
+        grp.selector = new
         await self.refresh_panels()
 
     async def on_spa_changed(self, source, token=None, sig=None) -> None:
         """SPA検知の通知: ページ側が「落ち着いた中身の変化」を検知したときに呼ばれる。
 
-        記録ON かつ SPA検知ON のときだけ、通知元ページを1枚撮る。落ち着き判定・重複除外
-        （同じ署名は通知しない）はページ側（badge.js）が済ませているので、ここでは記録状態の
-        ゲートと skip_urls だけ見て撮る。token 不一致（操作バー以外）は黙って無視する。
+        通知元ページのグループが記録ON かつ SPA検知ON のときだけ、通知元ページを1枚撮る。
+        落ち着き判定・重複除外（同じ署名は通知しない）はページ側（badge.js）が済ませているので、
+        ここではグループの記録状態のゲートと skip_urls だけ見て撮る。token 不一致（操作バー以外）
+        は黙って無視する。
         """
         if not self._authorized(token):
             return
-        if not (self.on and self.spa_on):
+        grp = await self._resolve_group(source["page"])
+        if not (grp.on and grp.spa_on):
             return
-        url = self._shoot(source["page"])
+        url = self._shoot(source["page"], grp)
         if url is not None:
-            log(f"[SPA変化] {url}")
+            log(f"[SPA変化] {group_folder_name(grp.id)}  {url}")
 
     async def on_commit_selector(self, source, token=None, value="") -> None:
         """セレクタ入力の確定（blur / Enter）。最終値をログに残す。
@@ -320,8 +406,9 @@ class CaptureSession:
         """
         if not self._authorized(token):
             return
+        grp = await self._resolve_group(source["page"])
         new = (value or "").strip()
-        log(f"[セレクタ] {'クリア' if not new else repr(new)}")
+        log(f"[セレクタ] {'クリア' if not new else repr(new)} {group_folder_name(grp.id)}")
 
     async def get_state(self, source, token=None) -> dict:
         """操作バーが描画前に現在の状態を問い合わせるためのバインディング。
@@ -332,10 +419,14 @@ class CaptureSession:
 
         token 不一致（操作バー以外からの問い合わせ）には既定状態を返し、実際の
         記録状態やセレクタ値を外部スクリプトへ漏らさない。
+
+        返すのは問い合わせ元ページが属するグループの状態。新しいドキュメントのバーが最初に
+        これを呼ぶタイミングでグループを確定・メモ化する（監視ループ到達前でも取りこぼさない）。
         """
         if not self._authorized(token):
             return {"recording": False, "spa": False, "selector": ""}
-        return {"recording": self.on, "spa": self.spa_on, "selector": self.selector}
+        grp = await self._resolve_group(source["page"])
+        return {"recording": grp.on, "spa": grp.spa_on, "selector": grp.selector}
 
     # ---- ダウンロードの退避（E-4） ----
 
@@ -344,15 +435,27 @@ class CaptureSession:
 
         Playwright は既定でダウンロードをコンテキスト終了時に削除する。
         accept_downloads / downloads_path を指定しても削除される（一時置き場が変わる
-        だけ）ので、ここで save_as して初めて手元に残る。元のファイル名のまま
-        output_dir/downloads へ保存し、同名衝突時は連番を付ける。
+        だけ）ので、ここで save_as して初めて手元に残る。元のファイル名のまま、撮影物と
+        同じく系譜（lineage）ごとの output_dir/lineage-<id>/downloads へ保存し、同名衝突時は連番を付ける。
+        どの系譜かは発生元ページ（download.page）の所属グループで決める。
         token 照合は不要（ブラウザ本体が発火するイベントで、ページ側から詐称できない）。
         """
         name = download.suggested_filename or "download"
-        target = _unique_path(_downloads_dir(self.config), name)
+        # 発生元ページの系譜を解決（取れなければ未採番＝空 として output_dir/downloads へ）。
+        group_id = ""
         try:
+            page = download.page
+            if page is not None:
+                group_id = (await self._resolve_group(page)).id
+        except Exception:
+            group_id = ""
+        dl_dir = _downloads_dir(self.config, group_id)
+        try:
+            dl_dir.mkdir(parents=True, exist_ok=True)
+            target = _unique_path(dl_dir, name)
             await download.save_as(str(target))
-            log(f"[DL] 保存しました: {target.name}")
+            log(f"[DL] {group_folder_name(group_id)} 保存しました: {target.name}" if group_id
+                else f"[DL] 保存しました: {target.name}")
         except Exception as e:
             # 例: 保存前にウィンドウを閉じられ一時ファイルが消えた等。無言にはしない。
             log(f"[DL] ダウンロードの保存に失敗しました: {name} ({e})")
@@ -364,7 +467,17 @@ class CaptureSession:
 
         context 単位なので以後開く新規タブにも自動適用される
         （expose_binding は add_init_script より前に登録する）。
+        起動時点で開いているページを root として登録し、その最初のグループだけは
+        start_recording に従う（以後手動で開かれるタブは on_new_page で初期OFFの独立グループになる）。
         """
+        # 起動時の各ページ（通常は1枚）を root とし、start_recording に従うグループを用意する。
+        for pg in self.context.pages:
+            self.page_root[pg] = pg
+            self.groups[pg] = self._make_group(
+                on=self.config.start_recording,
+                spa_on=False,
+                selector=self.config.target_selector,
+            )
         # バインディング名は badge.py の BIND_* に集約（badge.js 側の呼び出し名と一致）。
         await self.context.expose_binding(badge.BIND_TOGGLE, self.on_toggle)
         await self.context.expose_binding(badge.BIND_SHOT, self.on_shot)
@@ -380,12 +493,39 @@ class CaptureSession:
         # ダウンロードは context 単位で拾う（全タブ・以後開く新規タブも自動対象）。
         # 各ファイルを保存先へ退避しないと終了時に消える（E-4）。
         self.context.on("download", self.on_download)
+        # 新規ページ（ポップアップ・手動タブ）の所属グループを開いた時点で確定する。
+        self.context.on("page", self.on_new_page)
+
+    async def on_new_page(self, page) -> None:
+        """新しく開いたページの所属グループを確定する。
+
+        opener を辿って既存グループへ合流させるか、無ければ初期OFFの独立グループを作る
+        （_resolve_group がメモ化まで行う）。合流先グループが記録中なら、そのページを即撮り
+        して撮り始めの体感を良くする（ポーリングでも次tickで拾えるが先回りする）。
+        """
+        grp = await self._resolve_group(page)
+        if grp.on:
+            url = self._shoot(page, grp)
+            if url is not None:
+                self.seen[page] = _url_key(url)
 
     def _prune(self, pages) -> None:
-        """閉じられたページを管理から除去する。"""
+        """閉じられたページを管理から除去する。
+
+        seen / page_root から消し、どの生存ページからも参照されなくなった root の
+        グループ状態も捨てる（root ページ自身が閉じても、ポップアップが残る間は保持する）。
+        """
+        live = set(pages)
         for pg in list(self.seen):
-            if pg not in pages:
+            if pg not in live:
                 del self.seen[pg]
+        for pg in list(self.page_root):
+            if pg not in live:
+                del self.page_root[pg]
+        alive_roots = set(self.page_root.values())
+        for root in list(self.groups):
+            if root not in alive_roots:
+                del self.groups[root]
 
     async def run(self, closed: asyncio.Event) -> None:
         """Edge のウィンドウが閉じるまで監視する。
@@ -398,27 +538,29 @@ class CaptureSession:
             pages = list(self.context.pages)
             self._prune(pages)
 
-            # 記録状態を全バーに反映（新規タブ・再描画にも毎 tick 追従）
+            # 各バーへ、そのページのグループの状態を反映（新規タブ・再描画にも毎 tick 追従）
             await self.refresh_panels()
 
-            # 記録ON の間だけ検知して保存。OFF の間は seen を更新しないので、
-            # ON にした瞬間に現在ページが「変化」として検知され撮れる
-            #（on_toggle でも即撮りするため通常は先回り）。
-            if self.on:
-                for pg in pages:
-                    try:
-                        url = pg.url
-                    except Exception:
-                        continue
-                    if url in self.config.skip_urls:
-                        continue
+            # 各ページを、それが属するグループの記録状態で判定して保存する。記録OFFの
+            # グループでは seen を更新しないので、ON にした瞬間に現在ページが「変化」として
+            # 検知され撮れる（on_toggle でも即撮りするため通常は先回り）。
+            for pg in pages:
+                grp = await self._resolve_group(pg)
+                if not grp.on:
+                    continue
+                try:
+                    url = pg.url
+                except Exception:
+                    continue
+                if url in self.config.skip_urls:
+                    continue
 
-                    # フラグメント（#...）を除いたキーで「同じページか」を判定する。
-                    # scroll-spy によるハッシュだけの変化では撮り直さない。
-                    key = _url_key(url)
-                    if self.seen.get(pg) != key:
-                        self.seen[pg] = key
-                        self.runner.spawn(pg, url, self.config, self.selector)
+                # フラグメント（#...）を除いたキーで「同じページか」を判定する。
+                # scroll-spy によるハッシュだけの変化では撮り直さない。
+                key = _url_key(url)
+                if self.seen.get(pg) != key:
+                    self.seen[pg] = key
+                    self.runner.spawn(pg, url, self.config, grp.selector, grp.id)
 
             await asyncio.sleep(self.config.poll_interval)
 
@@ -428,9 +570,8 @@ async def main(config: Config) -> None:
     # 消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知して抜ける。
     try:
         config.output_dir.mkdir(parents=True, exist_ok=True)
-        # ダウンロードの受け皿（output_dir/downloads）も先に用意する（E-4）。
-        # Playwright に downloads_path として渡すため、起動前に存在させておく。
-        _downloads_dir(config).mkdir(parents=True, exist_ok=True)
+        # 撮影物・ダウンロードは系譜（lineage）ごとの output_dir/lineage-<id>/ 以下へ保存する。
+        # これらのサブフォルダは保存時に必要に応じて作るため、ここでは output_dir だけ用意する。
     except Exception as e:
         notify_fatal(f"保存先フォルダを作成できませんでした: {config.output_dir}\n({e})")
         return
@@ -488,6 +629,13 @@ async def main(config: Config) -> None:
         try:
             # 最初のページで start_url を開く（about:blank ならそのまま）
             page = context.pages[0] if context.pages else await context.new_page()
+            # setup() は起動時に存在したページだけを種入れする。ページが1枚も無く
+            # ここで作った場合に備え、その1枚を start_recording に従う root グループにする。
+            if page not in session.page_root:
+                session.page_root[page] = page
+                session.groups[page] = session._make_group(
+                    on=config.start_recording, spa_on=False, selector=config.target_selector
+                )
             if config.start_url and config.start_url != "about:blank":
                 try:
                     await page.goto(config.start_url)
@@ -495,7 +643,7 @@ async def main(config: Config) -> None:
                     log(f"[skip goto] {config.start_url}  ({e})")
 
             log(
-                f"記録は{'ON' if session.on else 'OFF（待機）'}で開始しました。"
+                f"記録は{'ON' if config.start_recording else 'OFF（待機）'}で開始しました。"
                 "ページ上部の操作バーで記録開始/停止・今すぐ1枚・SPA検知を"
                 "操作できます（終了するにはブラウザのウィンドウを閉じてください）"
             )
