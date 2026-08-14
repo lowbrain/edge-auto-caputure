@@ -22,8 +22,8 @@ dependencies = [
 # 配布用 exe をビルドする人向け（配布物の実行には不要）。
 build = ["pyinstaller"]
 # 開発・テスト用（配布物の実行には不要）。
-#   pip install -e ".[dev]"  で入れて、pytest / ruff を使う。
-dev = ["pytest", "ruff"]
+#   pip install -e ".[dev]"  で入れて、pytest / ruff / mypy を使う。
+dev = ["pytest", "ruff", "mypy"]
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -43,6 +43,18 @@ version = { attr = "infra.__version__" }
 # 速い純粋関数テスト（test_*）だけを既定で回す（smoke は明示指定で実行）。
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+[tool.mypy]
+# 型チェッカー（ROADMAP 第4群・順22）。注釈はほぼ完備で playwright は py.typed 同梱の
+# ため、既定（非 strict）でも実効性がある。回帰は CI で pytest/ruff と同列に止める想定。
+#   mypy edge_auto_capture.py badge.py capture.py config.py infra.py
+python_version = "3.9"
+# 生成物やテスト（smoke は実 Edge 前提でスタブ化が重い）は対象外。まずは配布コード本体を守る。
+files = ["edge_auto_capture.py", "badge.py", "capture.py", "config.py", "infra.py"]
+exclude = ["build", "dist", "output", "tests"]
+# 注釈漏れの新規混入を防ぐ最低限。既存はほぼ注釈済みで、これで追加負担はほぼ無い。
+warn_unused_ignores = true
+warn_redundant_casts = true
 
 [tool.ruff]
 # 対象は分割した3モジュールとテスト。生成物（build/dist/output）は除外。

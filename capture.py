@@ -144,10 +144,10 @@ class CaptureRunner:
         # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
         self._tasks: set[asyncio.Task] = set()
 
-        # ページごとの「最新の保留要求」(url, config, selector)。新しい要求で上書き
-        # するのが coalesce の本体。撮影中に何度要求が来ても、次に走るのは最後の1件だけ。
+        # ページごとの「最新の保留要求」(url, config, selector, group_id)。新しい要求で
+        # 上書きするのが coalesce の本体。撮影中に何度要求が来ても、次に走るのは最後の1件だけ。
         # ページが閉じたらエントリは自動で消えるよう WeakKeyDictionary を使う。
-        self._pending: weakref.WeakKeyDictionary[Page, tuple[str, Config, str]] = (
+        self._pending: weakref.WeakKeyDictionary[Page, tuple[str, Config, str, str]] = (
             weakref.WeakKeyDictionary()
         )
 

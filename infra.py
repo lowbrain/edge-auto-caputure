@@ -125,7 +125,9 @@ def _message_box_windows(msg: str, title: str) -> None:
     try:
         import ctypes
 
-        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)  # MB_ICONERROR
+        # windll は Windows 専用（型スタブにも他OSには無い）。この関数は Windows でしか
+        # 呼ばれない前提なので、非 Windows での型チェック上の未定義属性は無視する。
+        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)  # type: ignore[attr-defined]  # MB_ICONERROR
     except Exception:
         pass
 
