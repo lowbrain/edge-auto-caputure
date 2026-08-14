@@ -163,30 +163,39 @@ UI 経由で素通りしていた。
 
 ## B. 設計上の改善
 
-### B-1. URL 監視もイベント駆動にできる（ブランチの主旨の続き）〔**未**〕
+### B-1. URL 監視もイベント駆動にできる（ブランチの主旨の続き）〔**済**〕
 
-SPA 検知はイベント駆動化済みだが、`edge_auto_capture.py:335` の `run` ループはまだ
-`poll_interval` ポーリング。Playwright には以下のイベントがある。
+**対応済み。** `run` ループの `poll_interval` ポーリングを撤去し、Playwright のイベントへ
+置き換えた（`edge_auto_capture.py` の `_track_page` / `_on_navigated` / `_shoot_if_changed`
+/ `_on_page_closed`）。
 
-| 契機 | 現状 | イベント駆動版 |
-|------|------|----------------|
-| URL 変化 | 毎 tick `pg.url` 比較 | `page.on("framenavigated")` |
-| 新規タブ | 毎 tick `context.pages` | `context.on("page")` |
-| ページ消滅 | `_prune` | `page.on("close")` |
+| 契機 | 旧（ポーリング） | 現（イベント駆動） |
+|------|------------------|--------------------|
+| URL 変化 | 毎 tick `pg.url` 比較 | `page.on("framenavigated")`（メインフレームのみ） |
+| 新規タブ | 毎 tick `context.pages` | `context.on("page")`（従来から） |
+| ページ消滅 | `_prune` | `page.on("close")` → `_on_page_closed` |
 
-置き換えれば `poll_interval` 設定ごと消せて、変化から撮影までの遅延も
-最大 1 秒 → 即時になる。`seen` / `_prune` も不要になる。
+`framenavigated` は `history.pushState` 等の同一ドキュメント遷移でも発火するため SPA の
+URL ルーティングも拾える。`_shoot_if_changed` は `_url_key`（`#...` 除去）で scroll-spy の
+ハッシュのみ変化を弾き、記録ON かつ URL が実際に変わったときだけ撮る。`run` は起動直後の
+一掃（既読み込みページを記録ONなら1枚）だけ行い、あとは `closed.wait()` で待つ。
+これで `poll_interval` 設定を**完全撤去**し（`config.py` / `config.ini` / README から削除）、
+変化から撮影までの遅延も無くした。回帰は `tests/test_capture.py` の
+「URL変化のイベント駆動化（B-1）」節（`_shoot_if_changed` / `_on_navigated` / `_on_page_closed`）。
 
-### B-2. 毎 tick の `refresh_panels` はほぼ不要〔**未**〕
+### B-2. 毎 tick の `refresh_panels` はほぼ不要〔**済**〕
 
-`edge_auto_capture.py:340`（`run` ループ内の `await self.refresh_panels()`）は
-毎秒・全ページに `page.evaluate` を投げるが、
+**対応済み**（B-1 に内包）。ポーリングループの廃止で毎 tick の `refresh_panels()` 呼び出しが
+無くなった。状態配布は記録ON/OFF・SPA検知・セレクタが変わった各コールバックが呼ぶだけになり、
+新規タブ・サイト側再描画で作り直されたバーはバー自身が `__eac_getstate` で自己同期する。
+`refresh_panels` 本体もページ数ぶんの直列 await をやめ `asyncio.gather` で並列化した。
 
-- 状態変化時は各コールバックが既に `refresh_panels()` を呼んでいる
-- サイト側再描画で作り直されたバーは `build()` が `__eac_getstate` で自己同期する（`badge.js:414`）
+以下は対応前の記録。
 
-ので、定常状態では純粋なオーバーヘッド。残すとしても `asyncio.gather` で並列化すべき
-（現状はページ数ぶん直列 await）。
+`run` ループ内の `await self.refresh_panels()` は毎秒・全ページに `page.evaluate` を
+投げるが、状態変化時は各コールバックが既に `refresh_panels()` を呼び、サイト側再描画で
+作り直されたバーは `build()` が `__eac_getstate` で自己同期するので、定常状態では純粋な
+オーバーヘッドだった。
 
 ### B-3. 撮影スパウンに上限もレート制限もない〔**済**〕
 
@@ -421,8 +430,9 @@ PDF ファイルを開いた場合（Edge の内蔵ビューア）、`page.title
 > [`ROADMAP.md`](ROADMAP.md) が正**。実際の作業順はそちらに従うこと。
 > （例: `DISTRIBUTION.md` の `D-C1`「無言終了」は全体 1 位だが、本表には現れない）
 
-> **2026-08-12 時点の消化状況**: 1（A-1/A-2）・2（A-3/A-6）・5 のうち A-4 は**対応済み**。
-> 残る着手候補は **B 系・E-6** など（B-6・E-4・A-5 は対応済み）。以下の表は初版のままの参考。
+> **消化状況**: 1（A-1/A-2）・2（A-3/A-6）・5 のうち A-4、B-1/B-2/B-6・E-4・E-6・A-5・B-3 は
+> **対応済み**。残るのは `B-4`（`settle_delay` の二重待ち）・`B-5`（`skip_urls` の前方一致化）
+> と C 節の運用まわり（log ローテート等）。以下の表は初版のままの参考。
 
 | 順 | 項目 | 規模 | 効果 | 状態 |
 |----|------|------|------|------|
@@ -431,7 +441,7 @@ PDF ファイルを開いた場合（Edge の内蔵ビューア）、`page.title
 | 3 | **B-6** | badge.js 小 | 全利用者への恒常的な負荷を止める。単独で入れられる | 未 |
 | 4 | **E-4** | 1 行 + 検証 | 利用者にとって最も驚きが大きい（ダウンロード消失） | 未 |
 | 5 | A-4 / A-5 | 中 | セキュリティと同時起動 | A-4✅ / A-5✅（D-C4 と併せて対応） |
-| 6 | B-1 / B-2 / B-6 | 中〜大 | ブランチの主旨の完遂。`poll_interval` を消せる | 未 |
+| 6 | B-1 / B-2 / B-6 | 中〜大 | ブランチの主旨の完遂。`poll_interval` を消せる | ✅済（B-1/B-2/B-6 すべて対応） |
 | 7 | B-3 / E-6 | 中 | 長時間運用の安全弁（キュー上限とハング保護） | B-3✅ / E-6✅ |
 
 A-1〜A-3 と A-6 は合計でも 30 行程度の変更だった（いずれも対応済み）。

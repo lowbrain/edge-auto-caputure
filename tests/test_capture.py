@@ -167,7 +167,6 @@ def test_config_defaults():
     c = Config()
     assert c.start_url == "about:blank"
     assert c.output_dir == Path("output")
-    assert c.poll_interval == 1.0
     assert c.eval_timeout == 5000
     assert c.start_recording is False
     assert "" in c.skip_urls  # 空URLは常にスキップ対象
@@ -194,7 +193,6 @@ def test_load_config_valid(monkeypatch, tmp_path):
         f"""[capture]
 start_url = https://example.com
 output_dir = {out}
-poll_interval = 2.5
 settle_delay = 0.4
 load_timeout = 3000
 eval_timeout = 4000
@@ -206,7 +204,6 @@ start_recording = true
     c = load_config()
     assert c.start_url == "https://example.com"
     assert c.output_dir == out
-    assert c.poll_interval == 2.5
     assert c.settle_delay == 0.4
     assert c.load_timeout == 3000
     assert c.eval_timeout == 4000
@@ -228,7 +225,6 @@ output_dir = {out}
     )
     c = load_config()
     d = Config()
-    assert c.poll_interval == d.poll_interval
     assert c.settle_delay == d.settle_delay
     assert c.load_timeout == d.load_timeout
     assert c.eval_timeout == d.eval_timeout
@@ -305,7 +301,7 @@ def test_load_config_invalid_number_exits(monkeypatch, tmp_path):
         tmp_path,
         f"""[capture]
 output_dir = {out}
-poll_interval = not-a-number
+settle_delay = not-a-number
 """,
     )
     with pytest.raises(SystemExit) as e:
@@ -330,8 +326,6 @@ output_dir =
 @pytest.mark.parametrize(
     "line",
     [
-        "poll_interval = 0",
-        "poll_interval = -1",
         "settle_delay = -0.5",
         "load_timeout = 0",
         "load_timeout = -100",
@@ -890,6 +884,115 @@ def test_shoot_passes_group_id_to_spawn():
     asyncio.run(scenario())
 
 
+# --------------------------------------------------------------------------- #
+# URL変化のイベント駆動化（B-1）: _shoot_if_changed / _on_navigated / _on_page_closed
+#
+# 旧・毎tickポーリングの run ループを廃し、framenavigated / close で撮る/掃除する。
+# 実 Playwright を使わず、url を書き換えられるフェイクページで挙動を回帰から守る。
+# --------------------------------------------------------------------------- #
+
+
+def test_shoot_if_changed_only_on_real_url_change():
+    # 記録ONのページは、URLが前回と変わったときだけ撮る。ハッシュのみの変化・
+    # 同一URL・skip_urls・記録OFF では撮らない。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r = _GroupPage("r", url="https://example.test/a")
+        s = _make_session([r], roots={r: GroupState(on=True, spa_on=False, selector="#x")})
+
+        # 初回: seen 空 → 撮る。seen が現URLキーにそろう。
+        await s._shoot_if_changed(r)
+        assert [c[1] for c in s.runner.calls] == ["https://example.test/a"]
+
+        # 同一URLで再度 → 撮らない（seen 一致）。
+        await s._shoot_if_changed(r)
+        assert len(s.runner.calls) == 1
+
+        # ハッシュだけ変化（scroll-spy）→ 撮らない。
+        r.url = "https://example.test/a#sec2"
+        await s._shoot_if_changed(r)
+        assert len(s.runner.calls) == 1
+
+        # 本当のURL変化 → 撮る。selector はグループの値が渡る。
+        r.url = "https://example.test/b"
+        await s._shoot_if_changed(r)
+        assert s.runner.calls[-1] == (r, "https://example.test/b", "#x")
+
+    asyncio.run(scenario())
+
+
+def test_shoot_if_changed_gated_by_recording_and_skip_urls():
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        # 記録OFF → 撮らず seen も更新しない（ON にした瞬間の即撮りに委ねる）。
+        off = _GroupPage("off", url="https://example.test/x")
+        s = _make_session([off], roots={off: GroupState(on=False, spa_on=False, selector="")})
+        await s._shoot_if_changed(off)
+        assert s.runner.calls == []
+        assert off not in s.seen
+
+        # skip_urls に一致 → 撮らない。
+        cfg = Config(skip_urls=("https://skip.test/",))
+        skip = _GroupPage("skip", url="https://skip.test/")
+        s2 = _make_session(
+            [skip], roots={skip: GroupState(on=True, spa_on=False, selector="")}, config=cfg
+        )
+        await s2._shoot_if_changed(skip)
+        assert s2.runner.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_on_navigated_ignores_subframe_navigations():
+    # 子フレーム（iframe 等）の遷移では撮らない。メインフレームの遷移だけ拾う。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r = _GroupPage("r", url="https://example.test/a")
+        r.main_frame = object()          # メインフレームの目印
+        s = _make_session([r], roots={r: GroupState(on=True, spa_on=False, selector="")})
+
+        await s._on_navigated(r, frame=object())   # 別フレーム → 無視
+        assert s.runner.calls == []
+
+        await s._on_navigated(r, frame=r.main_frame)  # メインフレーム → 撮る
+        assert [c[1] for c in s.runner.calls] == ["https://example.test/a"]
+
+    asyncio.run(scenario())
+
+
+def test_on_page_closed_prunes_state_and_gcs_group():
+    # 閉じたページは seen / page_root / _tracked から消え、どの生存ページからも
+    # 参照されなくなった root のグループも捨てられる。ポップアップが残る間は保持する。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        root = _GroupPage("root")
+        popup = _GroupPage("popup", opener=root)
+        s = _make_session(
+            [root, popup], roots={root: GroupState(on=True, spa_on=False, selector="")}
+        )
+        # popup を root グループへ合流させ、追跡・seen も載せておく。
+        await s._resolve_group(popup)
+        s._tracked.update({root, popup})
+        s.seen[root] = "k1"
+        s.seen[popup] = "k2"
+
+        # root を閉じる: popup がまだ root を参照しているのでグループは残る。
+        s._on_page_closed(root)
+        assert root not in s.seen and root not in s.page_root and root not in s._tracked
+        assert root in s.groups  # popup が参照中なので生存
+
+        # popup も閉じる: root への参照が消え、グループが GC される。
+        s._on_page_closed(popup)
+        assert popup not in s.seen and popup not in s.page_root
+        assert s.groups == {}
+
+    asyncio.run(scenario())
+
+
 def test_group_subdir_and_folder_name():
     # 採番済みは output_dir/lineage-<id>、未採番(空)は output_dir 直下。
     from pathlib import Path
@@ -943,12 +1046,12 @@ def test_prune_drops_group_when_all_pages_closed():
         await session._resolve_group(popup)  # popup を root グループへ合流させる
 
         # root だけ閉じる（popup は生存）→ グループは残る
-        session._prune([popup])
+        session._on_page_closed(root)
         assert root in session.groups
         assert session.page_root.get(popup) is root
 
         # popup も閉じる → 参照ゼロでグループ破棄
-        session._prune([])
+        session._on_page_closed(popup)
         assert session.groups == {}
         assert session.page_root == {}
 
