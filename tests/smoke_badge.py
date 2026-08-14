@@ -7,12 +7,17 @@
 実行前に自動検出することが狙い。
 
 使い方:
-    python tests/smoke_badge.py
+    python tests/smoke_badge.py            # 手軽な確認（ブラウザ不在は SKIP=0）
+    python tests/smoke_badge.py --strict   # CI 向け（ブラウザ不在は FAIL=1）
 終了コード 0=成功 / 1=失敗。実アプリと同じく Edge を優先し、無ければ Chrome へ
-フォールバックする（どちらも Chromium 系でバー JS の検証は等価）。Edge も Chrome も
-起動できない環境では SKIP（0）で抜ける。
+フォールバックする（どちらも Chromium 系でバー JS の検証は等価）。
+
+Edge も Chrome も起動できない環境では既定で SKIP（0）で抜ける。ただし CI では
+「ブラウザが無いから何も検証していないのに緑」になるのを防ぐため、`--strict` を
+付けるとブラウザ不在を FAIL（1）として扱う。
 """
 
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -32,7 +37,7 @@ BADGE_SEL = f'#{badge.BADGE_ID}'
 _CHANNELS = ("msedge", "chrome")
 
 
-def run() -> int:
+def run(strict: bool = False) -> int:
     errors: list[str] = []
     with sync_playwright() as p:
         context = None
@@ -50,6 +55,10 @@ def run() -> int:
             except Exception as e:
                 last_err = e
         if context is None:
+            if strict:
+                # CI（--strict）ではブラウザ不在を「検証できていない」＝失敗として扱う。
+                print(f"FAIL(--strict): Edge/Chrome のいずれも起動できませんでした（{last_err}）")
+                return 1
             print(f"SKIP: Edge/Chrome のいずれも起動できませんでした（{last_err}）")
             return 0
         print(f"（起動ブラウザ: {launched}）")
@@ -232,4 +241,11 @@ def run() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(run())
+    parser = argparse.ArgumentParser(description="操作バー JS のスモークテスト")
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="ブラウザ（Edge/Chrome）が起動できない場合を SKIP ではなく FAIL にする（CI 向け）",
+    )
+    args = parser.parse_args()
+    sys.exit(run(strict=args.strict))
