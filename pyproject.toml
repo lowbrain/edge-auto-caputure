@@ -10,7 +10,7 @@ license = { text = "MIT" }
 classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
-# 配布ビルドの再現性のためバージョンを縛る（ROADMAP 第3群「依存の未ピン留め」）。
+# 配布ビルドの再現性のためバージョンを縛る（「先月は動いたのに今月は動かない」を防ぐ）。
 #   >=1.60 : 動作確認済みの版（.venv 実測）。これ未満は未検証なので許可しない。
 #   <2     : メジャー更新（API 総入れ替えの恐れ）へ自動で飛び移らせない。
 # 厳密な1点固定は互換範囲の宣言を潰すためここには書かない。必要なら constraints で行う。
@@ -45,7 +45,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 
 [tool.mypy]
-# 型チェッカー（ROADMAP 第4群・順22）。注釈はほぼ完備で playwright は py.typed 同梱の
+# 型チェッカー（mypy）。注釈はほぼ完備で playwright は py.typed 同梱の
 # ため、既定（非 strict）でも実効性がある。回帰は CI で pytest/ruff と同列に止める想定。
 #   mypy edge_auto_capture.py badge.py capture.py config.py infra.py
 python_version = "3.9"
