@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  edge_auto_capture.py を単一EXE(フォルダ形式)へビルドする。
 #  Python 未導入の Windows PC へ配布できる形にまとめる。
 #  実行例: powershell -ExecutionPolicy Bypass -File build.ps1
@@ -95,6 +95,15 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "  [warn] pip-licenses を用意できず THIRD-PARTY-NOTICES.txt を生成できませんでした。" -ForegroundColor Yellow
     Write-Host "         手動で依存ライセンスを $notices にまとめてください。" -ForegroundColor Yellow
 }
+
+# output/ を空のまま同梱する。展開時点で書き込み可否が分かり、D-C1（書き込み不可
+# フォールバック）の権限問題に早く気づける。Compress-Archive は空フォルダを ZIP に
+# 含めないため、フォルダを保持する目的も兼ねて利用者向けの説明ファイルを 1 つ置く。
+$outDir = Join-Path $dist "output"
+New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+$outNote = "スクリーンショットとテキストはこのフォルダに保存されます。ここに書き込めない場合は %LOCALAPPDATA% 側へ自動で切り替わります（D-C1）。"
+Set-Content -Encoding utf8 -Path (Join-Path $outDir "このフォルダについて.txt") -Value $outNote
+Write-Host "  空の output/ を同梱しました: $outDir" -ForegroundColor Green
 
 Write-Host "[5/6] コードサイニング署名 ..."
 # D-D1: 署名の受け口。証明書の指定が無ければ何もせず素通りする（現状どおり未署名）。
