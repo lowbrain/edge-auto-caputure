@@ -32,7 +32,7 @@
 |------|------|--------|------|
 | **CI 本体** | GitHub Actions で `pytest`+`ruff check`+`mypy` を回す。smoke は Edge/Chrome 必須なので Windows runner 限定 or 手動トリガで **`--strict` 付き**。部品（`ruff`・`mypy`・`--strict`）は導入済みで、残るは Actions の定義だけ | 小 | 未 |
 | log ローテート | `log.txt` の保持ポリシー | 小 | **見送り** |
-| exe バージョン埋め込み | PyInstaller `--version-file`。Windows 固有・任意。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) | 小 | 未 |
+| exe バージョン埋め込み | PyInstaller `--version-file`。Windows 固有・任意。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) | 小 | ✅済（2026-08-15） |
 
 > **CI 本体が唯一の「本流の残タスク」。** `--strict` が無いとブラウザ不在の環境で
 > 「何も検証していないのに緑」になるため、CI に載せる際は必須。
@@ -79,8 +79,8 @@
 | `E-5` | 非 HTML で挙動未定義 | PDF（Edge 内蔵ビューア）や `edge://` で `page.title()`/`bodyText()`/`_part.txt` の結果が未検証。`skip_urls` で撮影は止められるがバー注入は行われる。まず挙動を確認し `USAGE.txt` に「PDF は正しく保存されません」と一言でも足りる |
 | `badge.py` I/O | import 時の `badge.js` 読み込み | `BADGE_SCRIPT = build_badge_script()` が module import 時に読む（実運用では使わない＝スモーク専用）。遅延生成にすると凍結環境の失敗経路が 1 つ減る |
 | テスト空白 | `_shoot` の skip 判定・`refresh_panels` 未テスト | 一部改善済み（`CaptureRunner`・ダウンロード等は回帰あり）。残る穴だが実害は出ていない |
-| `D-B2` | 環境情報を起動ログへ | Edge 版/OS/採用設定を log.txt に 1 行。`channel="msedge"` は環境依存なので切り分けが楽になるが、無くても回る。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
-| `D-C3` | config.ini 消失時の自己修復 | 現状は消えると `notify_fatal`→`exit(1)`。ダイアログは出る（無言死ではない）ので優先度低。既定値で起動し書き直すと親切。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
+| ~~`D-B2`~~ | ~~環境情報を起動ログへ~~ | **✅済（2026-08-15）**。OS/Python/採用設定値/採用ブラウザ版を log.txt に 1 行ずつ。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
+| ~~`D-C3`~~ | ~~config.ini 消失時の自己修復~~ | **✅済（2026-08-15）**。消失/破損は既定で作り直して起動（破損時は `.invalid` へ退避）。値の編集ミスは上書きせず終了。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
 | `D-D2` | AV 誤検知 | `--onedir` で緩和済み。出たら署名/誤検知報告で都度対応。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
 | `F-D5` | 表示文言の多言語化 | `badge.py` の日本語ハードコード（`_BADGE_CONFIG` に集約済で差し替えは容易）。`USAGE.txt` は Shift-JIS・`config.ini` コメントも日本語なのでバーだけでは足りない。配布先が日本語話者に限られる限り不要 |
 
