@@ -279,18 +279,72 @@ def test_load_config_reads_bom_prefixed_file(monkeypatch, tmp_path):
     assert c.output_dir == out
 
 
-def test_load_config_missing_file_exits(monkeypatch, tmp_path):
+def test_load_config_missing_file_self_heals(monkeypatch, tmp_path):
+    # D-C3: config.ini が無ければ既定値で作り直して起動する（起動不能にしない）。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
+    cfg = tmp_path / "does-not-exist.ini"
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", cfg)
+    assert not cfg.exists()
+    c = load_config()
+    # 既定ファイルが作られ、配布テンプレートと同一の内容になる。
+    assert cfg.exists()
+    assert cfg.read_text(encoding="utf-8") == config_mod.DEFAULT_CONFIG_TEXT
+    # 既定テンプレートの値で起動する（output は BASE_DIR 配下へ解決）。
+    assert c.start_url == "https://www.google.com"
+    assert c.output_dir == tmp_path / "output"
+
+
+def test_load_config_missing_file_uses_defaults_when_unwritable(monkeypatch, tmp_path):
+    # 書き出しに失敗しても（読み取り専用等）、メモリ上の既定値で起動する。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
     monkeypatch.setattr(config_mod, "CONFIG_PATH", tmp_path / "does-not-exist.ini")
-    with pytest.raises(SystemExit) as e:
-        load_config()
-    assert e.value.code == 1
+    monkeypatch.setattr(config_mod, "_write_default_config", lambda: False)
+    c = load_config()
+    assert c.start_url == "https://www.google.com"
+    assert c.skip_urls == ("about:blank", "")
+    assert c.output_dir == tmp_path / "output"
 
 
-def test_load_config_missing_section_exits(monkeypatch, tmp_path):
-    _write_config(monkeypatch, tmp_path, "[wrong]\nfoo = bar\n")
-    with pytest.raises(SystemExit) as e:
-        load_config()
-    assert e.value.code == 1
+def test_load_config_broken_file_self_heals(monkeypatch, tmp_path):
+    # D-C3: [capture] が無い/破損した config.ini は .invalid へ退避し、既定で作り直す。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
+    cfg = _write_config(monkeypatch, tmp_path, "[wrong]\nfoo = bar\n")
+    c = load_config()
+    # 壊れた元ファイルは消さず退避される（利用者が中身を確認できる）。
+    invalid = tmp_path / "config.ini.invalid"
+    assert invalid.exists()
+    assert invalid.read_text(encoding="utf-8").startswith("[wrong]")
+    # 既定 config.ini を作り直し、既定値で起動する。
+    assert cfg.read_text(encoding="utf-8") == config_mod.DEFAULT_CONFIG_TEXT
+    assert c.start_url == "https://www.google.com"
+    assert c.output_dir == tmp_path / "output"
+
+
+def test_load_config_corrupt_file_self_heals(monkeypatch, tmp_path):
+    # パースできないゴミ（セクション見出しの前に本文）でも退避＆作り直しで起動する。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
+    cfg = _write_config(monkeypatch, tmp_path, "not a config at all\n= = =\n")
+    c = load_config()
+    assert (tmp_path / "config.ini.invalid").exists()
+    assert cfg.read_text(encoding="utf-8") == config_mod.DEFAULT_CONFIG_TEXT
+    assert c.output_dir == tmp_path / "output"
+
+
+def test_default_config_text_matches_bundled_ini():
+    # 自己修復で書き出す既定テキストは、配布する config.ini と同一であること（drift 防止）。
+    # read_text は改行を \n へ正規化するので、CRLF の config.ini とも一致する。
+    root = Path(__file__).resolve().parent.parent
+    bundled = (root / "config.ini").read_text(encoding="utf-8")
+    assert bundled == config_mod.DEFAULT_CONFIG_TEXT
+
+
+def test_config_with_defaults_uses_template_values(monkeypatch, tmp_path):
+    # DEFAULT_CONFIG_TEXT から作る既定 Config は配布テンプレートの値になる。
+    monkeypatch.setattr(config_mod, "BASE_DIR", tmp_path)
+    c = config_mod._config_with_defaults(Config())
+    assert c.start_url == "https://www.google.com"
+    assert c.skip_urls == ("about:blank", "")
+    assert c.output_dir == tmp_path / "output"
 
 
 def test_load_config_invalid_number_exits(monkeypatch, tmp_path):
@@ -422,6 +476,41 @@ def test_pyproject_sources_version_from_infra():
     assert re.search(r'attr\s*=\s*"infra\.__version__"', text)
     # バージョンの直書き行（version = "x.y.z"）が残っていないこと。
     assert not re.search(r'^\s*version\s*=\s*"', text, re.MULTILINE)
+
+
+# --------------------------------------------------------------------------- #
+# 環境情報の起動ログ（D-B2: 切り分けのため OS/採用設定値を1行ずつ残す）
+# --------------------------------------------------------------------------- #
+
+
+def test_startup_environment_line_has_os_and_python():
+    # OS・Python・実行形態が1行に入る（通常の Python 実行では 実行=script）。
+    line = infra.startup_environment_line()
+    assert line.startswith("[env] ")
+    assert "OS=" in line
+    assert "Python=" in line
+    assert "実行=script" in line
+
+
+def test_summarize_config_reports_key_values():
+    from config import summarize_config
+
+    c = Config(browser="edge", output_dir=Path("/tmp/out"), target_selector=".price")
+    line = summarize_config(c)
+    assert line.startswith("[config] ")
+    assert "browser=edge" in line
+    assert "output_dir=/tmp/out" in line or "output_dir=\\tmp\\out" in line
+    assert "target_selector=.price" in line
+
+
+def test_summarize_config_marks_empty_values_readably():
+    from config import summarize_config
+
+    line = summarize_config(Config())  # 既定（自動選択・使い捨て・セレクタ無し）
+    assert "browser=自動(Edge→Chrome)" in line
+    assert "edge_path=自動" in line
+    assert "profile_dir=使い捨て" in line
+    assert "target_selector=(無)" in line
 
 
 # --------------------------------------------------------------------------- #

@@ -10,6 +10,7 @@ Playwright やページ操作には依存しないので、実 Edge 無しで im
 """
 
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -166,6 +167,22 @@ def notify_fatal(msg: str) -> None:
     """致命的メッセージをログとダイアログの両方へ出す（終了処理は呼び出し側）。"""
     log(msg)
     _message_box(msg)
+
+
+def startup_environment_line() -> str:
+    """起動環境（OS・Python・実行形態・基準フォルダ）を1行に整形する（D-B2）。
+
+    channel="msedge"/"chrome" は環境の Edge/Chrome に依存するため、どの OS・どの
+    ランタイム・どの場所で動いたのかをログへ残すと不具合の切り分けが速い。実際に
+    採用された設定値は config.summarize_config が、ブラウザの版（起動後にしか分から
+    ない）は起動側が別行で出す。ここは Playwright 非依存で分かる範囲だけを担う。
+    """
+    frozen = "exe" if getattr(sys, "frozen", False) else "script"
+    return (
+        f"[env] OS={platform.platform()} "
+        f"Python={platform.python_version()} "
+        f"実行={frozen} base={BASE_DIR}"
+    )
 
 
 # 使い捨てプロファイルを「掃除対象」とみなす下限の経過時間（秒）。
