@@ -61,8 +61,15 @@
 > **2026-08-15 に Windows 11 + 実 Edge `151.0.4129.78` で下記の実機検証を実施し、
 > `A-4`/`A-1`/`A-2` の smoke と `file://` meta CSP は確認済みへ移した。** 実施環境は
 > `pip install -e ".[dev]"` を `.venv`（Python 3.15）へ入れて `pytest`(82 passed,2 skipped)
-> / `ruff`(緑) / smoke(`--strict` PASS, msedge 起動) を通した。詳細は [`ROADMAP.md`](ROADMAP.md)
-> の「実機検証の残り」。
+> / `ruff`(緑) / `mypy`(緑) / smoke(`--strict` PASS, msedge 起動) を通した。詳細は
+> [`ROADMAP.md`](ROADMAP.md) の「実機検証の残り」。
+>
+> **同日 macOS 側（Python 3.9）でも `pytest` / `ruff` / `mypy` を回し全緑を確認**（`verify/
+> windows-real-machine-mypy` ブランチを引き継いで実施）。macOS は `pytest` が **84 passed(skip 0)** で、
+> Windows で skip される読み取り専用ディレクトリのテスト 2 件
+> （`test_resolve_writable_dir_*`＝D-C1 の退避ロジック。Windows は POSIX chmod が効かず self-skip）が
+> **macOS では実行され通る**。両 OS でカバレッジが相補的。`mypy`/`ruff` も両 OS で緑
+> （型検査ターゲット 3.10・`Any` 化は OS 非依存で、macOS でも問題ゼロを確認済み）。
 
 - ~~**`A-4`（`closed` 化）/ `A-1`・`A-2`（フラッシュ・待ち時間）の実挙動**~~ — **済（2026-08-15）**。
   `python tests/smoke_badge.py --strict` を実 Edge で PASS。
@@ -80,10 +87,9 @@
 > `# type: ignore[attr-defined]` は macOS スタブでは必要・Windows スタブでは不要で
 > `warn_unused_ignores=true` ゆえ OS 次第で必ず片方が落ちた → **`Any` 経由の属性アクセス**に変え
 > ignore 自体を撤去（`infra.py` の `_message_box_windows`）。`getattr` は ruff B009 と衝突するため
-> 不採用。**`mypy`・`ruff` とも緑を確認したのは Windows 実機のみ**。`Any` 属性アクセスと
-> `python_version=3.10` は設計上 OS 非依存なので macOS でも緑になるはずだが、**macOS では未確認**
-> （直す前は macOS が緑・Windows が赤だったので、macOS が新たに赤化する要素は無い見込み。
-> macOS 開発機を触る人は `mypy .`／`ruff check .` を 1 回流して緑を確かめてほしい）。
+> 不採用。**Windows 実機（Python 3.15）・macOS（Python 3.9）の両 OS で `mypy`・`ruff` とも緑を確認済み
+> （2026-08-15）**。`python_version=3.10` は mypy の型検査ターゲット設定であって実行系の要件ではなく、
+> macOS は Python 3.9 のまま緑（ツール実行時要件も `requires-python=">=3.9"` で不変）。
 
 ---
 
