@@ -56,15 +56,34 @@
 
 ## 2. 未検証事項（憶測で「確認済み」と書かないこと）
 
-開発ホストは **macOS (darwin)**、本ツールは **Windows 専用**。以下は**実機未確認**のまま。
+開発ホストは **macOS (darwin)**、本ツールは **Windows 専用**。
 
-- **`A-4`（`closed` 化）/ `A-1`・`A-2`（フラッシュ・待ち時間）の実挙動** —
-  smoke に回帰ステップは入れてあるが、開発機に Edge/Chrome が無ければ SKIP される。
-  **Windows/実 Edge で smoke を 1 回通すこと**が最優先の残タスク。
+> **2026-08-15 に Windows 11 + 実 Edge `151.0.4129.78` で下記の実機検証を実施し、
+> `A-4`/`A-1`/`A-2` の smoke と `file://` meta CSP は確認済みへ移した。** 実施環境は
+> `pip install -e ".[dev]"` を `.venv`（Python 3.15）へ入れて `pytest`(82 passed,2 skipped)
+> / `ruff`(緑) / smoke(`--strict` PASS, msedge 起動) を通した。詳細は [`ROADMAP.md`](ROADMAP.md)
+> の「実機検証の残り」。
+
+- ~~**`A-4`（`closed` 化）/ `A-1`・`A-2`（フラッシュ・待ち時間）の実挙動**~~ — **済（2026-08-15）**。
+  `python tests/smoke_badge.py --strict` を実 Edge で PASS。
 - **`A-1`/`A-2` のタイミング根拠** — CSS アニメ時間（`.bar` 240ms / `.frame.flash` 500ms）と
-  JS 定数（`CAP_FALLBACK_MS` 500 / `BAR_RETURN_MS` 170）からの**計算による導出**で、
-  実ブラウザでの再現は未確認。修正自体は無害。
-- **`file://` での meta CSP 挙動**（`ROADMAP.md` の `F-A3`）— 実装前に手元確認が要る。
+  JS 定数（`CAP_FALLBACK_MS` 500 / `BAR_RETURN_MS` 170）からの**計算による導出**。smoke で
+  「退避済み即解決(A-2)は 250ms 未満」「フラッシュ写り込み無し(A-1)」は実機で確認したが、
+  体感の見た目そのもの（人間の目視）は未確認。修正自体は無害。
+- ~~**`file://` での meta CSP 挙動**（`ROADMAP.md` の `F-A3`）~~ — **済（2026-08-15）**。実 Edge で
+  meta CSP が `file://` でも機能することを確認。`response` 0・外部は `requestfailed(csp)`。
+  受入判定の注意点は `ROADMAP.md` 側に記載。
+
+> **実機検証で判明した mypy の綻び（2026-08-15 に対応済み）**: 実 Windows で `mypy .` を回すと
+> 当初 2 件出た。①新しい mypy 2.3.0 が 3.9 ターゲットを廃止 → `[tool.mypy] python_version` を
+> **3.10 へ引上げ**（実行時は `requires-python=">=3.9"` のまま）。②`ctypes.windll` の
+> `# type: ignore[attr-defined]` は macOS スタブでは必要・Windows スタブでは不要で
+> `warn_unused_ignores=true` ゆえ OS 次第で必ず片方が落ちた → **`Any` 経由の属性アクセス**に変え
+> ignore 自体を撤去（`infra.py` の `_message_box_windows`）。`getattr` は ruff B009 と衝突するため
+> 不採用。**`mypy`・`ruff` とも緑を確認したのは Windows 実機のみ**。`Any` 属性アクセスと
+> `python_version=3.10` は設計上 OS 非依存なので macOS でも緑になるはずだが、**macOS では未確認**
+> （直す前は macOS が緑・Windows が赤だったので、macOS が新たに赤化する要素は無い見込み。
+> macOS 開発機を触る人は `mypy .`／`ruff check .` を 1 回流して緑を確かめてほしい）。
 
 ---
 

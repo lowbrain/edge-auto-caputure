@@ -92,8 +92,16 @@
 
 ## 実機検証の残り（Windows / 実 Edge）
 
-開発ホストが macOS のため以下は**実機未確認**。手順・落とし穴は [`HANDOFF.md`](HANDOFF.md)。
+**2026-08-15 に Windows 11 + 実 Edge `151.0.4129.78` で実施し、両項目とも確認済み。** 手順・落とし穴は [`HANDOFF.md`](HANDOFF.md)。
 
-- `A-4`（`closed` 化）/ `A-1`・`A-2`（フラッシュ・待ち時間）の実挙動 —
-  smoke に回帰ステップはあるが Edge/Chrome が無ければ SKIP。**Windows/実 Edge で smoke を 1 回通すこと。**
-- `file://` での meta CSP 挙動 — `F-A3` を実装する場合の前提確認。
+- ~~`A-4`（`closed` 化）/ `A-1`・`A-2`（フラッシュ・待ち時間）の実挙動~~ — **済**。
+  `python tests/smoke_badge.py --strict` を実 Edge（msedge 起動）で PASS。
+  シャドウ closed・透過トグル・SPA 検知通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・
+  Observer の必要時稼働(B-6)・JS エラー無しを実機で確認。
+- ~~`file://` での meta CSP 挙動~~ — **済**（`F-A3` の前提確認）。実 Edge で meta CSP は
+  `file://` でも機能する。data: 画像は表示、外部 http 画像/スクリプト・インライン script は遮断され
+  `response`(実応答)は 0 件・外部要求はすべて `requestfailed` 理由 `csp` でバイト送出前に失敗。
+  **F-A3 実装時の注意**: 受入基準は「Network にリクエスト 0」ではなく
+  「外部への `response` 0 件（要求オブジェクトは生成され DevTools には *blocked* として並ぶ）」で判定する。
+  また CSP は `default-src 'none'; img-src data:; style-src 'unsafe-inline'` の形で、インライン CSS を
+  活かすには `style-src 'unsafe-inline'` が要る（`grep -ci` 受入は据え置きで可）。
