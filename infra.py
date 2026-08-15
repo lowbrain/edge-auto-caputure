@@ -16,7 +16,7 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # バージョンの単一の出所（D-B1）。pyproject.toml は
 # [tool.setuptools.dynamic] version = {attr = "infra.__version__"} でここを参照する。
@@ -125,9 +125,12 @@ def _message_box_windows(msg: str, title: str) -> None:
     try:
         import ctypes
 
-        # windll は Windows 専用（型スタブにも他OSには無い）。この関数は Windows でしか
-        # 呼ばれない前提なので、非 Windows での型チェック上の未定義属性は無視する。
-        ctypes.windll.user32.MessageBoxW(0, msg, title, 0x10)  # type: ignore[attr-defined]  # MB_ICONERROR
+        # windll は Windows 専用（型スタブは OS で異なり、macOS には windll が無い）。この関数は
+        # Windows でしか呼ばれない前提。Any 経由で属性アクセスし、OS でスタブが違っても型チェックが
+        # 割れないようにする。`# type: ignore` は Windows 側で warn_unused_ignores に、getattr は
+        # ruff B009 に引っかかるため、どちらも避けて Any を採る。
+        ctypes_any: Any = ctypes
+        ctypes_any.windll.user32.MessageBoxW(0, msg, title, 0x10)  # MB_ICONERROR
     except Exception:
         pass
 

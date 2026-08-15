@@ -48,7 +48,11 @@ python_files = ["test_*.py"]
 # 型チェッカー（mypy）。注釈はほぼ完備で playwright は py.typed 同梱の
 # ため、既定（非 strict）でも実効性がある。回帰は CI で pytest/ruff と同列に止める想定。
 #   mypy edge_auto_capture.py badge.py capture.py config.py infra.py
-python_version = "3.9"
+# 新しい mypy（2.3+）は 3.9 ターゲットを廃止したため 3.10 で型検査する。
+# 実行時は requires-python=">=3.9" のまま（3.9 実機で動く）。3.10 検査だと `X | Y` など
+# 3.10 専用構文を mypy が見逃す点だけ注意（実際に使わない運用で担保。書いてよいのは
+# PEP 585 の dict[]/list[] までで X|Y は使わない — HANDOFF「落とし穴」参照）。
+python_version = "3.10"
 # 生成物やテスト（smoke は実 Edge 前提でスタブ化が重い）は対象外。まずは配布コード本体を守る。
 files = ["edge_auto_capture.py", "badge.py", "capture.py", "config.py", "infra.py"]
 exclude = ["build", "dist", "output", "tests"]
