@@ -57,13 +57,14 @@ from playwright.async_api import Page, async_playwright
 
 import badge
 from capture import CaptureRunner, group_folder_name, group_stamp, group_subdir, try_eval
-from config import Config, load_config
+from config import Config, load_config, summarize_config
 from infra import (
     __version__,
     acquire_single_instance_lock,
     cleanup_old_profiles,
     log,
     notify_fatal,
+    startup_environment_line,
 )
 
 
@@ -629,6 +630,13 @@ async def main(config: Config) -> None:
                     **_browser_launch_kwargs(config, user_data_dir, channel, executable_path)
                 )
                 log(f"{label} を起動しました。")
+                # 採用ブラウザの実バージョンをログへ（D-B2）。Edge/Chrome の更新で挙動が
+                # 変わったとき、log.txt だけで版を追える。取得できなくても起動は妨げない。
+                try:
+                    browser = context.browser
+                    log(f"[env] {label} version={browser.version if browser else '不明'}")
+                except Exception as e:
+                    log(f"[env] {label} version 取得失敗: {e}")
                 break
             except Exception as e:
                 # 未インストール等で起動できなければ次の候補へ回す（候補が1つなら終了）。
@@ -698,6 +706,10 @@ if __name__ == "__main__":
 
     # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
     log(f"=== edge-auto-capture v{__version__} 起動 ===")
+    # 環境情報と採用設定値を起動時に1行ずつ残す（D-B2）。切り分けが楽になる。
+    # ブラウザの実バージョンは起動後に main() 内で別行として出す。
+    log(startup_environment_line())
+    log(summarize_config(config))
 
     # 多重起動を入口で止める（D-C4）。二度押しで 2 つ目が起動すると、output/・
     # log.txt・使い捨てプロファイル（A-5）を先行インスタンスと奪い合うため、
