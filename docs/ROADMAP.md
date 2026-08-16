@@ -7,13 +7,17 @@
 > 分かれ、本ファイルはその横断優先順位を示すだけの索引だった。第 1〜3 群（黙って壊れる／原因に
 > 辿り着けない／恒常的劣化）と判断待ち 3 件が**全件対応済み**になり、各文書の大半が「完了記録」に
 > なったため、`IMPROVEMENTS.md` / `FEATURES.md` は**削除**し、**未対応分だけを本ファイルへ集約**した。
-> 完了項目の実装内容は git 履歴を参照。残る文書は次の 4 つ。
+> 完了項目の実装内容は git 履歴を参照。残る文書は次の 3 つ。
 >
 > - **本ファイル**（`ROADMAP.md`）… これから作る・直すもの（コード作業）。
-> - [`REFACTORING.md`](REFACTORING.md) … 本ファイルの機能を全実装するための順序と、機能が引き込む
->   リファクタの設計図（`CaptureRequest` 化・`_capture` 分割・CI 先行など）。
 > - [`DISTRIBUTION.md`](DISTRIBUTION.md) … 配布運用の残タスクと資産（IT 許可テンプレート等）。
 > - [`HANDOFF.md`](HANDOFF.md) … このコードを触る人向けの落とし穴・作業環境・検証手順。
+>
+> かつてあった `REFACTORING.md`（全機能を散らかさず実装するための順序と基盤リファクタの設計図）は、
+> 基盤リファクタ（`CaptureRequest` 化・`_capture` 分割・`should_capture` 集約 等）を実装し切って
+> 役目を終えたため**退役**した（#31）。恒久ルール（新モジュール追加時の同時更新・4 点セット検証・
+> 「コメントは資産」）は [`HANDOFF.md`](HANDOFF.md) §1・§4 へ移設済み。残る任意リファクタ（下 §3）と
+> 設計意図・経緯は git 履歴を参照。
 >
 > `A-` / `B-` / `E-` / `F-` / `D-` の ID は旧文書由来の**安定した識別子**として残す
 > （会話や履歴での参照用。もう「どのファイルか」の意味は持たない）。
@@ -87,6 +91,7 @@
 | `E-5` | 非 HTML で挙動未定義 | 小 | PDF（Edge 内蔵ビューア）や `edge://` で `page.title()`/`bodyText()`/`_part.txt` の結果が未検証。`skip_urls` で撮影は止められるがバー注入は行われる。まず挙動を確認し `USAGE.txt` に「PDF は正しく保存されません」と一言でも足りる（コストの大半は実装でなく調査） |
 | `badge.py` I/O | import 時の `badge.js` 読み込み | 小 | `BADGE_SCRIPT = build_badge_script()` が module import 時に読む（実運用では使わない＝スモーク専用）。遅延生成にすると凍結環境の失敗経路が 1 つ減る。`BADGE_SCRIPT` を関数化して参照元（スモーク）を直すだけ |
 | テスト空白 | `_shoot` の skip 判定・`refresh_panels` 未テスト | 小〜中 | 一部改善済み（`CaptureRunner`・ダウンロード等は回帰あり）。残る穴だが実害は出ていない。`_shoot`（同期・`skip_urls` 判定）は単体で足せるが、`refresh_panels` は `context.pages` とグループ解決のダブルを組む手間がある |
+| 内部整理（任意） | `LineageRegistry` 抽出（新規 `lineage.py`）／ブラウザ起動を `browser.py` へ切り出し／`_build_config` の副作用分離（R5b） | 小〜中 | 旧 `REFACTORING.md` §2 R4・§3 由来。テスト性向上が主目的で機能実装には不要（**やらなくても支障なし**）。God class 気味の `CaptureSession`（系譜解決）やエントリの肥大が気になったら着手。着手時は [`HANDOFF.md`](HANDOFF.md) §1-8 の新モジュール同時更新に従う |
 | ~~`D-B2`~~ | ~~環境情報を起動ログへ~~ | ✅済 | **✅済（2026-08-15）**。OS/Python/採用設定値/採用ブラウザ版を log.txt に 1 行ずつ。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
 | ~~`D-C3`~~ | ~~config.ini 消失時の自己修復~~ | ✅済 | **✅済（2026-08-15）**。消失/破損は既定で作り直して起動（破損時は `.invalid` へ退避）。値の編集ミスは上書きせず終了。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
 | `D-D2` | AV 誤検知 | 運用 | `--onedir` で緩和済み。技術改修ではなく、出たら署名/誤検知報告で都度対応する運用事項。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) |
