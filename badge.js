@@ -16,6 +16,7 @@
 // Python から使う API:
 //   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
 //   - window.__eacSetCount(n)                             : 撮影カウンタ（本セッション枚数）を更新
+//   - window.__eacSetHistory(list)                        : セレクタ入力欄の候補（datalist）を更新（F-D2）
 //   - window.__eac_captureStart()                         : バーを退避し切るまで待つ（撮影直前）
 //   - window.__eac_captureEnd(ok)                         : シャッターフラッシュ（ok=成功は赤/失敗は琥珀）＋バー復帰（撮影直後）
 //   - window.__eac_getstate(tok)（expose_binding）        : 描画前に現在状態を取得（枚数 count も含む）
@@ -96,6 +97,7 @@
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
   let peekOn = false;      // 透過（半透明）表示中か。下に隠れた内容を確認するための一時状態。
   let shotCount = 0;       // 本セッションで保存できた枚数（Python が本体を持ち、__eacSetCount で配る）。
+  let selHistory = [];     // 過去に確定したセレクタの候補（datalist）。Python が本体を持ち __eacSetHistory で配る（F-D2）。
   let capDepth = 0;        // 進行中の撮影数（重なっても最後の1つで復帰させるための入れ子カウント）
   let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
@@ -231,7 +233,7 @@
       <button class="btn" data-eac="shot"></button>
       <button class="btn" data-eac="open"></button>
       <span class="shots" data-eac="shots"></span>
-      <span class="sel-wrap"><input class="sel" type="text" data-eac="selector"><span class="sel-count" data-eac="sel-count"></span></span>
+      <span class="sel-wrap"><input class="sel" type="text" data-eac="selector" list="__eac_sel_history"><datalist id="__eac_sel_history" data-eac="history"></datalist><span class="sel-count" data-eac="sel-count"></span></span>
       <span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>
         <button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>
         <span class="spa-knob"></span></button></span>
@@ -319,6 +321,26 @@
   function setShotCount(n) {
     if (typeof n === 'number' && n >= 0) shotCount = n;
     renderShots();
+  }
+
+  // F-D2: セレクタ入力欄の候補（datalist の <option>）を過去の確定値で作り直す。候補の
+  // 本体は Python が持ち、セレクタ確定（blur/Enter）のたびに __eacSetHistory で全バーへ配られる。
+  // バー未構築なら値だけ覚えておき、描画時（build）に反映する。
+  function renderHistory() {
+    if (!els || !els.history) return;
+    while (els.history.firstChild) els.history.removeChild(els.history.firstChild);
+    selHistory.forEach((v) => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      els.history.appendChild(opt);
+    });
+  }
+
+  // Python から候補一覧を受け取って datalist へ反映する。配列以外・非文字列要素は無視する
+  // （不正な push が来ても既存候補を壊さない）。
+  function setHistory(list) {
+    if (Array.isArray(list)) selHistory = list.filter((v) => typeof v === 'string');
+    renderHistory();
   }
 
   // F-B2: 撮影中だけ hide_selectors 該当要素を隠す。同意バナー・追従ヘッダなどが証跡
@@ -437,7 +459,7 @@
       els = {
         bar: q('bar'), dot: q('dot'), label: q('label'),
         toggle: q('toggle'), shot: q('shot'), open: q('open'), shots: q('shots'), peek: q('peek'),
-        sel: q('selector'), selCount: q('sel-count'),
+        sel: q('selector'), selCount: q('sel-count'), history: q('history'),
         spaWrap: q('spa-wrap'), spaLabel: q('spa-label'), spa: q('spa'), spaText: q('spa-text'),
         frame: q('frame'),
       };
@@ -484,6 +506,8 @@
       apply(!!(state && state.recording), !!(state && state.spa), (state && state.selector) || '');
       // 撮影カウンタも現在値で描画する（再描画されたバーが 0 枚に戻って見えないように）。
       setShotCount((state && typeof state.count === 'number') ? state.count : shotCount);
+      // セレクタ候補（datalist）も現在値で描画する（作り直したバーで候補が空にならないように。F-D2）。
+      setHistory((state && Array.isArray(state.history)) ? state.history : selHistory);
     };
     const fallback = { recording: recording, spa: spaOn, selector: selector };
     // 未注入・呼び出し不能なら callBinding が undefined を返すので、直前の状態で描画する。
@@ -629,6 +653,7 @@
 
   window.__eacApplyState = apply;
   window.__eacSetCount = setShotCount;
+  window.__eacSetHistory = setHistory;
   window.__eac_captureStart = captureStart;
   window.__eac_captureEnd = captureEnd;
   window.__eac_bodyText = bodyText;

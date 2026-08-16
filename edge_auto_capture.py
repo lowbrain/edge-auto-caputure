@@ -179,6 +179,11 @@ def _browser_launch_kwargs(
     return kwargs
 
 
+# セレクタ履歴（F-D2）の保持上限。datalist の候補が無限に伸びないよう頭打ちにする。
+# 新しい値を先頭に積み、上限を超えた古い値から落とす。
+SELECTOR_HISTORY_MAX = 20
+
+
 @dataclass
 class GroupState:
     """タブ系譜（グループ）1 つぶんの実行時状態。
@@ -225,6 +230,10 @@ class CaptureSession:
         # 本セッションで保存できた枚数（F-D3）。動作実感＋暴走の早期発見のため全バーへ配る。
         # 本体はここに持ち、成功のたびに増やして全ページの操作バーへ反映する。
         self.shots = 0
+        # 過去に確定したセレクタの履歴（F-D2）。入力欄の datalist 候補として全バーへ配る。
+        # 新しいものが先頭・重複なし・上限あり（下の _remember_selector）。グループ横断で共有する
+        # （どのタブで入れた値でも次に別タブで使い回せる方が実用的なので、あえて session 単位）。
+        self.selector_history: list[str] = []
         # --- グループ単位の実行時状態 ---
         # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。
         self.groups: dict[Page, GroupState] = {}  # root ページ -> そのグループの状態
@@ -273,6 +282,31 @@ class CaptureSession:
     async def _push_count(self) -> None:
         """現在の撮影カウンタ（本セッション枚数）を開いている全ページの操作バーへ配る（F-D3）。"""
         call = badge.set_count_call(self.shots)
+        await asyncio.gather(
+            *(try_eval(pg, call) for pg in list(self.context.pages))
+        )
+
+    def _remember_selector(self, value: str) -> bool:
+        """確定したセレクタを履歴へ積む（F-D2）。新規に積んだら True、変化なしなら False。
+
+        新しい値を先頭に置き、重複は先頭へ繰り上げ（＝最近使った順）、上限
+        SELECTOR_HISTORY_MAX で古い方から落とす。空文字（クリア）は積まない。
+        """
+        v = (value or "").strip()
+        if not v:
+            return False
+        if self.selector_history and self.selector_history[0] == v:
+            return False  # 直近と同じなら並びも配布も変わらない
+        # 既にあれば一旦除いて先頭へ繰り上げる（重複を作らず最近使った順を保つ）。
+        if v in self.selector_history:
+            self.selector_history.remove(v)
+        self.selector_history.insert(0, v)
+        del self.selector_history[SELECTOR_HISTORY_MAX:]
+        return True
+
+    async def _push_history(self) -> None:
+        """現在のセレクタ履歴（datalist 候補）を開いている全ページの操作バーへ配る（F-D2）。"""
+        call = badge.set_history_call(self.selector_history)
         await asyncio.gather(
             *(try_eval(pg, call) for pg in list(self.context.pages))
         )
@@ -456,16 +490,20 @@ class CaptureSession:
             log(f"[SPA変化] {group_folder_name(grp.id)}  {url}")
 
     async def on_commit_selector(self, source, token=None, value="") -> None:
-        """セレクタ入力の確定（blur / Enter）。最終値をログに残す。
+        """セレクタ入力の確定（blur / Enter）。最終値をログに残し、履歴（datalist）へ積む。
 
         入力のたびに出すとログが氾濫するため、確定時にだけ実際に使う値を記録する。
-        これにより「どのセレクタで動かしたか」がログと実態で一致する。
+        これにより「どのセレクタで動かしたか」がログと実態で一致する。あわせて確定値を
+        セレクタ履歴へ積み（F-D2）、変化があれば全バーの入力候補（datalist）を更新する。
+        履歴はグループ横断で共有する（別タブで入れた値も次の入力欄で使い回せる）。
         """
         if not self._authorized(token):
             return
         grp = await self._resolve_group(source["page"])
         new = (value or "").strip()
         log(f"[セレクタ] {'クリア' if not new else repr(new)} {group_folder_name(grp.id)}")
+        if self._remember_selector(new):
+            await self._push_history()
 
     async def get_state(self, source, token=None) -> dict:
         """操作バーが描画前に現在の状態を問い合わせるためのバインディング。
@@ -476,17 +514,22 @@ class CaptureSession:
         枚数表示を正しく初期化する（作り直したバーが 0 枚へ戻って見えないように。F-D3）。
 
         token 不一致（操作バー以外からの問い合わせ）には既定状態を返し、実際の
-        記録状態やセレクタ値を外部スクリプトへ漏らさない（枚数は秘匿情報ではないので返す）。
+        記録状態やセレクタ値を外部スクリプトへ漏らさない（枚数は秘匿情報ではないので返す。
+        セレクタ履歴は利用者自身が入れた候補で、非正規呼び出しには返さない）。
 
         返すのは問い合わせ元ページが属するグループの状態。新しいドキュメントのバーが最初に
         これを呼ぶタイミングでグループを確定・メモ化する（監視ループ到達前でも取りこぼさない）。
+        セレクタ履歴（datalist 候補。F-D2）も同時に返し、遷移後も入力候補を保つ。
         """
         if not self._authorized(token):
-            return {"recording": False, "spa": False, "selector": "", "count": self.shots}
+            return {
+                "recording": False, "spa": False, "selector": "",
+                "count": self.shots, "history": [],
+            }
         grp = await self._resolve_group(source["page"])
         return {
             "recording": grp.on, "spa": grp.spa_on, "selector": grp.selector,
-            "count": self.shots,
+            "count": self.shots, "history": list(self.selector_history),
         }
 
     # ---- ダウンロードの退避（E-4） ----

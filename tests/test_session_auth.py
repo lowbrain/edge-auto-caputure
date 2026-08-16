@@ -101,14 +101,20 @@ def test_get_state_hides_real_state_without_token(token):
     s, page = _seeded_session(on=True, spa_on=True, selector=".secret")
     state = asyncio.run(s.get_state(None, token=token))
     # 記録状態やセレクタは伏せるが、撮影カウンタ（count）は秘匿情報ではないので返す（F-D3）。
-    assert state == {"recording": False, "spa": False, "selector": "", "count": 0}
+    # セレクタ履歴（F-D2）は利用者が入れた候補なので非正規呼び出しには返さない（空）。
+    assert state == {
+        "recording": False, "spa": False, "selector": "", "count": 0, "history": [],
+    }
 
 
 def test_get_state_returns_real_state_with_token():
     # 正規 token では、問い合わせ元ページが属するグループの実状態を返す（撮影カウンタも同梱）。
+    # セレクタ履歴（F-D2）も同梱する（遷移後のバーが datalist 候補を失わない）。
     s, page = _seeded_session(on=True, spa_on=False, selector=".ok")
     state = asyncio.run(s.get_state({"page": page}, token=s.token))
-    assert state == {"recording": True, "spa": False, "selector": ".ok", "count": 0}
+    assert state == {
+        "recording": True, "spa": False, "selector": ".ok", "count": 0, "history": [],
+    }
 
 
 # --------------------------------------------------------------------------- #

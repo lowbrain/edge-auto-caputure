@@ -186,3 +186,13 @@ def set_count_call(count: int) -> str:
     バーがサイト側の再描画で作り直されても __eac_getstate（count 同梱）で自己同期する。
     """
     return f"window.__eacSetCount && window.__eacSetCount({int(count)})"
+
+
+def set_history_call(history: list[str]) -> str:
+    """セレクタ候補（datalist の過去値）をバーへ反映する呼び出し式を組み立てる（F-D2）。
+
+    候補は Python 側（監視セッション）が本体として持ち、セレクタ確定（blur/Enter）のたびに
+    全ページのバーへ配る。バーがサイト側の再描画で作り直されても __eac_getstate（history
+    同梱）で自己同期する。日本語/記号を含む値も json.dumps で安全に JS 配列リテラル化する。
+    """
+    return f"window.__eacSetHistory && window.__eacSetHistory({json.dumps(history)})"

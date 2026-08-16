@@ -1258,6 +1258,96 @@ def test_open_in_file_manager_invokes_platform_opener(monkeypatch, tmp_path):
     assert calls == [["open", str(tmp_path)]]
 
 
+# --------------------------------------------------------------------------- #
+# F-D2: セレクタ履歴（入力欄の datalist 候補）
+#
+# 確定したセレクタ（blur/Enter）をセッション横断の履歴へ積み、全バーの入力候補として配る。
+# 新しい順・重複なし・上限あり。get_state にも同梱して遷移後のバーが候補を失わないようにする。
+# --------------------------------------------------------------------------- #
+
+
+def test_remember_selector_dedup_recency_and_cap():
+    from edge_auto_capture import SELECTOR_HISTORY_MAX, CaptureSession
+
+    s = CaptureSession(_FakeContext([]), Config())
+
+    # 新規は先頭へ積まれ True を返す。
+    assert s._remember_selector("#a") is True
+    assert s._remember_selector("#b") is True
+    assert s.selector_history == ["#b", "#a"]
+
+    # 空文字（クリア）は積まない。
+    assert s._remember_selector("   ") is False
+    assert s.selector_history == ["#b", "#a"]
+
+    # 直近と同じは並びも変わらず False。
+    assert s._remember_selector("#b") is False
+    assert s.selector_history == ["#b", "#a"]
+
+    # 既出を入れ直すと重複を作らず先頭へ繰り上げる（最近使った順）。
+    assert s._remember_selector("#a") is True
+    assert s.selector_history == ["#a", "#b"]
+
+    # 上限を超えたら古い方から落ちる。
+    for i in range(SELECTOR_HISTORY_MAX + 5):
+        s._remember_selector(f"#sel-{i}")
+    assert len(s.selector_history) == SELECTOR_HISTORY_MAX
+    assert s.selector_history[0] == f"#sel-{SELECTOR_HISTORY_MAX + 4}"  # 最後に入れたものが先頭
+
+
+def test_commit_selector_records_history():
+    # on_commit_selector が確定値を履歴へ積む（token 一致時のみ）。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r = _GroupPage("r")
+        s = _make_session([r], roots={r: GroupState(on=True, spa_on=False, selector="#x")})
+
+        await s.on_commit_selector({"page": r}, token=s.token, value="#x")
+        assert s.selector_history == ["#x"]
+
+        # 別の値を確定 → 先頭へ積む。
+        await s.on_commit_selector({"page": r}, token=s.token, value=".price")
+        assert s.selector_history == [".price", "#x"]
+
+        # クリア（空）は積まない。
+        await s.on_commit_selector({"page": r}, token=s.token, value="")
+        assert s.selector_history == [".price", "#x"]
+
+        # token 不一致は履歴を触らない。
+        await s.on_commit_selector({"page": r}, token="wrong", value="#leak")
+        assert s.selector_history == [".price", "#x"]
+
+    asyncio.run(scenario())
+
+
+def test_get_state_includes_selector_history():
+    # get_state は履歴を同梱する（遷移後のバーが datalist 候補を失わない）。
+    # token 不一致には履歴を漏らさない（利用者が入れた候補は返さない）。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        r = _GroupPage("r")
+        s = _make_session([r], roots={r: GroupState(on=True, spa_on=False, selector="#x")})
+        s.selector_history = ["#x", ".price"]
+
+        state = await s.get_state({"page": r}, token=s.token)
+        assert state["history"] == ["#x", ".price"]
+
+        denied = await s.get_state({"page": r}, token="wrong")
+        assert denied["history"] == []
+
+    asyncio.run(scenario())
+
+
+def test_set_history_call_serializes_values():
+    # 日本語/記号を含む値も JS 配列リテラルとして安全に埋め込む。
+    call = badge.set_history_call(["#main", ".一覧"])
+    assert call.startswith("window.__eacSetHistory && window.__eacSetHistory(")
+    # json.dumps で ASCII 化（\uXXXX）され、二重引用符の配列になる。
+    assert '"#main"' in call
+
+
 def test_trigger_threaded_per_path():
     # 撮影契機が投入元 3 経路から CaptureRequest.trigger に載る（F-A1）:
     # on_shot="manual" / on_spa_changed="spa" / _shoot_if_changed="url" /
@@ -1432,11 +1522,14 @@ def test_get_state_returns_group_state():
         r = _GroupPage("r")
         s = _make_session([r], roots={r: GroupState(on=True, spa_on=True, selector="#c")})
         state = await s.get_state({"page": r}, token=s.token)
-        # 撮影カウンタ（count）も同梱する（F-D3。再描画されたバーの枚数復元に使う）。
-        assert state == {"recording": True, "spa": True, "selector": "#c", "count": 0}
+        # 撮影カウンタ（count）とセレクタ履歴（history）も同梱する（F-D3/F-D2。
+        # 再描画されたバーの枚数復元・datalist 候補復元に使う）。
+        assert state == {
+            "recording": True, "spa": True, "selector": "#c", "count": 0, "history": [],
+        }
         # token 不一致には既定（状態を漏らさない）。count は秘匿情報ではないので返す。
         assert await s.get_state({"page": r}, token="wrong") == {
-            "recording": False, "spa": False, "selector": "", "count": 0
+            "recording": False, "spa": False, "selector": "", "count": 0, "history": [],
         }
 
     asyncio.run(scenario())
