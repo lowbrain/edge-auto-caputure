@@ -15,16 +15,33 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
   変化ごとに capture（`png` / `txt`、セレクタ指定時は `_part.txt`）を走らせる。ポーリング間隔
   （旧 `poll_interval`）は廃止し、変化から撮影までの遅延も無くした。Edge の起動・監視・終了・
   一時プロファイルの後始末までを一括で行う（毎回まっさらな一時プロファイルで起動）。
+- **撮影のたびに索引 CSV（`index.csv`）へ 1 行追記する**。列は 時刻 / URL / タイトル /
+  ファイル名接頭辞 / 撮影契機（手動・URL変化・SPA） / セレクタ / 成否。時刻は ISO 8601（オフセット付き）、
+  Excel で開く前提なので **BOM 付き（`utf-8-sig`）で新規作成し、追記は `utf-8`**（BOM の二重付与を避ける）。
+  全系譜ぶんを 1 本にまとめる粒度は `log.txt` と同じ。
 - **タブ系譜（グループ）ごとの独立制御**: 記録ON/OFF・SPA検知・セレクタは、セッション全体で
   共有せず「タブ系譜」ごとに独立して持つ。系譜とは、起動時の最初のタブ（または手動で開いた別タブ）と、
   そこから `window.open` / `target="_blank"` で派生したポップアップ/ウィンドウの一族で、
   `page.opener()` の連鎖で判定する。系譜内のページは操作バーの状態を共有し、別系譜には影響しない。
   手動で開いた別タブ（`Ctrl+T` 等、opener が無いページ）は**初期OFF**の独立グループになり、
   そのタブの操作バーで ON にするまで撮影されない（起動時の最初のグループだけ `start_recording` に従う）。
-- **保存先も系譜ごとに分ける**: 撮影物（`png`/`txt`/`_part.txt`）とダウンロード退避は、
-  系譜ごとの `output_dir/lineage-<id>/`（ダウンロードは `output_dir/lineage-<id>/downloads/`）へ保存する。
-  `<id>` はその系譜を作った時刻（ミリ秒まで・区切りなし。例 `20260814101105674`）で、ログの `lineage-<id>`
+- **保存先は「起動ごと」→「系譜ごと」の 2 段**: `output_dir` の直下に起動 1 回分の
+  **セッションフォルダ**（`YYYY-MM-DD_HHMMSS`。`config.session_stamp()`）を 1 段挟み、
+  その中を系譜ごとの `lineage-<id>/`（ダウンロードは `lineage-<id>/downloads/`）に分ける。
+  **`log.txt` と `index.csv` もセッションフォルダ直下**に置かれる（`output_dir` 直下ではない）。
+
+  ```
+  output/2026-08-16_143025/          # 起動 1 回分。受け渡しはこのフォルダを丸ごと渡せば済む
+  ├─ log.txt / index.csv
+  └─ lineage-20260814101105674/      # タブ系譜ごと
+     ├─ *.png / *.txt / *_part.txt
+     └─ downloads/
+  ```
+
+  `<id>` はその系譜を作った時刻（ミリ秒まで・区切りなし）で、ログの `lineage-<id>`
   表記＝保存フォルダ名と一致するため、ログから保存先をそのまま辿れる。フォルダは保存時に必要に応じて作成する。
+  セッション粒度は秒までで、同一秒に二重起動するとまれにフォルダを共有するが、`mkdir` の `exist_ok` と
+  同じ許容範囲として扱っている。
 - **SPA検知**: 中身変化の検出はページ側（`badge.js`）がイベント駆動で行う。`MutationObserver` で
   DOM 変化を捉え、`settle_delay` ぶん変化が止まって「落ち着いた」ら対象の innerText を短いハッシュ
   （コンテンツ署名）にし、前回保存時と署名が異なるときだけ Python へ通知して保存する（重複除外＋
@@ -38,6 +55,13 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
   にも写り込まない。保存が終わるとバーを一瞬フラッシュして「保存した」ことを知らせる。
 - バー右端の**「透過」トグル**（枠なしの目アイコン）で、バーを一時的に半透明にして下に隠れた
   ページ内容を確認できる（見た目だけのローカル状態で、記録状態や保存物には影響しない）。
+- バーはこのほかに次を持つ。文言は `badge.py` の `_BADGE_CONFIG` に集約してある。
+  - **撮影カウンタ**（`本セッション N 枚`）… 保存できた枚数だけを数える（全滅した回は数えない）。
+    動作している実感と、意図しない連写の早期発見のために常時表示する。保存に失敗した回は
+    フラッシュを失敗色にして成功と区別する。
+  - **「保存先」ボタン** … セッションフォルダを OS のファイルマネージャで開く。
+    撮り終わったフォルダをそのまま渡せる導線。
+  - **セレクタ履歴** … 確定したセレクタを `datalist` の候補として入力欄に出す（最近使った順・上限あり）。
 
 ## 動作条件
 
@@ -48,7 +72,7 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
 ## リポジトリ構成
 
 役割ごとに分割している。依存方向は下向きの一方向で循環なし:
-`edge_auto_capture →（capture / config）→ infra`、`capture → badge`、`config → infra`。
+`edge_auto_capture →（capture / config / badge）→ infra`、`capture → badge`、`config → infra`。
 `infra` は Playwright 非依存で、`config`（設定読み込み）も同様なので実 Edge 無しでテストできる。
 ページ側 JS は実ファイル `badge.js` に置き、エディタ/リンタで構文検査できるようにしてある。
 
@@ -63,13 +87,16 @@ edge-auto-capture/
 ├─ tests/
 │  ├─ smoke_badge.py         操作バーJS＋SPA検知監視のスモークテスト（Edge headless）
 │  ├─ test_capture.py        純粋関数（capture）・設定読み込み（config）のユニットテスト（pytest）
+│  ├─ test_downloads.py      ダウンロード退避の回帰テスト（pytest）
 │  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
 │  └─ conftest.py            pytest 共通設定
+├─ .github/workflows/ci.yml  CI（ruff+mypy / pytest / smoke --strict）
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
 ├─ README.md              このファイル（開発者向け）
 ├─ USAGE.txt              配布物(exe)に同梱する利用者向けの使い方（Shift-JIS）
-└─ build.ps1             配布用 exe のビルド（PyInstaller）
+├─ LICENSE                MIT License
+└─ build.ps1              配布用 exe のビルド（PyInstaller）
 ```
 
 生成物（`build/` `dist/` `output/` `__pycache__/` `*.spec`）は Git 管理外。
@@ -93,8 +120,9 @@ python edge_auto_capture.py
 | `edge_path` | Edge 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `chrome_path` | Chrome 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `output_dir` | 保存先。相対なら本体/exe と同じ場所基準、絶対パスも可 |
-| `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数 |
+| `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数。SPA 検知経由の撮影ではページ側で既に待っているため、撮影前の sleep は省く（二重待ち回避） |
 | `load_timeout` | ページ読み込み待ちの上限（ミリ秒） |
+| `eval_timeout` | ページ側 JS（本文取得・撮影の合図）の実行を待つ上限（ミリ秒）。重い処理で固まったページを打ち切って次へ進むための保険 |
 | `skip_urls` | 撮らない URL（カンマ区切り）。前方一致で判定（クエリ付きでも効く）。`* ? [` を含めるとワイルドカード（fnmatch）扱い |
 | `allow_urls` | 撮る URL をこれだけに絞る（カンマ区切り・空なら無効）。指定すると合致しない URL は全スキップ。`skip_urls` も併用可（合致しても `skip_urls` に当たれば撮らない）。判定は `skip_urls` と同じ前方一致/ワイルドカード |
 | `target_selector` | 一部抜き出し／SPA検知の対象 CSS セレクタの初期値（バーで実行時に変更可・空可） |
@@ -122,30 +150,32 @@ python edge_auto_capture.py
 
 実 Edge を使わずに、間違えやすいロジックと「微妙な仕様」を回帰から守る。
 
-- `test_capture.py` … 純粋関数（`safe_name` / `page_label`）と設定読み込み（`load_config`）。
-  切り詰め・フォールバック・既定値・空値や範囲外値の扱いを検証。
+- `test_capture.py` … 純粋関数（`safe_name` / `page_label`）、設定読み込み（`load_config`）、
+  撮影キューの合流、URL 判定（`should_capture`）、系譜解決、索引 CSV など。
+- `test_downloads.py` … ダウンロード退避の回帰。
 - `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合
   （SPA変化通知 `__eac_spa_changed` の記録状態ゲートを含む）。
 
 SPA検知の落ち着き判定はページ側（`badge.js`）へ移したため、その回帰確認はスモークテストが担う。
 
+**2. スモークテスト（実 Edge/Chrome・遅い）**
+
+操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）と
+SPA検知の監視（本文を変えると `__eac_spa_changed` が発火する一連）が例外なく動くかを確認する。
+
 ```bash
 pip install -e ".[dev]"
 pytest
+python tests/smoke_badge.py --strict
+ruff check .
+mypy .
 ```
 
-**2. スモークテスト（実 Edge headless・遅い）**
+> **`--strict` を必ず付けること。** 付けないと、ブラウザが無い環境では `SKIP`（終了コード 0）で
+> 抜けてしまい「何も検証していないのに緑」になる。`--strict` はこれを FAIL 化する。
 
-操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）と
-SPA検知の監視（本文を変えると `__eac_spa_changed` が発火する一連）が例外なく動くかを、
-システムの Edge を headless で使って確認する。
-
-```bash
-python tests/smoke_badge.py
-```
-
-`PASS`（終了コード 0）で正常。以前混入した JS 構文エラー（`render` 引数と `st` の
-二重宣言）のような不具合を、実行前に自動検出することを狙ったもの。
+CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）でも同じ 4 点が回る。`ruff` + `mypy` と
+`pytest` は Linux、**smoke は実 Edge が要るので Windows runner** で `--strict` 付き。
 
 ## 配布用 exe のビルド
 
