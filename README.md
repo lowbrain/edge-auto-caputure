@@ -97,6 +97,7 @@ edge-auto-capture/
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
 ├─ README.md              このファイル（開発者向け）
+├─ CONTRIBUTING.md        触る人向けの落とし穴・作業環境・検証手順
 ├─ USAGE.txt              配布物(exe)に同梱する利用者向けの使い方（Shift-JIS）
 ├─ LICENSE                MIT License
 └─ build.ps1              配布用 exe のビルド（PyInstaller）
