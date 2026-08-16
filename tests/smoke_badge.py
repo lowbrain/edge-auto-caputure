@@ -22,6 +22,13 @@ import sys
 import time
 from pathlib import Path
 
+# 進捗ログに日本語/全角を含むため、標準出力を UTF-8 へ固定する。英語ロケール Windows
+# （端末既定 cp1252 など）では print 時点で UnicodeEncodeError になるのを防ぐ（Issue #3）。
+# reconfigure は Python 3.7+。差し替え済みで持たない場合もあるため hasattr で守る。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
 # プロジェクト直下（このファイルの親の親）を import パスに入れて badge を読む。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
