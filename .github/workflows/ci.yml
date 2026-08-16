@@ -67,10 +67,9 @@ jobs:
     name: smoke --strict (Windows / real Edge)
     runs-on: windows-latest
     # Windows ランナーの既定コンソールは en-US（cp1252）で、smoke が出す日本語/全角の
-    # 進捗ログを print すると UnicodeEncodeError になる（作者の日本語 Windows=cp932 では
-    # 再現しない）。UTF-8 モードを強制して、検証本体でなく出力で落ちるのを防ぐ。
-    env:
-      PYTHONUTF8: "1"
+    # 進捗ログを print すると UnicodeEncodeError になっていた（作者の日本語 Windows=cp932
+    # では再現しない）。対処は tests/smoke_badge.py 側で stdout/stderr を UTF-8 に固定済み
+    # （Issue #3）。CI 側の PYTHONUTF8=1 は不要になったので撤去し、対処をスクリプトへ一本化。
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
