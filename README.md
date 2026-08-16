@@ -7,6 +7,7 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
 > **利用者向けの使い方**（操作バーの操作、SPA検知の使い方、CSSセレクタの入れ方・調べ方、
 > トラブル対処など）は **[USAGE.txt](USAGE.txt)** に一本化している。
 > この README は**開発・ビルド向け**の情報（仕組み・構成・設定リファレンス・テスト・配布）をまとめる。
+> **このコードを触るときの落とし穴・作業環境・検証手順**は [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 仕組み（概要）
 
@@ -176,6 +177,9 @@ mypy .
 
 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）でも同じ 4 点が回る。`ruff` + `mypy` と
 `pytest` は Linux、**smoke は実 Edge が要るので Windows runner** で `--strict` 付き。
+
+**変更時に踏みやすい落とし穴（`$CONFIG` 置換・バインディング名の二重管理・Shift-JIS・
+新モジュール追加時の同時更新など）は [CONTRIBUTING.md](CONTRIBUTING.md) にまとめてある。**
 
 ## 配布用 exe のビルド
 
