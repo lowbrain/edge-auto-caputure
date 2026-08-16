@@ -27,7 +27,7 @@ from capture import (
     safe_name,
     trigger_label,
 )
-from config import Config, load_config
+from config import Config, load_config, should_capture
 
 
 @pytest.fixture(autouse=True)
@@ -178,6 +178,67 @@ def test_config_defaults():
     assert c.eval_timeout == 5000
     assert c.start_recording is False
     assert "" in c.skip_urls  # 空URLは常にスキップ対象
+    assert c.allow_urls == ()  # 既定は無効（撮る URL を絞らない。F-C2）
+
+
+# --------------------------------------------------------------------------- #
+# should_capture（skip_urls / allow_urls / 前方一致・fnmatch。R3/F-C2/B-5）
+# --------------------------------------------------------------------------- #
+
+
+def test_should_capture_default_skips_blank_and_empty():
+    # 既定（skip_urls=("about:blank","")）。about:blank と空URLは撮らない。
+    c = Config()
+    assert should_capture("https://example.com/", c) is True
+    assert should_capture("about:blank", c) is False
+    assert should_capture("", c) is False
+
+
+def test_should_capture_empty_pattern_only_matches_empty_url():
+    # skip_urls の "" 番兵は「空URL専用」。前方一致で全URLに化けてはいけない。
+    c = Config(skip_urls=("",))
+    assert should_capture("", c) is False
+    assert should_capture("https://example.com/", c) is True
+
+
+def test_should_capture_skip_is_prefix_match_so_query_still_skipped():
+    # 完全一致だとクエリ付きで漏れていた（B-5）。前方一致でクエリ付きも弾く。
+    c = Config(skip_urls=("https://skip.me", ""))
+    assert should_capture("https://skip.me", c) is False
+    assert should_capture("https://skip.me?ref=1", c) is False
+    assert should_capture("https://skip.me/logout", c) is False
+    assert should_capture("https://keep.me/", c) is True
+
+
+def test_should_capture_skip_supports_wildcards():
+    # * ? [ を含むパターンは fnmatch 扱い（前方一致では書けない末尾一致など）。
+    c = Config(skip_urls=("*://*/logout", ""))
+    assert should_capture("https://a.example.com/logout", c) is False
+    assert should_capture("http://b.test/logout", c) is False
+    assert should_capture("https://a.example.com/home", c) is True
+
+
+def test_should_capture_allow_urls_whitelist_skips_others():
+    # allow_urls 指定時は、合致しない URL をすべてスキップ（F-C2）。
+    c = Config(allow_urls=("https://example.com/",), skip_urls=("",))
+    assert should_capture("https://example.com/page", c) is True
+    assert should_capture("https://other.com/", c) is False
+
+
+def test_should_capture_allow_urls_supports_wildcards():
+    c = Config(allow_urls=("https://*.example.com/*",), skip_urls=("",))
+    assert should_capture("https://docs.example.com/a", c) is True
+    assert should_capture("https://example.org/a", c) is False
+
+
+def test_should_capture_skip_urls_still_apply_within_allow():
+    # allow を通っても skip に当たれば撮らない（ブラックリストが優先）。
+    c = Config(
+        allow_urls=("https://example.com",),
+        skip_urls=("https://example.com/logout", ""),
+    )
+    assert should_capture("https://example.com/page", c) is True
+    assert should_capture("https://example.com/logout", c) is False
 
 
 # --------------------------------------------------------------------------- #
@@ -205,6 +266,7 @@ settle_delay = 0.4
 load_timeout = 3000
 eval_timeout = 4000
 skip_urls = about:blank, https://skip.me
+allow_urls = https://example.com/, https://*.example.com/*
 target_selector = .price
 hide_selectors = #cookie-banner, .sticky-header
 start_recording = true
@@ -218,6 +280,8 @@ start_recording = true
     assert c.eval_timeout == 4000
     # 指定した skip_urls ＋ 常に付く空URL。
     assert c.skip_urls == ("about:blank", "https://skip.me", "")
+    # allow_urls は指定値のみ（空URL番兵は付けない。F-C2）。
+    assert c.allow_urls == ("https://example.com/", "https://*.example.com/*")
     assert c.target_selector == ".price"
     # カンマ区切りをタプル化（空要素は落とす。F-B2）。
     assert c.hide_selectors == ("#cookie-banner", ".sticky-header")
@@ -512,6 +576,7 @@ def test_summarize_config_reports_key_values():
         output_dir=Path("/tmp/out"),
         target_selector=".price",
         hide_selectors=("#cookie-banner", ".sticky-header"),
+        allow_urls=("https://example.com/",),
     )
     line = summarize_config(c)
     assert line.startswith("[config] ")
@@ -519,6 +584,7 @@ def test_summarize_config_reports_key_values():
     assert "output_dir=/tmp/out" in line or "output_dir=\\tmp\\out" in line
     assert "target_selector=.price" in line
     assert "hide_selectors=#cookie-banner,.sticky-header" in line
+    assert "allow_urls=https://example.com/" in line
 
 
 def test_summarize_config_marks_empty_values_readably():
@@ -530,6 +596,7 @@ def test_summarize_config_marks_empty_values_readably():
     assert "profile_dir=使い捨て" in line
     assert "target_selector=(無)" in line
     assert "hide_selectors=(無)" in line
+    assert "allow_urls=(無)" in line
 
 
 # --------------------------------------------------------------------------- #

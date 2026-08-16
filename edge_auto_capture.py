@@ -64,7 +64,7 @@ from capture import (
     group_subdir,
     try_eval,
 )
-from config import Config, load_config, summarize_config
+from config import Config, load_config, should_capture, summarize_config
 from infra import (
     __version__,
     acquire_single_instance_lock,
@@ -336,10 +336,11 @@ class CaptureSession:
         return [pg for pg in self.context.pages if self.page_root.get(pg) is root]
 
     def _shoot(self, pg, grp: "GroupState", trigger: str) -> Optional[str]:
-        """1ページを撮る。url 取得失敗と skip_urls を弾き、撮れば url を返す（弾けば None）。
+        """1ページを撮る。url 取得失敗と撮影対象外 URL を弾き、撮れば url を返す（弾けば None）。
 
-        「url 取得 → skip 判定 → runner.spawn」の定型を1か所に集約する（各コールバックと監視
-        ループで同じ並びを書かないため）。記録状態のゲートは呼び出し側の責務（ここでは見ない）。
+        「url 取得 → 撮影可否判定 → runner.spawn」の定型を1か所に集約する（各コールバックと監視
+        ループで同じ並びを書かないため。R3b）。撮影可否は should_capture に一元化（skip_urls /
+        allow_urls / 前方一致・fnmatch。R3/F-C2/B-5）。記録状態のゲートは呼び出し側の責務（ここでは見ない）。
         撮影対象の抜き出しセレクタは、そのページが属するグループの selector を使う。
         trigger は撮影契機（"manual"/"url"/"spa"）で、CaptureRequest に載せて索引 CSV まで通す（F-A1）。
         """
@@ -347,7 +348,7 @@ class CaptureSession:
             url = pg.url
         except Exception:
             return None
-        if url in self.config.skip_urls:
+        if not should_capture(url, self.config):
             return None
         self.runner.spawn(CaptureRequest(pg, url, self.config, grp.selector, grp.id, trigger))
         return url
@@ -585,7 +586,7 @@ class CaptureSession:
 
         フラグメント（#...）だけの変化（scroll-spy）は撮り直さない。記録OFFのグループでは
         seen を更新しないので、ON にした瞬間に現在ページが「変化」として検知され撮れる
-        （on_toggle でも即撮りするため通常は先回り）。skip_urls と url 取得失敗を弾く。
+        （on_toggle でも即撮りするため通常は先回り）。撮影対象外 URL と url 取得失敗は _shoot が弾く。
         """
         grp = await self._resolve_group(page)
         if not grp.on:
@@ -594,14 +595,11 @@ class CaptureSession:
             url = page.url
         except Exception:
             return
-        if url in self.config.skip_urls:
-            return
+        # 変化ゲート（seen 比較）は当所の責務。skip 判定と spawn は _shoot に委譲する（R3b）。
+        # 撮れなかった（撮影対象外）ときは seen を更新せず、次に撮れる URL まで撮り直しを待つ。
         key = _url_key(url)
-        if self.seen.get(page) != key:
+        if self.seen.get(page) != key and self._shoot(page, grp, "url") is not None:
             self.seen[page] = key
-            self.runner.spawn(
-                CaptureRequest(page, url, self.config, grp.selector, grp.id, "url")
-            )
 
     def _on_page_closed(self, page) -> None:
         """閉じられたページを管理から除去する（毎tickの _prune を置き換え）。

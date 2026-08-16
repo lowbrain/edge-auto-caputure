@@ -5,6 +5,7 @@ Playwright には依存しないので、実 Edge 無しで設定読み込みの
 """
 
 import configparser
+import fnmatch
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,15 @@ load_timeout = 5000
 eval_timeout = 5000
 
 # 撮らないURL（カンマ区切り。空URLは常に自動スキップ）
+# 前方一致で判定するのでクエリ付き（?...）でも効く。* ? [ を含めると
+# ワイルドカード（fnmatch）扱い。例: about:blank, https://ads.example.com, *://*/logout
 skip_urls = about:blank
+
+# 撮るURLをこれだけに絞る（カンマ区切り。空なら無効）。指定すると、ここに
+# 合致しない URL はすべてスキップする（ホワイトリスト）。skip_urls も併用でき、
+# 合致しても skip_urls に当たるものは撮らない。判定は skip_urls と同じ前方一致/ワイルドカード。
+# 例: https://example.com/, https://*.example.com/*
+allow_urls =
 
 # 一部抜き出しの CSS セレクタ（空なら一部抜きはスキップ）
 # 例: h1  /  article  /  .price  /  #main .title
@@ -117,11 +126,42 @@ class Config:
     settle_delay: float = 0.8               # 変化検知後、描画が落ち着くまで待つ秒数
     load_timeout: int = 5000                # ページ読み込み待ちの上限（ミリ秒）
     eval_timeout: int = 5000                # ページ側 JS 実行（本文取得・撮影合図）の上限（ミリ秒。E-6）
-    skip_urls: tuple[str, ...] = ("about:blank", "")   # 撮らないURL
+    skip_urls: tuple[str, ...] = ("about:blank", "")   # 撮らないURL（前方一致/fnmatch。B-5）
+    allow_urls: tuple[str, ...] = ()        # 指定時はこれに合致する URL だけ撮る（他は全スキップ。F-C2）
     target_selector: str = ""               # 一部抜き出しの CSS セレクタ（空ならスキップ）
     hide_selectors: tuple[str, ...] = ()    # 撮影中だけ隠す CSS セレクタ（空なら何も隠さない。F-B2）
     start_recording: bool = False           # 起動直後に記録を開始するか（False=待機状態で起動）
     profile_dir: str = ""                    # 再利用するブラウザプロファイルの場所（空なら毎回使い捨て）
+
+
+def _url_matches(url: str, pattern: str) -> bool:
+    """URL が 1 つのパターンに合致するか（B-5）。
+
+    ワイルドカード（`*` `?` `[`）を含むパターンは fnmatch で判定し、
+    含まないパターンは前方一致で判定する（`https://skip.me` が
+    `https://skip.me?ref=1` のようなクエリ付き URL にも効くように）。
+    空パターン("")だけは特例で「空URL専用」にする（前方一致だと全URLに化けるため厳密一致に限定）。
+    """
+    if pattern == "":
+        return url == ""
+    if any(c in pattern for c in "*?["):
+        return fnmatch.fnmatch(url, pattern)
+    return url == pattern or url.startswith(pattern)
+
+
+def should_capture(url: str, config: Config) -> bool:
+    """この URL を撮るべきか（skip_urls / allow_urls の判定を 1 か所に集約。R3）。
+
+    - allow_urls が指定されていれば、それに合致しない URL はすべてスキップ（ホワイトリスト。F-C2）。
+    - 次に skip_urls に合致すれば（allow を通っていても）スキップ（ブラックリスト）。
+    どちらのマッチも前方一致 or fnmatch（B-5）。url 取得に失敗した側（None）は
+    呼び出し側で弾く前提で、ここは確定した文字列 url を受ける。
+    """
+    if config.allow_urls and not any(_url_matches(url, p) for p in config.allow_urls):
+        return False
+    if any(_url_matches(url, p) for p in config.skip_urls):
+        return False
+    return True
 
 
 def summarize_config(config: Config) -> str:
@@ -136,6 +176,7 @@ def summarize_config(config: Config) -> str:
     selector = config.target_selector or "(無)"
     hides = ",".join(config.hide_selectors) or "(無)"
     skips = ",".join(u for u in config.skip_urls if u) or "(無)"
+    allows = ",".join(config.allow_urls) or "(無)"
     return (
         "[config] "
         f"browser={browser} "
@@ -150,6 +191,7 @@ def summarize_config(config: Config) -> str:
         f"target_selector={selector} "
         f"hide_selectors={hides} "
         f"skip_urls={skips} "
+        f"allow_urls={allows} "
         f"profile_dir={config.profile_dir or '使い捨て'}"
     )
 
@@ -223,6 +265,10 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
     urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
 
+    # 撮る URL を明示的に絞るホワイトリスト（指定時は他を全スキップ。F-C2）。
+    # 空なら無効（従来どおり skip_urls だけで判定）。空要素は落とす。
+    allows = [u.strip() for u in sec.get("allow_urls", "").split(",") if u.strip()]
+
     # 撮影中だけ隠すセレクタ。カンマ区切りをタプル化（空要素は落とす。F-B2）。
     hides = [s.strip() for s in sec.get("hide_selectors", "").split(",") if s.strip()]
 
@@ -248,6 +294,7 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
         load_timeout=load_timeout,
         eval_timeout=eval_timeout,
         skip_urls=tuple(urls) + ("",),
+        allow_urls=tuple(allows),
         target_selector=sec.get("target_selector", "").strip(),
         hide_selectors=tuple(hides),
         start_recording=sec.getboolean("start_recording", defaults.start_recording),

@@ -95,7 +95,8 @@ python edge_auto_capture.py
 | `output_dir` | 保存先。相対なら本体/exe と同じ場所基準、絶対パスも可 |
 | `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数 |
 | `load_timeout` | ページ読み込み待ちの上限（ミリ秒） |
-| `skip_urls` | 撮らない URL（カンマ区切り） |
+| `skip_urls` | 撮らない URL（カンマ区切り）。前方一致で判定（クエリ付きでも効く）。`* ? [` を含めるとワイルドカード（fnmatch）扱い |
+| `allow_urls` | 撮る URL をこれだけに絞る（カンマ区切り・空なら無効）。指定すると合致しない URL は全スキップ。`skip_urls` も併用可（合致しても `skip_urls` に当たれば撮らない）。判定は `skip_urls` と同じ前方一致/ワイルドカード |
 | `target_selector` | 一部抜き出し／SPA検知の対象 CSS セレクタの初期値（バーで実行時に変更可・空可） |
 | `hide_selectors` | 撮影中だけ隠す要素の CSS セレクタ（カンマ区切り・空可）。同意バナーや追従ヘッダが証跡に被るのを防ぐ。撮影の瞬間だけ `visibility:hidden` にして撮影後に戻す |
 | `start_recording` | 起動直後に記録を開始するか（`false`=待機で起動、`true`=起動時から記録ON） |
