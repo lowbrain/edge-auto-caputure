@@ -1,6 +1,6 @@
 # 残タスク一覧（優先順・実装メモつき）
 
-対象コミット: `e07bb34` 時点 / **最終整理: 2026-08-14**
+対象コミット: `a9e72d2` 時点（main）/ **最終整理: 2026-08-16**
 
 > **このファイルの位置づけ**（2026-08-14 に docs を統合）
 > かつては `IMPROVEMENTS.md`（不具合・設計）/ `FEATURES.md`（機能）/ `DISTRIBUTION.md`（配布）に
@@ -36,12 +36,12 @@
 
 | 項目 | 内容 | コスト | 状態 |
 |------|------|--------|------|
-| **CI 本体** | GitHub Actions で `pytest`+`ruff check`+`mypy` を回す。smoke は Edge/Chrome 必須なので Windows runner 限定 or 手動トリガで **`--strict` 付き**。部品（`ruff`・`mypy`・`--strict`）は導入済みで、残るは Actions の定義だけ | 小 | 未 |
+| **CI 本体** | GitHub Actions で `pytest`+`ruff check`+`mypy` を回す。smoke は Edge/Chrome 必須なので Windows runner 限定 or 手動トリガで **`--strict` 付き**。`.github/workflows/ci.yml` として投入済み | 小 | ✅済（#1） |
 | log ローテート | `log.txt` の保持ポリシー | 小 | **見送り** |
 | exe バージョン埋め込み | PyInstaller `--version-file`。Windows 固有・任意。詳細は [`DISTRIBUTION.md`](DISTRIBUTION.md) | 小 | ✅済（2026-08-15） |
 
-> **CI 本体が唯一の「本流の残タスク」。** `--strict` が無いとブラウザ不在の環境で
-> 「何も検証していないのに緑」になるため、CI に載せる際は必須。
+> **CI は投入済み（#1）。** `--strict` が無いとブラウザ不在の環境で
+> 「何も検証していないのに緑」になるため、smoke は `--strict` 付きで回す（`ci.yml` 反映済み）。
 >
 > **log ローテートは費用対効果が合わず見送り（未対応として残すが着手不要）。**
 > `log.txt` は 1 撮影あたり約 1 行（≈60 バイト）で成長は小さく、同じ撮影で保存される
@@ -62,18 +62,27 @@
 > **大** = 新規モジュール相当（サニタイズ器・オーバーレイ生成など）。数日＋要検証。
 > 「小〜中」等は、決めごと（複数一致の扱い・命名規約）が残るぶん上振れし得ることを示す。
 
-| 順 | 項目 | コスト | 実装メモ |
-|----|------|--------|----------|
-| 1 | `F-A1` 索引 + `F-A4` 時刻 | 中 | **機能の中で突出して価値が高い。** 撮影ごとに `index.csv` へ 1 行追記（時刻／URL／タイトル／ファイル名接頭辞／**撮影契機**（手動・URL変化・SPA変化）／セレクタ／成否）。**契機は `spawn`→`_pending` タプル→`_worker`→`_capture` と、投入元 3 経路（`on_shot`／`on_spa_changed`／`_shoot_if_changed`）へ引数を通す必要があり「引数 1 個」では閉じない（`_shoot` にも契機を足す）。** `_capture` は既に `done`（成否）を持つので CSV 出力自体は素直。**地雷 2 つ**: CSV は `encoding="utf-8-sig"` で**書く**（BOM 無しだと Excel で文字化け）／時刻は ISO 8601 のオフセット付き `2026-08-11T14:30:25.123+09:00`（ファイル名は現状維持で可、索引と `infra.log` の時刻をオフセット付きに）。後から遡って直せない情報なので F-A1 と F-A4 は同時に |
-| 2 | `F-B2` バナー除去 | 小 | 同意バナー・追従ヘッダが証跡に被る。操作バーの退避機構（`badge.js` の `captureStart`）に `hide_selectors` を通し、撮影中だけ `visibility:hidden` にして戻す。設定 1 項目（`config.py` の 4 箇所）＋ JS 数行 |
-| 3 | `F-D3` カウンタ・失敗表示 | 小〜中 | バーに「本セッション N 枚」を出す（動作実感＋暴走の早期発見）。保存失敗時に成功と同じ赤フラッシュを出すのは誤解を招くので色を変える。**現状 `captureEnd` は成否を受け取らないので、`_capture` の `done` 有無を JS へ通知する経路（`captureEnd` へ引数追加か新バインディング）が要る。** `A-3` の成否判定と対の UX 側 |
-| 4 | `F-A2` `_part.png` | 小 | セレクタ指定時も画像はフルページのみ（`_part.txt` はあるのに非対称）。`_capture` に `page.locator(sel).screenshot()` の `_step` を 1 本足すだけ。複数一致の扱い（先頭のみ/連番）は要決定 |
-| 5 | `F-B1` プリロードスクロール | 小 | `full_page=True` は lazy-load 画像が空のまま写ることが多い。撮影前に一度末尾までスクロールして戻す。`preload_scroll` でオプトイン。`_capture` の撮影前 `settle_delay` sleep の直後が差し込み位置 |
-| 6 | `F-D4` フォルダを開く / `F-D2` セレクタ履歴 | 小 | 前者は `os.startfile` で `output/` を開くボタン（1 行＋バインディング）。後者は入力欄に `<datalist>` で過去値。どちらも安い |
-| 7 | `F-C2` `allow_urls` + `B-5` パターン化 | 小〜中 | 許可リスト（指定時はそれ以外を全スキップ）。現状 `skip_urls` は除外リストのみで「この業務システムだけ撮る」に応えられない。`B-5`（`skip_urls`/`allow_urls` を前方一致か `fnmatch` に。今は `_shoot`／`_shoot_if_changed` の `url in self.config.skip_urls` の完全一致で、クエリが付くと効かない）とセットで。判定関数を 1 つ切り出して両所から呼ぶ |
-| 8 | `F-C3` セッションフォルダ | 小〜中 | `output/2026-08-11_143025/` のように起動単位で切ると受け渡しが「このフォルダを渡す」で済む。`config.output_dir` 確定後に起動時刻のサブ階層を 1 段挟むだけだが、既存の `lineage-<id>`／`downloads`／`log.txt`（`set_log_dir`）の相対関係を崩さないか確認が要る |
-| 9 | `F-A3` 無害化済み HTML | 大 | PNG は検索不可・`.txt` は構造が消える。第 3 の保存物。**方式は確定**: 実ページに触れず DOM クローンを無害化して直列化（`<script>`/`on*`/`href`/`form action`/`iframe`/`meta refresh`/`autoplay`/`preload` を除去、`a[href]`→`data-href`）＋ `<head>` に meta CSP（`default-src 'none'; img-src data:; …`）の二段構え。**MHTML は却下**（live DOM を直列化するため実ページ破壊が要る／後処理検証が困難／ビューア依存）。`page.pdf()` も headless 専用で不可。v1 は外部参照を全部剥がし外部通信ゼロを保証（見た目は PNG が担う）。**`file://` での meta CSP 挙動は実装前に手元確認**（実機確認済＝ROADMAP 末尾参照）。受入: `grep -ci '<script\|onclick\|href="http' saved.html` が 0／ネット切断で開いても同じ／Network にリクエスト 0。サニタイズ器（新規モジュール相当）＋受入検証があるため大 |
-| 10 | `F-D1` セレクタピッカー | 中〜大 | ホバー→要素ハイライト→クリックでセレクタ自動生成をバーに追加。敷居が一段下がるがオーバーレイ＋生成ロジックで中〜大 |
+### 実装済み（記録・実装内容は git 履歴／対応 Issue 参照）
+
+フェーズ 2〜5 で消化。地雷や設計判断はコード内コメントと各 Issue/コミットに残っている。
+
+| 項目 | 対応 |
+|------|------|
+| `F-A1` 索引CSV + `F-A4` 時刻（ISO 8601・`utf-8-sig`） | #13 |
+| `F-D3` 撮影カウンタ・失敗表示 | #14 |
+| `F-A2` `_part.png` | #15 |
+| `F-B1` プリロードスクロール | #16 |
+| `F-B2` バナー除去（`hide_selectors`） | #17 |
+| `F-D4` フォルダを開く / `F-D2` セレクタ履歴 | #10 |
+| `F-C2` `allow_urls` + `B-5` パターン化（`should_capture` 集約） | #8 |
+| `F-C3` セッションフォルダ | #9 |
+
+### 残り（フェーズ6・大物 2 件）
+
+| 項目 | コスト | 状態 | 実装メモ |
+|------|--------|------|----------|
+| `F-A3` 無害化済み HTML | 大 | 未（#27） | PNG は検索不可・`.txt` は構造が消える。第 3 の保存物。**方式は確定**: 実ページに触れず DOM クローンを無害化して直列化（`<script>`/`on*`/`href`/`form action`/`iframe`/`meta refresh`/`autoplay`/`preload` を除去、`a[href]`→`data-href`）＋ `<head>` に meta CSP（`default-src 'none'; img-src data:; …`）の二段構え。**MHTML は却下**（live DOM を直列化するため実ページ破壊が要る／後処理検証が困難／ビューア依存）。`page.pdf()` も headless 専用で不可。v1 は外部参照を全部剥がし外部通信ゼロを保証（見た目は PNG が担う）。**`file://` での meta CSP 挙動は実装前に手元確認**（実機確認済＝ROADMAP 末尾参照）。受入: `grep -ci '<script\|onclick\|href="http' saved.html` が 0／ネット切断で開いても同じ／外部への `response` 0 件。サニタイズ器（新規モジュール相当）＋受入検証があるため大 |
+| `F-D1` セレクタピッカー | 中〜大 | 未（#28） | ホバー→要素ハイライト→クリックでセレクタ自動生成をバーに追加。敷居が一段下がるがオーバーレイ＋生成ロジックで中〜大 |
 
 ---
 
@@ -85,8 +94,8 @@
 | 項目 | 内容 | コスト | 実装メモ / なぜ後回しでよいか |
 |------|------|--------|-------------------------------|
 | `B-4` | `settle_delay` の二重待ち | 小 | 撮影前 sleep（`capture.py`）と `SPA_SETTLE_MS` デバウンス（`badge.js`）を兼務し、SPA 経由だと二重に待つ。`settle_delay`（撮影前）と `spa_settle`（デバウンス）に分けるか SPA 経由は sleep 省略。体感の無駄のみで壊れてはいない |
-| `E-1` | a11y・フォーカス順序 | 小 | バーのボタン/入力欄が Tab 移動先に入る（末尾なので影響小）。`role="switch"` はあるが `aria-checked` が無く状態が支援技術に伝わらない、透過ボタンに `aria-label` 無し。`badge.js` の `apply` で `aria-checked` を tr（既存のクラス切替と同所）＋静的 `aria-label` を足すだけ。支援技術の利用者がいる配布先でのみ顕在化 |
-| `E-2` | `history` フックが永続的 | 小 | `pushState`/`replaceState` を差し替えたまま元に戻さない。多くのサイトで無害だが、ラップ順序に依存する/モンキーパッチを検知するフレームワークではリスク。原参照を保持して復元するか、ラップを 1 回だけにするガードを入れる（`badge.js` の `hookHistory` 局所） |
+| ~~`E-1`~~ | ~~a11y・フォーカス順序~~ | ✅済 | **✅済（#29）**。`role="switch"` に `aria-checked`、透過ボタンに静的 `aria-label` を付与（`badge.js` の `apply`）。実装内容は git 履歴参照 |
+| ~~`E-2`~~ | ~~`history` フックが永続的~~ | ✅済 | **✅済（#29）**。原参照を保持して復元／多重ラップ防止ガードを追加（`badge.js` の `hookHistory`）。実装内容は git 履歴参照 |
 | `E-3` | ツールの存在がサイトから検知可能 | 中 | `window.__eacApplyState` 等がグローバル露出し `'__eacApplyState' in window` で検知できる。`A-4`（closed 化・対応済＝「操作される」問題）とは別軸。**`__eacApplyState`／`captureStart`／`bodyText`／`signature` は Python が `page.evaluate` で名前参照して呼ぶ設計（`badge.py` の `*_CALL`／`refresh_panels`）なので、グローバルを外すには呼び出し側を「関数本体を直接渡す」形へ組み替える必要があり、単純な削除では済まない** |
 | `E-5` | 非 HTML で挙動未定義 | 小 | PDF（Edge 内蔵ビューア）や `edge://` で `page.title()`/`bodyText()`/`_part.txt` の結果が未検証。`skip_urls` で撮影は止められるがバー注入は行われる。まず挙動を確認し `USAGE.txt` に「PDF は正しく保存されません」と一言でも足りる（コストの大半は実装でなく調査） |
 | `badge.py` I/O | import 時の `badge.js` 読み込み | 小 | `BADGE_SCRIPT = build_badge_script()` が module import 時に読む（実運用では使わない＝スモーク専用）。遅延生成にすると凍結環境の失敗経路が 1 つ減る。`BADGE_SCRIPT` を関数化して参照元（スモーク）を直すだけ |
