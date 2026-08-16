@@ -44,8 +44,12 @@ jobs:
         run: pip install -e ".[dev]"
       - name: ruff check
         run: ruff check .
+      # 検査対象をここに列挙しない（`mypy .` にする）。コマンドライン引数は
+      # pyproject の [tool.mypy] files を上書きするため、ここへ書くと「新モジュールを
+      # 足したら pyproject の 2 箇所を更新する」（CONTRIBUTING §1-10）を守っても
+      # CI だけ検査対象から漏れ、型エラーが黙って素通りする。出所は pyproject に一本化する。
       - name: mypy
-        run: mypy edge_auto_capture.py badge.py capture.py config.py infra.py
+        run: mypy .
 
   test:
     name: pytest (Linux, py${{ matrix.python-version }})

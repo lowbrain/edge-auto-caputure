@@ -47,7 +47,7 @@ python_files = ["test_*.py"]
 [tool.mypy]
 # 型チェッカー（mypy）。注釈はほぼ完備で playwright は py.typed 同梱の
 # ため、既定（非 strict）でも実効性がある。回帰は CI で pytest/ruff と同列に止める想定。
-#   mypy edge_auto_capture.py badge.py capture.py config.py infra.py
+#   mypy .   ← 対象は下の files に一本化する（引数で列挙すると files を上書きしてしまう）
 # 新しい mypy（2.3+）は 3.9 ターゲットを廃止したため 3.10 で型検査する。
 # 実行時は requires-python=">=3.9" のまま（3.9 実機で動く）。3.10 検査だと `X | Y` など
 # 3.10 専用構文を mypy が見逃す点だけ注意（実際に使わない運用で担保。書いてよいのは
