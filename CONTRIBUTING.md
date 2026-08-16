@@ -71,6 +71,8 @@
     漏れると配布 / CI が**黙って割れる**。[`pyproject.toml`](pyproject.toml) の
     `[tool.setuptools] py-modules` と `[tool.mypy] files` の**両方**へモジュール名を追加する。
     `ruff` は `extend-exclude` 方式なので追記不要、[`build.ps1`](build.ps1) は import 追従なので変更不要。
+    **CI も `mypy .`（対象は `[tool.mypy] files` 由来）で回す。**CI 側に検査対象を列挙し直さないこと —
+    引数は `files` を上書きするので、ここの 2 箇所を守っても CI だけ新モジュールを検査しなくなる。
 
 11. **コメントは資産。関数を移動するときは一緒に運ぶ** — 各所の日本語コメントは
     `A-1` / `A-2` / `B-3` / `E-6` 等の落とし穴回避の記録。リファクタで関数を移すときも
