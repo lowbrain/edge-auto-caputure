@@ -8,6 +8,7 @@ import configparser
 import fnmatch
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from infra import BASE_DIR, log, notify_fatal, resolve_writable_dir, set_log_dir
@@ -134,6 +135,18 @@ class Config:
     profile_dir: str = ""                    # 再利用するブラウザプロファイルの場所（空なら毎回使い捨て）
 
 
+def session_stamp() -> str:
+    """起動 1 回分（セッション）の保存先サブフォルダ名を返す（F-C3）。
+
+    起動時刻を「YYYY-MM-DD_HHMMSS」で表す（例: 2026-08-11_143025）。output_dir の直下に
+    この 1 段を挟むことで、撮影物・log.txt・index.csv・lineage-<id>/downloads がすべて
+    「起動ごとのフォルダ」にまとまり、受け渡しが『このフォルダを渡す』で済む。
+    秒までの粒度（同一秒に二重起動するとまれに同じフォルダを共有するが、mkdir の
+    exist_ok と同じ許容範囲で、起動単位に切るという狙いは損なわない）。
+    """
+    return f"{datetime.now():%Y-%m-%d_%H%M%S}"
+
+
 def _url_matches(url: str, pattern: str) -> bool:
     """URL が 1 つのパターンに合致するか（B-5）。
 
@@ -238,18 +251,28 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
         )
         sys.exit(1)
 
-    # ログも PNG などと同じ保存先へ寄せる（保存先が確定したこの時点で切り替え）。
-    # 先に set_log_dir しておくと、退避の通知が確実に書ける退避先ログへ残る。
-    set_log_dir(resolved)
+    # F-C3: 起動 1 回分のセッションフォルダを 1 段挟む（例: output/2026-08-11_143025/）。
+    # 撮影物・log.txt・index.csv・lineage-<id>/downloads はすべて output_dir からの相対で
+    # 決まるので、ここで output_dir をセッションフォルダにすげ替えるだけで全保存物がその下へ
+    # まとまる（起動単位で切り、受け渡しが「このフォルダを渡す」で済む）。書き込み可否の判定と
+    # 退避は、セッション階層を挟む前の resolved（基準フォルダ）で済ませておく。プローブ対象を
+    # 実在フォルダに保ち、退避先の名前が起動時刻に化けないようにするため。
+    session_dir = resolved / session_stamp()
+
+    # ログも PNG などと同じ保存先（セッションフォルダ）へ寄せる（保存先が確定したこの時点で
+    # 切り替え）。先に set_log_dir しておくと、退避の通知が確実に書ける退避先ログへ残る。
+    # set_log_dir がセッションフォルダを mkdir するので、直後の退避通知ログも取りこぼさない。
+    set_log_dir(session_dir)
 
     # 退避が起きたら、どこへ保存されるのかをログとダイアログの両方で知らせる
-    # （保存先が分からないほうが利用者は困るため）。
+    # （保存先が分からないほうが利用者は困るため）。判定・表示は基準フォルダ（resolved）で行い、
+    # 利用者が config.ini で直す対象＝起動時刻サブ階層を含めない元のパスを示す。
     if resolved != output_dir:
         notify_fatal(
             f"保存先 {output_dir} に書き込めないため、{resolved} へ退避して実行します。\n"
             "権限のある場所（例: ドキュメント配下）へ移すと元の設定で保存できます。"
         )
-    output_dir = resolved
+    output_dir = session_dir
 
     # 数値項目。範囲を検証し、不正なら理由付き ValueError（呼び出し側で通知＆終了）。
     settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
@@ -363,6 +386,9 @@ def load_config() -> Config:
         勝手に上書きせず、直し方を伝えて終了する（利用者の編集内容を失わせない）。
       - output_dir の値が空 → 既定値（output）へフォールバックする
         （空だと Path('.') でカレントへ保存してしまう事故を防ぐ）。
+      - 確定した output_dir の直下へ、起動時刻のセッションフォルダを 1 段挟む（F-C3。
+        例: output/2026-08-11_143025/）。以後 log.txt・index.csv・撮影物・
+        lineage-<id>/downloads はすべてこのフォルダ配下へまとまる。
       - edge_path / chrome_path が空 → 自動検出（空が正常値）。値があれば
         起動する各ブラウザの実行ファイルとしてそのパスを使う。
       - target_selector が空 → 一部抜き出しをスキップ（空が正常値）。
