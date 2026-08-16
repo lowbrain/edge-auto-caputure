@@ -42,6 +42,10 @@ _TITLE_PEEK = (
 )
 # SPA（URLが変わらず中身だけ変わるページ）向けトグルスイッチの横に出すラベル。
 _LABEL_SPA = "SPA検知"
+# E-1（a11y）: 支援技術（スクリーンリーダー）向けのアクセシブル名。
+# 透過ボタンはアイコンのみで可視テキストが無く、名前が読み上げられないため aria-label を付ける。
+# （可視テキストを持つボタン＝記録開始/停止・今すぐ1枚・保存先には付けない。二重読み上げになるため）
+_ARIA_PEEK = "透過表示の切り替え"
 # セレクタ入力欄。常時ラベルは置かず、プレースホルダ（透かし文字）で入力を促し、
 # ホバー時の title で「Edge の開発者ツールでの調べ方」を手順で説明する（\n で改行表示）。
 _PLACEHOLDER_SEL = "CSSセレクタを入力"
@@ -78,6 +82,7 @@ _BADGE_CONFIG = {
     "titleOpen": _TITLE_OPEN,
     "lShots": _LABEL_SHOTS,
     "titlePeek": _TITLE_PEEK,
+    "ariaPeek": _ARIA_PEEK,
     "lSpa": _LABEL_SPA,
     "phSel": _PLACEHOLDER_SEL,
     "titleSel": _TITLE_SEL,

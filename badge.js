@@ -46,6 +46,7 @@
   const L_OPEN = C.lOpen, TITLE_OPEN = C.titleOpen;   // F-D4: 保存先フォルダを開くボタンの文言/説明
   const L_SHOTS = C.lShots;   // 撮影カウンタの文言（"本セッション {n} 枚"）。{n} を枚数に置換する。
   const TITLE_PEEK = C.titlePeek;
+  const ARIA_PEEK = C.ariaPeek;   // E-1: アイコンのみの透過ボタンのアクセシブル名
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
   // expose_binding（__eac_* 群）を呼ぶときの合言葉。各呼び出しの第1引数に付け、Python 側が
   // 照合する。閲覧中サイトのスクリプトが token を知らずに記録操作・連写・セレクタ書き換えを
@@ -289,6 +290,8 @@
     els.spa.classList.toggle('on', spaOn);
     els.spa.classList.toggle('off', !spaOn);
     els.spaText.textContent = spaOn ? 'ON' : 'OFF';
+    // E-1: role="switch" の状態を支援技術へ伝える（見た目のクラス切替と同じ所で反映）。
+    els.spa.setAttribute('aria-checked', spaOn ? 'true' : 'false');
   }
 
   // セレクタ一致件数の表示を更新する。0件/不正はすぐ気づけるよう色を変える（warn クラス）。
@@ -470,7 +473,13 @@
       els.open.textContent = L_OPEN;
       els.open.title = TITLE_OPEN;
       // アイコンボタンなので文言は入れず、ホバー説明（title）だけ付ける。
+      // E-1: 可視テキストが無いのでアクセシブル名を aria-label で明示する。
       els.peek.title = TITLE_PEEK;
+      els.peek.setAttribute('aria-label', ARIA_PEEK);
+      // E-1: SPA検知はトグルスイッチ（role="switch"）。可視テキストは "ON"/"OFF" だけで
+      // 何のスイッチか分からないため、横のラベルと同じ語をアクセシブル名として付ける。
+      // 状態（checked）は apply() で aria-checked を随時反映する。
+      els.spa.setAttribute('aria-label', L_SPA);
       els.sel.placeholder = PH_SEL;
       els.sel.title = TITLE_SEL;
       els.spaLabel.textContent = L_SPA;
@@ -679,9 +688,15 @@
   //
   // ルート変化（SPA の画面遷移）のフック。pushState / replaceState を包み、popstate /
   // hashchange も拾う。いずれも onRoute（基準取り直し）へ回す。
+  // E-2: 以前は毎回無条件にラップしていたため、(1) 元へ戻せない (2) 同一ドキュメントに
+  // 複数回注入されると多重ラップになる、という後始末漏れがあった。原参照を包み側に保持し、
+  // 既にこのバーが包んだものは包み直さないガードを入れる（ラップは 1 回だけ）。
   const hookHistory = (name) => {
     const orig = history[name];
-    history[name] = function () { const ret = orig.apply(this, arguments); onRoute(); return ret; };
+    if (typeof orig !== 'function' || orig.__eacOrig) return;   // 既に包み済みなら何もしない
+    const wrapped = function () { const ret = orig.apply(this, arguments); onRoute(); return ret; };
+    wrapped.__eacOrig = orig;   // 復元用に原参照を保持（history[name] = wrapped.__eacOrig で戻せる）
+    history[name] = wrapped;
   };
   hookHistory('pushState');
   hookHistory('replaceState');
