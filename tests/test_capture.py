@@ -10,6 +10,7 @@ docstring/コメントに書かれた「微妙な仕様」（切り詰め・フ�
 """
 
 import asyncio
+import csv
 import re
 from pathlib import Path
 
@@ -18,7 +19,13 @@ import pytest
 import capture
 import config as config_mod
 import infra
-from capture import CaptureRequest, CaptureRunner, page_label, safe_name
+from capture import (
+    CaptureRequest,
+    CaptureRunner,
+    page_label,
+    safe_name,
+    trigger_label,
+)
 from config import Config, load_config
 
 
@@ -803,7 +810,7 @@ def test_spawn_restarts_worker_after_drain():
 
 
 def test_capture_request_defaults():
-    # selector / group_id は省略時に空文字（未指定）になる。
+    # selector / group_id / trigger は省略時に空文字（未指定）になる。
     page = _FakePage("p")
     cfg = Config()
     req = CaptureRequest(page, "https://example.test/", cfg)
@@ -812,14 +819,19 @@ def test_capture_request_defaults():
     assert req.config is cfg
     assert req.selector == ""
     assert req.group_id == ""
+    assert req.trigger == ""
 
 
 def test_capture_request_holds_all_fields():
     # 全フィールドを与えると、その値がそのまま保持される。
     page = _FakePage("p")
     cfg = Config()
-    req = CaptureRequest(page, "https://example.test/x", cfg, "#main", "20260814101105674")
-    assert (req.selector, req.group_id) == ("#main", "20260814101105674")
+    req = CaptureRequest(
+        page, "https://example.test/x", cfg, "#main", "20260814101105674", "spa"
+    )
+    assert (req.selector, req.group_id, req.trigger) == (
+        "#main", "20260814101105674", "spa"
+    )
 
 
 def test_spawn_delivers_request_to_capture_unchanged():
@@ -883,10 +895,12 @@ class _RecRunner:
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.group_ids: list[int] = []
+        self.triggers: list[str] = []
 
     def spawn(self, req):
         self.calls.append((req.page, req.url, req.selector))
         self.group_ids.append(req.group_id)
+        self.triggers.append(req.trigger)
 
 
 def _make_session(pages, roots=None, config=None):
@@ -1023,6 +1037,40 @@ def test_shoot_passes_group_id_to_spawn():
         )
         await s.on_spa_changed({"page": r}, token=s.token)
         assert s.runner.group_ids == ["20260814101105674"]
+
+    asyncio.run(scenario())
+
+
+def test_trigger_threaded_per_path():
+    # 撮影契機が投入元 3 経路から CaptureRequest.trigger に載る（F-A1）:
+    # on_shot="manual" / on_spa_changed="spa" / _shoot_if_changed="url" /
+    # 記録開始(on_toggle)の即撮り="url"。
+    from edge_auto_capture import GroupState
+
+    async def scenario():
+        # 今すぐ1枚 → manual（記録状態に関わらず撮る）
+        r1 = _GroupPage("r1")
+        s1 = _make_session([r1], roots={r1: GroupState(on=False, spa_on=False, selector="")})
+        await s1.on_shot({"page": r1}, token=s1.token)
+        assert s1.runner.triggers == ["manual"]
+
+        # SPA変化 → spa
+        r2 = _GroupPage("r2")
+        s2 = _make_session([r2], roots={r2: GroupState(on=True, spa_on=True, selector="")})
+        await s2.on_spa_changed({"page": r2}, token=s2.token)
+        assert s2.runner.triggers == ["spa"]
+
+        # URL変化 → url
+        r3 = _GroupPage("r3", url="https://example.test/a")
+        s3 = _make_session([r3], roots={r3: GroupState(on=True, spa_on=False, selector="")})
+        await s3._shoot_if_changed(r3)
+        assert s3.runner.triggers == ["url"]
+
+        # 記録開始の即撮り → url
+        r4 = _GroupPage("r4")
+        s4 = _make_session([r4], roots={r4: GroupState(on=False, spa_on=False, selector="")})
+        await s4.on_toggle({"page": r4}, token=s4.token)
+        assert s4.runner.triggers == ["url"]
 
     asyncio.run(scenario())
 
@@ -1199,3 +1247,95 @@ def test_prune_drops_group_when_all_pages_closed():
         assert session.page_root == {}
 
     asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# 索引 CSV（F-A1）+ 撮影時刻（F-A4）
+#
+# 撮影ごとに output_dir/index.csv へ 1 行追記する。地雷 2 つ（BOM 付き utf-8-sig で書く／
+# 時刻は ISO 8601 オフセット付き）と、追記時に BOM・見出しを重複させないことを回帰から守る。
+# --------------------------------------------------------------------------- #
+
+
+def test_iso_timestamp_is_offset_aware_iso8601():
+    # F-A4: ISO 8601・ミリ秒・UTC オフセット付き（例: 2026-08-11T14:30:25.123+09:00）。
+    ts = infra.iso_timestamp()
+    from datetime import datetime
+
+    parsed = datetime.fromisoformat(ts)   # 解釈不能なら例外で落ちる
+    assert parsed.tzinfo is not None      # オフセット（tzinfo）を必ず持つ
+    # ミリ秒精度: 小数第 3 位まで（マイクロ秒の 6 桁ではない）。
+    assert re.search(r"T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$", ts)
+
+
+def test_log_line_uses_offset_timestamp(monkeypatch, tmp_path):
+    # log() の行頭時刻もオフセット付き ISO（索引と突き合わせられるよう表記をそろえる）。
+    monkeypatch.setattr(infra, "LOG_PATH", tmp_path / "log.txt")
+    infra.log("hello")
+    line = (tmp_path / "log.txt").read_text(encoding="utf-8").splitlines()[0]
+    stamp, _, msg = line.partition(" ")
+    assert msg == "hello"
+    from datetime import datetime
+
+    assert datetime.fromisoformat(stamp).tzinfo is not None
+
+
+def test_trigger_label_maps_known_and_passes_through():
+    assert trigger_label("manual") == "手動"
+    assert trigger_label("url") == "URL変化"
+    assert trigger_label("spa") == "SPA変化"
+    assert trigger_label("") == ""          # 未設定はそのまま
+    assert trigger_label("other") == "other"  # 未知値は素通し
+
+
+def _read_index(path: Path) -> list[list[str]]:
+    """index.csv を読み、ヘッダ込みの行リストを返す（BOM は utf-8-sig で剥がす）。"""
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        return list(csv.reader(f))
+
+
+def test_append_index_writes_bom_header_and_row(tmp_path):
+    # 新規作成時: 先頭 BOM＋見出し＋データ 1 行。列は仕様どおりの並び・値。
+    runner = CaptureRunner()
+    cfg = Config(output_dir=tmp_path)
+    cfg.output_dir.mkdir(exist_ok=True)
+    runner._append_index(
+        cfg, "2026-08-11T14:30:25.123+09:00", "https://example.test/x",
+        "タイトル,あり", "2026-08-11_14-30-25-123_stem", "spa", "#main", ["png", "txt"],
+    )
+    path = tmp_path / "index.csv"
+    # 地雷1: BOM 付きで書く（BOM 無しだと Excel で文字化け）。
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")
+    rows = _read_index(path)
+    assert rows[0] == ["時刻", "URL", "タイトル", "ファイル名接頭辞", "撮影契機", "セレクタ", "成否"]
+    assert rows[1] == [
+        "2026-08-11T14:30:25.123+09:00", "https://example.test/x",
+        "タイトル,あり",   # カンマ入りタイトルも csv が退避して 1 セルに収まる
+        "2026-08-11_14-30-25-123_stem", "SPA変化", "#main", "成功",
+    ]
+
+
+def test_append_index_appends_without_duplicate_bom_or_header(tmp_path):
+    # 追記時: BOM も見出しも増やさず、行だけ足す。
+    runner = CaptureRunner()
+    cfg = Config(output_dir=tmp_path)
+    cfg.output_dir.mkdir(exist_ok=True)
+    runner._append_index(cfg, "t1", "u1", "titleA", "stemA", "manual", "", ["png"])
+    runner._append_index(cfg, "t2", "u2", "titleB", "stemB", "url", "#s", [])
+    raw = (tmp_path / "index.csv").read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert raw.count(b"\xef\xbb\xbf") == 1        # BOM は先頭 1 回だけ
+    rows = _read_index(tmp_path / "index.csv")
+    assert len(rows) == 3                          # 見出し + 2 行
+    assert rows[1][4] == "手動" and rows[1][6] == "成功"
+    assert rows[2][4] == "URL変化" and rows[2][6] == "失敗"  # done 空 → 失敗
+
+
+def test_append_index_failure_does_not_raise(monkeypatch, tmp_path):
+    # 索引の書き込み失敗は握って撮影を巻き込まない（ログに [skip index] を出すだけ）。
+    runner = CaptureRunner()
+    cfg = Config(output_dir=tmp_path / "missing")   # 親フォルダが無く open が失敗する
+    logged: list[str] = []
+    monkeypatch.setattr(capture, "log", lambda m: logged.append(m))
+    runner._append_index(cfg, "t", "u", "ti", "st", "manual", "", ["png"])  # 例外は出ない
+    assert any("[skip index]" in m for m in logged)

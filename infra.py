@@ -1,7 +1,7 @@
 """基盤ユーティリティ（アプリの土台。Playwright 非依存）。
 
 - 基準フォルダ（BASE_DIR / _base_dir）
-- ログ（LOG_PATH / set_log_dir / log）
+- ログ（LOG_PATH / set_log_dir / log / iso_timestamp）
 - 致命的エラー通知（notify_fatal / _message_box）
 - 一時プロファイルの後始末（cleanup_old_profiles）
 
@@ -89,13 +89,25 @@ def set_log_dir(directory: Path) -> None:
     LOG_PATH = directory / "log.txt"
 
 
+def iso_timestamp() -> str:
+    """現在時刻を ISO 8601（ミリ秒・UTC オフセット付き）で返す。
+
+    例: 2026-08-11T14:30:25.123+09:00 。壁時計の値は変えず（日本の PC なら JST のまま）、
+    末尾に「どの時間帯か」を示すオフセットを添えて時刻を自己記述的にする。ログや索引 CSV は
+    あとから機械的に検索・照合される前提なので、環境・TZ に依存せず一意に解釈できるこの形で残す。
+    astimezone() が実行環境のローカル TZ を採用する（日本環境なら +09:00）。
+    """
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
 def log(msg: str) -> None:
     """メッセージを log.txt へ追記し、可能ならコンソールにも出す。
 
     windowed exe（コンソール無し）では sys.stdout が None になり得るため、
     print は失敗しても無視する。ファイルへの記録を主とする。
+    時刻は ISO 8601 オフセット付き（F-A4）。索引 CSV と時刻表記をそろえ、後から突き合わせられる。
     """
-    line = f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}"
+    line = f"{iso_timestamp()} {msg}"
     try:
         with LOG_PATH.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
