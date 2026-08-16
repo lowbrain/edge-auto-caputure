@@ -138,6 +138,37 @@ def run(strict: bool = False) -> int:
             if peek != "ok":
                 errors.append(f"透過トグルが機能していません: {peek}")
 
+            # 6b) F-D4: 「保存先」ボタンが存在し、押すと open_folder バインディングを呼ぶか。
+            #     expose_binding を公開しないスモークでは、callBinding のフォールバック
+            #     （退避が空なら実行時 window を見る）で後差しの関数が拾われる（SPA 検知と同じ）。
+            open_folder = page.evaluate(
+                "(() => { window.__openCalls = [];"
+                " window.__eac_open_folder = (tok) => { window.__openCalls.push(tok); };"
+                " const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
+                " const btn = sr && sr.querySelector('[data-eac=\"open\"]');"
+                " if (!btn) return 'missing';"
+                " btn.click();"
+                " return window.__openCalls.length === 1 ? 'ok' : 'no-call'; })()"
+            )
+            if open_folder != "ok":
+                errors.append(f"F-D4: 「保存先」ボタンが機能していません: {open_folder}")
+
+            # 6c) F-D2: セレクタ入力欄の datalist に候補が入り、input が list 属性で紐づくか。
+            #     __eacSetHistory で候補を配り、datalist の <option> と input.list が一致するか見る。
+            history = page.evaluate(
+                "(() => { window.__eacSetHistory(['#main', '.price']);"
+                " const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
+                " const dl = sr && sr.querySelector('[data-eac=\"history\"]');"
+                " const inp = sr && sr.querySelector('[data-eac=\"selector\"]');"
+                " if (!dl || !inp) return 'missing';"
+                " const opts = Array.from(dl.querySelectorAll('option')).map((o) => o.value);"
+                " const linked = inp.getAttribute('list') === dl.id && !!dl.id;"
+                " return (linked && opts.join(',') === '#main,.price') ? 'ok'"
+                "   : ('mismatch:' + opts.join(',') + '/' + linked); })()"
+            )
+            if history != "ok":
+                errors.append(f"F-D2: セレクタ履歴（datalist）が機能していません: {history}")
+
             # 7) SPA検知のイベント駆動監視が通しで動くか。
             #    記録側の通知バインディング（__eac_spa_changed）をテスト用のコレクタに差し替え、
             #    SPA検知を ON（セレクタ空＝既定ルート監視）にしてから本文を書き換える。デバウンス
@@ -305,6 +336,7 @@ def run(strict: bool = False) -> int:
         return 1
     print(
         "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
+        "保存先フォルダを開く(F-D4)・セレクタ履歴(F-D2)・"
         "SPA検知の通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・"
         "Observer の必要時のみ稼働(B-6)・撮影カウンタ/失敗フラッシュ(F-D3)・"
         "撮影中バナー除去(F-B2)・JSエラー無しを確認しました。"

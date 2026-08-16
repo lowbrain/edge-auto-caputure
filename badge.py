@@ -24,6 +24,13 @@ _STATUS_OFF = "待機中"
 _LABEL_START = "記録開始"
 _LABEL_STOP = "記録停止"
 _LABEL_SHOT = "📸 今すぐ1枚"
+# 保存先フォルダ（起動単位のセッションフォルダ）を OS のファイルマネージャで開くボタン（F-D4）。
+# 撮影物・ダウンロード・log.txt が集まった場所をその場で開けるようにする受け渡しの導線。
+_LABEL_OPEN = "📂 保存先"
+_TITLE_OPEN = (
+    "撮影物・ダウンロード・log.txt の保存先フォルダ（今回の起動ぶん）を開きます。\n"
+    "そのまま「このフォルダを渡す」で受け渡しが済みます。"
+)
 # 撮影カウンタ（本セッションで保存できた枚数）の表示文言（F-D3）。{n} は枚数に置換される。
 # 動作している実感と、暴走（意図しない連写）の早期発見のためにバーへ常時出す。
 _LABEL_SHOTS = "本セッション {n} 枚"
@@ -67,6 +74,8 @@ _BADGE_CONFIG = {
     "lStart": _LABEL_START,
     "lStop": _LABEL_STOP,
     "lShot": _LABEL_SHOT,
+    "lOpen": _LABEL_OPEN,
+    "titleOpen": _TITLE_OPEN,
     "lShots": _LABEL_SHOTS,
     "titlePeek": _TITLE_PEEK,
     "lSpa": _LABEL_SPA,
@@ -132,6 +141,7 @@ def build_badge_script(
 # （綴りずれは JS 側 try/catch で無言失敗するので、実発火はスモークテストで確認している）。
 BIND_TOGGLE = "__eac_toggle"                  # 記録開始/停止
 BIND_SHOT = "__eac_shot"                       # 今すぐ1枚
+BIND_OPEN_FOLDER = "__eac_open_folder"         # 保存先フォルダを開く（F-D4）
 BIND_SPA_TOGGLE = "__eac_spa_toggle"           # SPA検知 ON/OFF
 BIND_SET_SELECTOR = "__eac_set_selector"       # セレクタ入力（変更のたび）
 BIND_COMMIT_SELECTOR = "__eac_commit_selector" # セレクタ確定（blur/Enter）
@@ -176,3 +186,13 @@ def set_count_call(count: int) -> str:
     バーがサイト側の再描画で作り直されても __eac_getstate（count 同梱）で自己同期する。
     """
     return f"window.__eacSetCount && window.__eacSetCount({int(count)})"
+
+
+def set_history_call(history: list[str]) -> str:
+    """セレクタ候補（datalist の過去値）をバーへ反映する呼び出し式を組み立てる（F-D2）。
+
+    候補は Python 側（監視セッション）が本体として持ち、セレクタ確定（blur/Enter）のたびに
+    全ページのバーへ配る。バーがサイト側の再描画で作り直されても __eac_getstate（history
+    同梱）で自己同期する。日本語/記号を含む値も json.dumps で安全に JS 配列リテラル化する。
+    """
+    return f"window.__eacSetHistory && window.__eacSetHistory({json.dumps(history)})"
