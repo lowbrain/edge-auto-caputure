@@ -1,6 +1,6 @@
 # CI（フェーズ 0 / Issue #1・第4群・順19）
 #
-# push / PR のたびに機械的に回帰を止める保険。ローカル確認忘れを保険する。
+# PR（と main への push）のたびに機械的に回帰を止める保険。ローカル確認忘れを保険する。
 #   - lint    : ruff（現状 0 件）+ mypy（配布コード本体）を Linux で
 #   - test    : pytest（速い純粋関数・token 照合・DL の回帰）を Linux で。
 #               requires-python=">=3.9" を守るため 3.9 と 3.12 の両方で回す。
@@ -16,7 +16,11 @@
 name: CI
 
 on:
+  # push は main のみ（マージ後の確認用）。トピックブランチは PR の pull_request で回るため、
+  # push を全ブランチにすると PR ありブランチで push と pull_request が二重発火する
+  #（ref が refs/heads/... と refs/pull/N/merge で別物になり下の concurrency でも相殺されない）。
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
