@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+import badge
 import capture
 import config as config_mod
 import infra
@@ -1215,10 +1216,11 @@ def test_get_state_returns_group_state():
         r = _GroupPage("r")
         s = _make_session([r], roots={r: GroupState(on=True, spa_on=True, selector="#c")})
         state = await s.get_state({"page": r}, token=s.token)
-        assert state == {"recording": True, "spa": True, "selector": "#c"}
-        # token 不一致には既定（状態を漏らさない）
+        # 撮影カウンタ（count）も同梱する（F-D3。再描画されたバーの枚数復元に使う）。
+        assert state == {"recording": True, "spa": True, "selector": "#c", "count": 0}
+        # token 不一致には既定（状態を漏らさない）。count は秘匿情報ではないので返す。
         assert await s.get_state({"page": r}, token="wrong") == {
-            "recording": False, "spa": False, "selector": ""
+            "recording": False, "spa": False, "selector": "", "count": 0
         }
 
     asyncio.run(scenario())
@@ -1339,3 +1341,155 @@ def test_append_index_failure_does_not_raise(monkeypatch, tmp_path):
     monkeypatch.setattr(capture, "log", lambda m: logged.append(m))
     runner._append_index(cfg, "t", "u", "ti", "st", "manual", "", ["png"])  # 例外は出ない
     assert any("[skip index]" in m for m in logged)
+
+
+# --------------------------------------------------------------------------- #
+# F-D3: 撮影カウンタ / 失敗表示（成否を JS へ通知する経路）
+# --------------------------------------------------------------------------- #
+
+
+def test_capture_end_call_encodes_success_and_failure():
+    # done 有無を真偽値としてページ側 captureEnd へ渡す呼び出し式を組む（成功=赤/失敗=琥珀）。
+    assert badge.capture_end_call(True) == (
+        "window.__eac_captureEnd && window.__eac_captureEnd(true)"
+    )
+    assert badge.capture_end_call(False) == (
+        "window.__eac_captureEnd && window.__eac_captureEnd(false)"
+    )
+
+
+def test_set_count_call_encodes_count():
+    # 撮影カウンタ（本セッション枚数）をバーへ配る呼び出し式を組む。
+    assert badge.set_count_call(0) == "window.__eacSetCount && window.__eacSetCount(0)"
+    assert badge.set_count_call(7) == "window.__eacSetCount && window.__eacSetCount(7)"
+
+
+class _EvalPage:
+    """try_eval の宛先になる最小のページ代役。実行された JS を記録する。"""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.evals: list[str] = []
+
+    async def evaluate(self, js, *args):
+        self.evals.append(js)
+        return None
+
+
+def test_session_wires_runner_on_result():
+    # CaptureSession は runner の成否通知を自分のカウンタ更新へ配線する（F-D3）。
+    from edge_auto_capture import CaptureSession
+
+    session = CaptureSession(_FakeContext([]), Config())
+    assert session.runner.on_result == session._on_capture_result
+    assert session.shots == 0
+
+
+def test_on_capture_result_counts_only_success_and_pushes():
+    # ok=True のときだけ枚数を増やし、その値を全ページの操作バーへ配る。ok=False は数えない。
+    from edge_auto_capture import CaptureSession
+
+    async def scenario():
+        p1, p2 = _EvalPage("1"), _EvalPage("2")
+        session = CaptureSession(_FakeContext([p1, p2]), Config())
+
+        await session._on_capture_result(True)
+        assert session.shots == 1
+        # 成功のたびに現在の枚数を全ページへ配る（set_count_call の式が evaluate される）。
+        assert p1.evals == ["window.__eacSetCount && window.__eacSetCount(1)"]
+        assert p2.evals == ["window.__eacSetCount && window.__eacSetCount(1)"]
+
+        await session._on_capture_result(False)   # 全滅は「撮れた1枚」に数えない
+        assert session.shots == 1
+        assert len(p1.evals) == 1                  # 配布もしない（枚数が変わらないため）
+
+        await session._on_capture_result(True)
+        assert session.shots == 2
+        assert p1.evals[-1] == "window.__eacSetCount && window.__eacSetCount(2)"
+
+    asyncio.run(scenario())
+
+
+def test_get_state_reports_current_shot_count():
+    # get_state は現在の撮影カウンタを count で返す（再描画されたバーの枚数復元用）。
+    # 記録状態を伏せる token 不一致の応答にも count は載る（枚数は秘匿情報ではない）。
+    from edge_auto_capture import CaptureSession
+
+    async def scenario():
+        session = CaptureSession(_FakeContext([]), Config())
+        await session._on_capture_result(True)
+        await session._on_capture_result(True)
+        state = await session.get_state(None, token="wrong")
+        assert state["count"] == 2
+
+    asyncio.run(scenario())
+
+
+class _FakeCapturePage:
+    """_capture を実 Edge 無しで通すための最小ページ代役（成功/失敗を切り替えられる）。"""
+
+    def __init__(self, *, screenshot_ok: bool = True, text_ok: bool = True) -> None:
+        self.screenshot_ok = screenshot_ok
+        self.text_ok = text_ok
+        self.eval_calls: list[str] = []
+
+    async def wait_for_load_state(self, state, timeout=None):
+        return None
+
+    async def title(self):
+        return "T"
+
+    async def screenshot(self, path=None, full_page=None):
+        if not self.screenshot_ok:
+            raise RuntimeError("screenshot failed")
+        Path(path).write_bytes(b"png")
+
+    async def evaluate(self, js, *args):
+        self.eval_calls.append(js)
+        if js == badge.BODY_TEXT_CALL:
+            if not self.text_ok:
+                raise RuntimeError("no text")
+            return "body text"
+        return None
+
+
+def test_capture_notifies_result_true_on_success(tmp_path):
+    # png/txt が撮れたら captureEnd に ok=true を渡し、on_result にも True が届く（F-D3）。
+    async def scenario():
+        runner = CaptureRunner()
+        got: list[bool] = []
+
+        async def record(ok):
+            got.append(ok)
+
+        runner.on_result = record
+        page = _FakeCapturePage(screenshot_ok=True, text_ok=True)
+        cfg = Config(output_dir=tmp_path, settle_delay=0)
+        await runner._capture(CaptureRequest(page, "https://ok.test/", cfg, trigger="manual"))
+
+        assert got == [True]
+        assert badge.capture_end_call(True) in page.eval_calls
+        assert badge.capture_end_call(False) not in page.eval_calls
+
+    asyncio.run(scenario())
+
+
+def test_capture_notifies_result_false_on_total_failure(tmp_path):
+    # 全滅（png も txt も失敗）なら captureEnd に ok=false を渡し、on_result にも False が届く。
+    async def scenario():
+        runner = CaptureRunner()
+        got: list[bool] = []
+
+        async def record(ok):
+            got.append(ok)
+
+        runner.on_result = record
+        page = _FakeCapturePage(screenshot_ok=False, text_ok=False)
+        cfg = Config(output_dir=tmp_path, settle_delay=0)
+        await runner._capture(CaptureRequest(page, "https://ng.test/", cfg, trigger="manual"))
+
+        assert got == [False]
+        assert badge.capture_end_call(False) in page.eval_calls
+        assert badge.capture_end_call(True) not in page.eval_calls
+
+    asyncio.run(scenario())

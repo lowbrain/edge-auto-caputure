@@ -15,9 +15,10 @@
 //
 // Python から使う API:
 //   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
+//   - window.__eacSetCount(n)                             : 撮影カウンタ（本セッション枚数）を更新
 //   - window.__eac_captureStart()                         : バーを退避し切るまで待つ（撮影直前）
-//   - window.__eac_captureEnd()                           : 赤いフラッシュ＋バー復帰（撮影直後）
-//   - window.__eac_getstate(tok)（expose_binding）        : 描画前に現在状態を取得
+//   - window.__eac_captureEnd(ok)                         : シャッターフラッシュ（ok=成功は赤/失敗は琥珀）＋バー復帰（撮影直後）
+//   - window.__eac_getstate(tok)（expose_binding）        : 描画前に現在状態を取得（枚数 count も含む）
 //   - window.__eac_bodyText()                             : バー除外の本文 innerText
 //   - window.__eac_signature(selector)                   : コンテンツ署名（スモークテスト用）
 //   - SPA検知はページ側がイベント駆動で行い、落ち着いた変化を検知したら Python の
@@ -41,6 +42,7 @@
   const C = $CONFIG;
   const ID = C.id;
   const S_ON = C.sOn, S_OFF = C.sOff, L_START = C.lStart, L_STOP = C.lStop, L_SHOT = C.lShot;
+  const L_SHOTS = C.lShots;   // 撮影カウンタの文言（"本セッション {n} 枚"）。{n} を枚数に置換する。
   const TITLE_PEEK = C.titlePeek;
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
   // expose_binding（__eac_* 群）を呼ぶときの合言葉。各呼び出しの第1引数に付け、Python 側が
@@ -90,6 +92,7 @@
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
   let peekOn = false;      // 透過（半透明）表示中か。下に隠れた内容を確認するための一時状態。
+  let shotCount = 0;       // 本セッションで保存できた枚数（Python が本体を持ち、__eacSetCount で配る）。
   let capDepth = 0;        // 進行中の撮影数（重なっても最後の1つで復帰させるための入れ子カウント）
   let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
@@ -152,6 +155,9 @@
     .dot.rec{background:#fff;border:0;}
     .dot.idle{background:transparent;border:2px solid rgba(255,255,255,.85);}
     .label{flex:0 0 auto;}
+    /* 撮影カウンタ（本セッション N 枚）。控えめな白字で常時出す（F-D3）。 */
+    .shots{flex:0 0 auto;white-space:nowrap;color:rgba(255,255,255,.9);
+      font-family:"Segoe UI",sans-serif;font-size:12px;font-weight:normal;line-height:1;}
     .btn{box-sizing:border-box;flex:0 0 auto;height:26px;display:inline-flex;align-items:center;
       justify-content:center;white-space:nowrap;margin:0;padding:0 12px;pointer-events:auto;cursor:pointer;
       border:0;border-radius:5px;background:#fff;color:#b00;
@@ -204,6 +210,9 @@
     .frame{position:fixed;inset:0;
       background:rgba(255,0,0,.10);box-shadow:inset 0 0 90px 14px rgba(255,0,0,.55);
       pointer-events:none;opacity:0;}
+    /* 保存失敗時のフラッシュ（F-D3）: 成功（赤）と同じ色だと「撮れた」と誤解を招くので、
+       警告色の琥珀へ差し替える。発光アニメーション（.flash）は共通で、色だけを変える。 */
+    .frame.fail{background:rgba(255,170,0,.12);box-shadow:inset 0 0 90px 14px rgba(255,150,0,.6);}
     .frame.flash{animation:eac-shutter .5s ease-out;}
     @keyframes eac-shutter{0%{opacity:0;}9%{opacity:1;}100%{opacity:0;}}
     </style>`;
@@ -216,6 +225,7 @@
       <span class="status"><span class="dot idle" data-eac="dot"></span><span class="label" data-eac="label"></span></span>
       <button class="btn" data-eac="toggle"></button>
       <button class="btn" data-eac="shot"></button>
+      <span class="shots" data-eac="shots"></span>
       <span class="sel-wrap"><input class="sel" type="text" data-eac="selector"><span class="sel-count" data-eac="sel-count"></span></span>
       <span class="spa-wrap" data-eac="spa-wrap"><span class="spa-label" data-eac="spa-label"></span>
         <button class="spa off" role="switch" data-eac="spa"><span class="spa-text" data-eac="spa-text"></span>
@@ -293,6 +303,19 @@
     }
   }
 
+  // 撮影カウンタ（本セッション N 枚）の表示を更新する（F-D3）。枚数の本体は Python が持ち、
+  // 保存成功のたびに __eacSetCount で配られる。バー未構築なら値だけ覚えて描画時に反映する。
+  function renderShots() {
+    if (els && els.shots) els.shots.textContent = L_SHOTS.replace('{n}', shotCount);
+  }
+
+  // Python から枚数を受け取ってバーへ反映する。非数・負値は無視して直近値を保つ
+  //（getstate と push が競合しても表示が巻き戻らないようにする）。
+  function setShotCount(n) {
+    if (typeof n === 'number' && n >= 0) shotCount = n;
+    renderShots();
+  }
+
   // 撮影直前: バーを上へスライドさせて画面外へ退避する。退避し切ってから撮れるよう、
   // transition の完了（transitionend）で解決する Promise を返す（page.evaluate が待つ）。
   // 撮影が重なった場合は入れ子カウントで数え、最初の1回だけアニメーションする。
@@ -306,7 +329,7 @@
       // A-1: 直前の撮影のシャッターフラッシュ（.frame.flash, CSS 500ms）が残っていると、
       // 次のスクショに赤みとして写り込む。復帰待ちを消すのと同時にフラッシュも畳む。
       if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
-      if (els.frame) els.frame.classList.remove('flash');
+      if (els.frame) els.frame.classList.remove('flash', 'fail');
       if (capDepth > 1) { resolve(); return; }   // 既に退避済み（別の撮影が進行中）
       const bar = els.bar;
       // A-2: バーが既に capturing（退避済み）なら classList.add は no-op で transitionend が
@@ -325,22 +348,25 @@
     });
   }
 
-  // 撮影直後: 進行中の撮影が無くなったら、まず全画面の赤いシャッターフラッシュを出し
+  // 撮影直後: 進行中の撮影が無くなったら、まず全画面のシャッターフラッシュを出し
   //（シャッター確定の合図）、少し遅らせてからバーを元位置へスライドで戻す。フラッシュと
   // 復帰の動きを時間差にすることで、隠すときと同じ「上から降りてくる」動きが単独で見える。
-  // 撮影が重なっていれば最後の1つで戻す。
-  function captureEnd() {
+  // 撮影が重なっていれば最後の1つで戻す。ok は _capture の done 有無で、成功は赤・失敗は
+  // 琥珀にフラッシュ色を分ける（F-D3。成否を渡さない無引数呼び出しは従来どおり成功＝赤）。
+  function captureEnd(ok) {
     if (!els || !els.bar) return;
     if (capDepth > 0) capDepth--;
     if (capDepth > 0) return;                     // まだ他の撮影が進行中
     // 1) シャッターフラッシュ（クラスを付け直して毎回アニメを頭から再生）。
+    const failed = (ok === false);                // 明示的に false（保存全滅）のときだけ失敗色
     if (els.frame) {
-      els.frame.classList.remove('flash');
+      els.frame.classList.remove('flash', 'fail');
       void els.frame.offsetWidth;                 // リフローでアニメーションを確実に再スタート
       els.frame.classList.add('flash');
+      if (failed) els.frame.classList.add('fail');
       if (frameTimer) clearTimeout(frameTimer);
       frameTimer = setTimeout(() => {
-        if (els && els.frame) els.frame.classList.remove('flash');
+        if (els && els.frame) els.frame.classList.remove('flash', 'fail');
         frameTimer = null;
       }, FLASH_CLEAR_MS);
     }
@@ -381,7 +407,7 @@
       const q = (name) => shadow.querySelector('[data-eac="' + name + '"]');
       els = {
         bar: q('bar'), dot: q('dot'), label: q('label'),
-        toggle: q('toggle'), shot: q('shot'), peek: q('peek'),
+        toggle: q('toggle'), shot: q('shot'), shots: q('shots'), peek: q('peek'),
         sel: q('selector'), selCount: q('sel-count'),
         spaWrap: q('spa-wrap'), spaLabel: q('spa-label'), spa: q('spa'), spaText: q('spa-text'),
         frame: q('frame'),
@@ -422,6 +448,8 @@
       countedSel = null;
       // 取得した現在の状態で最初から正しく描画する。
       apply(!!(state && state.recording), !!(state && state.spa), (state && state.selector) || '');
+      // 撮影カウンタも現在値で描画する（再描画されたバーが 0 枚に戻って見えないように）。
+      setShotCount((state && typeof state.count === 'number') ? state.count : shotCount);
     };
     const fallback = { recording: recording, spa: spaOn, selector: selector };
     // 未注入・呼び出し不能なら callBinding が undefined を返すので、直前の状態で描画する。
@@ -566,6 +594,7 @@
   }
 
   window.__eacApplyState = apply;
+  window.__eacSetCount = setShotCount;
   window.__eac_captureStart = captureStart;
   window.__eac_captureEnd = captureEnd;
   window.__eac_bodyText = bodyText;

@@ -24,6 +24,9 @@ _STATUS_OFF = "待機中"
 _LABEL_START = "記録開始"
 _LABEL_STOP = "記録停止"
 _LABEL_SHOT = "📸 今すぐ1枚"
+# 撮影カウンタ（本セッションで保存できた枚数）の表示文言（F-D3）。{n} は枚数に置換される。
+# 動作している実感と、暴走（意図しない連写）の早期発見のためにバーへ常時出す。
+_LABEL_SHOTS = "本セッション {n} 枚"
 # バーを半透明にして下に隠れた内容を確認するためのトグル（枠なしのアイコンボタン）。
 # 文言ラベルは持たず、ホバー時の説明（title）だけ持つ。状態はアイコンの装飾で表す。
 _TITLE_PEEK = (
@@ -64,6 +67,7 @@ _BADGE_CONFIG = {
     "lStart": _LABEL_START,
     "lStop": _LABEL_STOP,
     "lShot": _LABEL_SHOT,
+    "lShots": _LABEL_SHOTS,
     "titlePeek": _TITLE_PEEK,
     "lSpa": _LABEL_SPA,
     "phSel": _PLACEHOLDER_SEL,
@@ -140,7 +144,29 @@ BODY_TEXT_CALL = (
 SIG_CALL = "(sel) => window.__eac_signature ? window.__eac_signature(sel) : '0_0'"
 
 # 撮影の合図。撮影直前に captureStart（バーを退避し切るまで待つ・Promise を返す）、
-# 撮影直後に captureEnd（全画面の赤いシャッターフラッシュ＋バー復帰）を page.evaluate で呼ぶ。
+# 撮影直後に captureEnd（全画面のシャッターフラッシュ＋バー復帰）を page.evaluate で呼ぶ。
 # captureStart は未注入でも await できるよう、関数式で null を返す形にしておく。
 CAPTURE_START_CALL = "(() => window.__eac_captureStart ? window.__eac_captureStart() : null)()"
+# 引数なしの captureEnd は「成功（赤フラッシュ）」扱い。実運用は capture_end_call(ok) で
+# 成否を渡す（スモークテストはこの無引数版を使う）。
 CAPTURE_END_CALL = "window.__eac_captureEnd && window.__eac_captureEnd()"
+
+
+def capture_end_call(ok: bool) -> str:
+    """撮影直後の captureEnd 呼び出し式を組み立てる（F-D3）。
+
+    ok は `_capture` の done 有無（1 種でも保存できたか）。ページ側の captureEnd へ真偽値で
+    渡し、成功（赤）と失敗（琥珀）でシャッターフラッシュの色を分ける。現状 captureEnd は成否を
+    受け取らなかったため、この引数付き呼び出し式を capture 側から使う経路を用意する。
+    """
+    flag = "true" if ok else "false"
+    return f"window.__eac_captureEnd && window.__eac_captureEnd({flag})"
+
+
+def set_count_call(count: int) -> str:
+    """撮影カウンタ（本セッション枚数）をバーへ反映する呼び出し式を組み立てる（F-D3）。
+
+    枚数は Python 側（監視セッション）が本体として持ち、成功のたびに全ページのバーへ配る。
+    バーがサイト側の再描画で作り直されても __eac_getstate（count 同梱）で自己同期する。
+    """
+    return f"window.__eacSetCount && window.__eacSetCount({int(count)})"

@@ -218,7 +218,12 @@ class CaptureSession:
         # 連写・セレクタ書き換えを試みても、下の各コールバックが token 不一致で無視する。
         self.token = secrets.token_hex(16)
         # 撮影の実行器（実行中タスク・ページ単位ロックを own する）。1 セッションに 1 個。
+        # 撮影 1 回ごとの成否は on_result で受け、撮影カウンタ／失敗把握に使う（F-D3）。
         self.runner = CaptureRunner()
+        self.runner.on_result = self._on_capture_result
+        # 本セッションで保存できた枚数（F-D3）。動作実感＋暴走の早期発見のため全バーへ配る。
+        # 本体はここに持ち、成功のたびに増やして全ページの操作バーへ反映する。
+        self.shots = 0
         # --- グループ単位の実行時状態 ---
         # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。
         self.groups: dict[Page, GroupState] = {}  # root ページ -> そのグループの状態
@@ -250,6 +255,26 @@ class CaptureSession:
             )
 
         await asyncio.gather(*(_apply(pg) for pg in list(self.context.pages)))
+
+    async def _on_capture_result(self, ok: bool) -> None:
+        """撮影 1 回分の成否を受け、撮影カウンタを更新して全バーへ配る（F-D3）。
+
+        runner から撮影 1 回ごとに呼ばれる。1 種でも保存できた（ok=True）ときだけ枚数を増やす
+        （全滅は「撮れた 1 枚」に数えない。フラッシュ側も失敗色にして区別する）。枚数は全ページ
+        共通の本セッション累計なので、更新のたびに全ページの操作バーへ同じ値を配る。バーが
+        サイト側の再描画で作り直されても __eac_getstate（count 同梱）で自己同期する。
+        """
+        if not ok:
+            return
+        self.shots += 1
+        await self._push_count()
+
+    async def _push_count(self) -> None:
+        """現在の撮影カウンタ（本セッション枚数）を開いている全ページの操作バーへ配る（F-D3）。"""
+        call = badge.set_count_call(self.shots)
+        await asyncio.gather(
+            *(try_eval(pg, call) for pg in list(self.context.pages))
+        )
 
     # ---- expose_binding で公開するコールバック ----
     #
@@ -431,18 +456,22 @@ class CaptureSession:
 
         ページ遷移直後、新しいドキュメントのバーはこれを見てから描画するので、
         記録ON中に別URLへ移動しても一瞬「待機中」を見せずに済む。SPA検知の
-        ON/OFF・セレクタ値も同時に返し、遷移後も入力欄・ボタンを正しく初期化する。
+        ON/OFF・セレクタ値・撮影カウンタ（count）も同時に返し、遷移後も入力欄・ボタン・
+        枚数表示を正しく初期化する（作り直したバーが 0 枚へ戻って見えないように。F-D3）。
 
         token 不一致（操作バー以外からの問い合わせ）には既定状態を返し、実際の
-        記録状態やセレクタ値を外部スクリプトへ漏らさない。
+        記録状態やセレクタ値を外部スクリプトへ漏らさない（枚数は秘匿情報ではないので返す）。
 
         返すのは問い合わせ元ページが属するグループの状態。新しいドキュメントのバーが最初に
         これを呼ぶタイミングでグループを確定・メモ化する（監視ループ到達前でも取りこぼさない）。
         """
         if not self._authorized(token):
-            return {"recording": False, "spa": False, "selector": ""}
+            return {"recording": False, "spa": False, "selector": "", "count": self.shots}
         grp = await self._resolve_group(source["page"])
-        return {"recording": grp.on, "spa": grp.spa_on, "selector": grp.selector}
+        return {
+            "recording": grp.on, "spa": grp.spa_on, "selector": grp.selector,
+            "count": self.shots,
+        }
 
     # ---- ダウンロードの退避（E-4） ----
 

@@ -100,14 +100,15 @@ def test_get_state_hides_real_state_without_token(token):
     # 不一致には実際の状態を返さず既定値を返す（外部への情報漏れを防ぐ）。source も触らない。
     s, page = _seeded_session(on=True, spa_on=True, selector=".secret")
     state = asyncio.run(s.get_state(None, token=token))
-    assert state == {"recording": False, "spa": False, "selector": ""}
+    # 記録状態やセレクタは伏せるが、撮影カウンタ（count）は秘匿情報ではないので返す（F-D3）。
+    assert state == {"recording": False, "spa": False, "selector": "", "count": 0}
 
 
 def test_get_state_returns_real_state_with_token():
-    # 正規 token では、問い合わせ元ページが属するグループの実状態を返す。
+    # 正規 token では、問い合わせ元ページが属するグループの実状態を返す（撮影カウンタも同梱）。
     s, page = _seeded_session(on=True, spa_on=False, selector=".ok")
     state = asyncio.run(s.get_state({"page": page}, token=s.token))
-    assert state == {"recording": True, "spa": False, "selector": ".ok"}
+    assert state == {"recording": True, "spa": False, "selector": ".ok", "count": 0}
 
 
 # --------------------------------------------------------------------------- #
