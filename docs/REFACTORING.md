@@ -40,7 +40,7 @@
 
 | # | フェーズ | 中身 | 対応 ROADMAP | Issue | コスト |
 |---|---|---|---|---|---|
-| **0** | CI 整備（**最初に実施**） | Actions で `pytest`+`ruff`+`mypy`。smoke は Edge 必須なので Windows runner 限定 or 手動トリガで `--strict` 付き | ROADMAP §1 CI | #— | 小 |
+| **0** | CI 整備（**最初に実施**） | Actions で `pytest`+`ruff`+`mypy`。smoke は Edge 必須なので Windows runner 限定 or 手動トリガで `--strict` 付き | ROADMAP §1 CI | [#1](https://github.com/lowbrain/edge-auto-caputure/issues/1) | 小 |
 | **1** | capture 経路の基盤リファクタ | `CaptureRequest` 化（R1）＋ `_capture` 保存ステップ分割（R2）＋ `BADGE_SCRIPT` 遅延化（R5a） | （下地。機能ではない） | #— | 中 |
 | **2** | 撮影メタ・UX クラスタ | F-A1 索引CSV + F-A4 時刻 → F-D3 カウンタ/失敗表示 → F-A2 `_part.png` → F-B1 プリロード → F-B2 バナー除去。B-4（settle 二重待ち）も相乗り | F-A1/F-A4/F-D3/F-A2/F-B1/F-B2, B-4 | #— | 中〜大 |
 | **3** | URL 判定クラスタ | F-C2 allow_urls + B-5（前方一致/fnmatch）。URL 判定関数の切り出し（R3）＋ `_shoot`/`_shoot_if_changed` の重複解消（R3b） | F-C2/B-5 | #— | 小〜中 |

@@ -1,0 +1,81 @@
+# CI（フェーズ 0 / Issue #1・第4群・順19）
+#
+# push / PR のたびに機械的に回帰を止める保険。ローカル確認忘れを保険する。
+#   - lint    : ruff（現状 0 件）+ mypy（配布コード本体）を Linux で
+#   - test    : pytest（速い純粋関数・token 照合・DL の回帰）を Linux で。
+#               requires-python=">=3.9" を守るため 3.9 と 3.12 の両方で回す。
+#   - smoke   : 実 Edge を要する操作バー JS の検証。--strict でブラウザ不在を FAIL 化。
+#               Edge が要るので Windows ランナー限定。push/PR で自動 + 手動でも起動可。
+#
+# 設計メモ:
+#   - pytest / smoke は playwright パッケージ（依存）を import するが、pytest 側は
+#     ブラウザを起動しないので `playwright install`（ブラウザバイナリDL）は不要。
+#     smoke は windows-latest に同梱の Edge を channel="msedge" で使うため同様に不要。
+#   - mypy は python_version=3.10 を pyproject で固定済み（新しい mypy は 3.9 ターゲット廃止）。
+#     ランナーは 3.12 で回す（検査対象は 3.10 相当のまま）。3.9 で mypy は回さない。
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# 同一ブランチの古い実行はキャンセルして無駄な同時実行を減らす。
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff + mypy (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install (dev extras)
+        run: pip install -e ".[dev]"
+      - name: ruff check
+        run: ruff check .
+      - name: mypy
+        run: mypy edge_auto_capture.py badge.py capture.py config.py infra.py
+
+  test:
+    name: pytest (Linux, py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 配布は requires-python=">=3.9"。最小(3.9)と現行(3.12)の両端で回す。
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install (dev extras)
+        run: pip install -e ".[dev]"
+      - name: pytest
+        run: pytest
+
+  smoke:
+    name: smoke --strict (Windows / real Edge)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install (dev extras)
+        run: pip install -e ".[dev]"
+      # windows-latest は Edge 同梱。--strict でブラウザ不在を FAIL(1) 扱いにし、
+      # 「何も検証せず緑」を防ぐ（tests/smoke_badge.py のヘッダ参照）。
+      - name: smoke_badge --strict
+        run: python tests/smoke_badge.py --strict
