@@ -49,6 +49,8 @@
   // 照合する。閲覧中サイトのスクリプトが token を知らずに記録操作・連写・セレクタ書き換えを
   // 行っても Python 側で無視される。起動ごとにランダム生成した値が Python から渡ってくる。
   const TOK = C.tok || "";
+  // F-B2: 撮影中だけ隠す要素の CSS セレクタ群（同意バナー・追従ヘッダ対策）。空なら何もしない。
+  const HIDE_SEL = Array.isArray(C.hideSel) ? C.hideSel : [];
 
   // --- expose_binding（Python 側の呼び出し口）の参照を退避する ---
   // add_init_script はサイトの JS より先に実行されるため、ここで掴んだ参照は「本物」である。
@@ -97,6 +99,7 @@
   let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
   let countedSel = null;   // 一致件数を最後に計算したセレクタ（毎tickの無駄な再計算を避ける）
+  let hiddenEls = [];      // 撮影中に隠した要素と復元用の元 visibility 値（F-B2）
 
   // --- SPA検知（中身変化のイベント駆動監視） ---
   // 変化は MutationObserver で捉え、SPA_SETTLE_MS のデバウンスで「落ち着いてから」署名を
@@ -316,6 +319,28 @@
     renderShots();
   }
 
+  // F-B2: 撮影中だけ hide_selectors 該当要素を隠す。同意バナー・追従ヘッダなどが証跡
+  // （スクショ）に被るのを防ぐ。visibility:hidden で場所は保ったまま不可視にし、撮影後に
+  // 元のインライン値へ厳密に戻す（元々 visibility を持っていたかを覚えておく）。撮影が
+  // 重なっても最初の1回だけ隠し、最後の1つで戻す（captureStart/End の capDepth と対）。
+  function hideEls() {
+    if (!HIDE_SEL.length) return;
+    hiddenEls = [];
+    HIDE_SEL.forEach((sel) => {
+      let list;
+      try { list = document.querySelectorAll(sel); }
+      catch (e) { return; }   // 不正なセレクタは黙って飛ばす（他の指定を巻き添えにしない）
+      list.forEach((el) => {
+        hiddenEls.push([el, el.style.visibility]);
+        el.style.visibility = 'hidden';
+      });
+    });
+  }
+  function showEls() {
+    hiddenEls.forEach((pair) => { pair[0].style.visibility = pair[1]; });
+    hiddenEls = [];
+  }
+
   // 撮影直前: バーを上へスライドさせて画面外へ退避する。退避し切ってから撮れるよう、
   // transition の完了（transitionend）で解決する Promise を返す（page.evaluate が待つ）。
   // 撮影が重なった場合は入れ子カウントで数え、最初の1回だけアニメーションする。
@@ -323,6 +348,7 @@
     return new Promise((resolve) => {
       if (!els || !els.bar) { resolve(); return; }
       capDepth++;
+      if (capDepth === 1) hideEls();   // F-B2: 最初の撮影で hide_selectors を隠す（重なりは1回だけ）
       // 前回の「復帰待ち」が残っていれば取り消し、退避状態を維持する（撮影が重なっても
       // 途中でバーが降りてきて次のスクショに写り込まないように）。
       if (barTimer) { clearTimeout(barTimer); barTimer = null; }
@@ -357,6 +383,7 @@
     if (!els || !els.bar) return;
     if (capDepth > 0) capDepth--;
     if (capDepth > 0) return;                     // まだ他の撮影が進行中
+    showEls();                                    // F-B2: 隠していた要素を元へ戻す（撮影は完了済み）
     // 1) シャッターフラッシュ（クラスを付け直して毎回アニメを頭から再生）。
     const failed = (ok === false);                // 明示的に false（保存全滅）のときだけ失敗色
     if (els.frame) {

@@ -90,7 +90,9 @@ def _badge_js_path() -> Path:
     return base / "badge.js"
 
 
-def build_badge_script(token: str = "", settle_ms: int = 300) -> str:
+def build_badge_script(
+    token: str = "", settle_ms: int = 300, hide_selectors: tuple[str, ...] = ()
+) -> str:
     """badge.js を読み込み、$CONFIG を設定 JSON で置換した完成スクリプトを返す。
 
     token は、ページ側から expose_binding（__eac_* 群）を呼ぶときの「合言葉」。
@@ -103,12 +105,16 @@ def build_badge_script(token: str = "", settle_ms: int = 300) -> str:
     中身変化が「この時間だけ止まったら落ち着いた」とみなして署名を確定する。Config の
     settle_delay（秒）をミリ秒へ直して渡す（config.ini で調整可能）。
 
+    hide_selectors は撮影中だけ隠す要素の CSS セレクタ群（F-B2）。captureStart で該当要素を
+    visibility:hidden にして撮影後に戻す。同意バナー・追従ヘッダなどが証跡（スクショ）に
+    被るのを防ぐ。空なら何も隠さない（既定）。
+
     置換対象は文字列 "$CONFIG" のみ。badge.js はテンプレートリテラル（バッククォート）を
     使うが、補間は `${...}` の形だけで、この JS では `${` を使わないため `$CONFIG` と
     衝突しない。よって単純な文字列置換で足りる（絵文字/日本語も json.dumps で
     \\uXXXX に安全化される）。
     """
-    config = dict(_BADGE_CONFIG, tok=token, settleMs=settle_ms)
+    config = dict(_BADGE_CONFIG, tok=token, settleMs=settle_ms, hideSel=list(hide_selectors))
     src = _badge_js_path().read_text(encoding="utf-8")
     return src.replace("$CONFIG", json.dumps(config))
 
