@@ -56,7 +56,14 @@ from typing import Optional
 from playwright.async_api import Page, async_playwright
 
 import badge
-from capture import CaptureRunner, group_folder_name, group_stamp, group_subdir, try_eval
+from capture import (
+    CaptureRequest,
+    CaptureRunner,
+    group_folder_name,
+    group_stamp,
+    group_subdir,
+    try_eval,
+)
 from config import Config, load_config, summarize_config
 from infra import (
     __version__,
@@ -316,7 +323,7 @@ class CaptureSession:
             return None
         if url in self.config.skip_urls:
             return None
-        self.runner.spawn(pg, url, self.config, grp.selector, grp.id)
+        self.runner.spawn(CaptureRequest(pg, url, self.config, grp.selector, grp.id))
         return url
 
     async def on_toggle(self, source, token=None) -> None:
@@ -559,7 +566,7 @@ class CaptureSession:
         key = _url_key(url)
         if self.seen.get(page) != key:
             self.seen[page] = key
-            self.runner.spawn(page, url, self.config, grp.selector, grp.id)
+            self.runner.spawn(CaptureRequest(page, url, self.config, grp.selector, grp.id))
 
     def _on_page_closed(self, page) -> None:
         """閉じられたページを管理から除去する（毎tickの _prune を置き換え）。

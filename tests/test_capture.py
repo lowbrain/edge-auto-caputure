@@ -18,7 +18,7 @@ import pytest
 import capture
 import config as config_mod
 import infra
-from capture import CaptureRunner, page_label, safe_name
+from capture import CaptureRequest, CaptureRunner, page_label, safe_name
 from config import Config, load_config
 
 
@@ -707,8 +707,8 @@ def _recording_runner(gate: "asyncio.Event | None" = None):
     runner = CaptureRunner()
     calls: list[tuple] = []
 
-    async def stub(page, url, config, selector="", group_id=""):
-        calls.append((page, url, selector))
+    async def stub(req):
+        calls.append((req.page, req.url, req.selector))
         if gate is not None:
             await gate.wait()
 
@@ -723,7 +723,7 @@ def test_spawn_coalesces_synchronous_burst():
         page = _FakePage("p")
         cfg = Config()
         for i in range(5):
-            runner.spawn(page, f"url-{i}", cfg)
+            runner.spawn(CaptureRequest(page, f"url-{i}", cfg))
         assert len(runner._tasks) == 1  # ページごとに worker は1つだけ
         await asyncio.wait_for(runner._workers[page], timeout=1)
         assert calls == [(page, "url-4", "")]  # 走るのは最後の1件だけ
@@ -739,16 +739,16 @@ def test_spawn_coalesces_requests_during_capture():
         page = _FakePage("p")
         cfg = Config()
 
-        runner.spawn(page, "url-1", cfg)
+        runner.spawn(CaptureRequest(page, "url-1", cfg))
         worker = runner._workers[page]
         for _ in range(5):  # 第1撮影を gate 待ちまで進める
             await asyncio.sleep(0)
         assert calls == [(page, "url-1", "")]  # 1件目が in-flight
 
         # 撮影中に3回要求 → _pending は最新(url-4, sel-4)で上書きされる
-        runner.spawn(page, "url-2", cfg, "sel-2")
-        runner.spawn(page, "url-3", cfg, "sel-3")
-        runner.spawn(page, "url-4", cfg, "sel-4")
+        runner.spawn(CaptureRequest(page, "url-2", cfg, "sel-2"))
+        runner.spawn(CaptureRequest(page, "url-3", cfg, "sel-3"))
+        runner.spawn(CaptureRequest(page, "url-4", cfg, "sel-4"))
 
         gate.set()  # 1件目を解放。worker がループして最新1件だけを撮る
         await asyncio.wait_for(worker, timeout=1)
@@ -767,8 +767,8 @@ def test_spawn_different_pages_run_independently():
         runner, calls = _recording_runner()
         p1, p2 = _FakePage("1"), _FakePage("2")
         cfg = Config()
-        runner.spawn(p1, "a", cfg)
-        runner.spawn(p2, "b", cfg)
+        runner.spawn(CaptureRequest(p1, "a", cfg))
+        runner.spawn(CaptureRequest(p2, "b", cfg))
         assert len(runner._tasks) == 2  # ページごとに worker
         await asyncio.wait_for(asyncio.gather(*list(runner._tasks)), timeout=1)
         assert sorted(c[1] for c in calls) == ["a", "b"]
@@ -783,13 +783,67 @@ def test_spawn_restarts_worker_after_drain():
         runner, calls = _recording_runner()
         page = _FakePage("p")
         cfg = Config()
-        runner.spawn(page, "first", cfg)
+        runner.spawn(CaptureRequest(page, "first", cfg))
         await asyncio.wait_for(runner._workers[page], timeout=1)
         assert page not in runner._workers  # drain 後に退場
 
-        runner.spawn(page, "second", cfg)  # 再度 spawn → 新 worker
+        runner.spawn(CaptureRequest(page, "second", cfg))  # 再度 spawn → 新 worker
         await asyncio.wait_for(runner._workers[page], timeout=1)
         assert [c[1] for c in calls] == ["first", "second"]
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# CaptureRequest（撮影 1 回分の要求オブジェクト）
+#
+# spawn→_pending→_worker→_capture を貫通する位置引数タプルを 1 オブジェクトへ集約した器。
+# 既定値と、要求が _capture まで欠けずに届くこと（R1 の配線）を回帰から守る。
+# --------------------------------------------------------------------------- #
+
+
+def test_capture_request_defaults():
+    # selector / group_id は省略時に空文字（未指定）になる。
+    page = _FakePage("p")
+    cfg = Config()
+    req = CaptureRequest(page, "https://example.test/", cfg)
+    assert req.page is page
+    assert req.url == "https://example.test/"
+    assert req.config is cfg
+    assert req.selector == ""
+    assert req.group_id == ""
+
+
+def test_capture_request_holds_all_fields():
+    # 全フィールドを与えると、その値がそのまま保持される。
+    page = _FakePage("p")
+    cfg = Config()
+    req = CaptureRequest(page, "https://example.test/x", cfg, "#main", "20260814101105674")
+    assert (req.selector, req.group_id) == ("#main", "20260814101105674")
+
+
+def test_spawn_delivers_request_to_capture_unchanged():
+    # spawn した CaptureRequest が、page/url/selector/group_id を欠かさず _capture へ届く。
+    async def scenario():
+        runner = CaptureRunner()
+        received: list[CaptureRequest] = []
+
+        async def stub(req):
+            received.append(req)
+
+        runner._capture = stub
+        page = _FakePage("p")
+        cfg = Config()
+        req = CaptureRequest(page, "https://example.test/y", cfg, "#part", "20260814101105674")
+        runner.spawn(req)
+        await asyncio.wait_for(runner._workers[page], timeout=1)
+
+        assert len(received) == 1
+        got = received[0]
+        assert got is req  # 同じオブジェクトがそのまま渡る
+        assert (got.page, got.url, got.selector, got.group_id) == (
+            page, "https://example.test/y", "#part", "20260814101105674"
+        )
 
     asyncio.run(scenario())
 
@@ -824,15 +878,15 @@ class _FakeContext:
 
 
 class _RecRunner:
-    """runner.spawn(page, url, config, selector) を記録するだけのスタブ。"""
+    """runner.spawn(CaptureRequest) を記録するだけのスタブ。"""
 
     def __init__(self) -> None:
         self.calls: list[tuple] = []
         self.group_ids: list[int] = []
 
-    def spawn(self, page, url, config, selector="", group_id=""):
-        self.calls.append((page, url, selector))
-        self.group_ids.append(group_id)
+    def spawn(self, req):
+        self.calls.append((req.page, req.url, req.selector))
+        self.group_ids.append(req.group_id)
 
 
 def _make_session(pages, roots=None, config=None):
