@@ -270,7 +270,12 @@ class CaptureRunner:
         # 読み込み完了を待つ（タイムアウトしても続行）
         with _step("load", url):
             await page.wait_for_load_state("load", timeout=config.load_timeout)
-        await asyncio.sleep(config.settle_delay)
+        # 描画が落ち着くまで待つ（settle_delay）。ただし SPA 経由は、ページ側 badge.js が
+        # SPA_SETTLE_MS のデバウンスで既に「変化が止まってから」通知している。ここで再び
+        # settle_delay を待つと二重待ちになり体感が遅れるだけなので省く（B-4, #18）。
+        # URL遷移/手動は load 直後にまだ描画が動きうるので従来どおり待つ。
+        if trigger != "spa":
+            await asyncio.sleep(config.settle_delay)
 
         # タイトルを取得してファイル名の識別名を確定（失敗しても URL 由来の名前で代替）。
         title = ""

@@ -1504,3 +1504,31 @@ def test_capture_notifies_result_false_on_total_failure(tmp_path):
         assert badge.capture_end_call(True) not in page.eval_calls
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "trigger, expect_settle_sleep",
+    [
+        ("manual", True),   # 手動：load 直後にまだ描画が動くので settle_delay を待つ
+        ("url", True),      # URL遷移：同上
+        ("spa", False),     # SPA：ページ側デバウンスで確定済み。二重待ちを避けて省く（B-4, #18）
+    ],
+)
+def test_capture_skips_settle_sleep_only_for_spa(tmp_path, monkeypatch, trigger, expect_settle_sleep):
+    # settle_delay 分の sleep が SPA 経由でだけ省かれることを、記録した sleep 秒数で確かめる。
+    async def scenario():
+        slept: list[float] = []
+
+        async def fake_sleep(secs):
+            slept.append(secs)
+
+        monkeypatch.setattr(capture.asyncio, "sleep", fake_sleep)
+
+        runner = CaptureRunner()
+        page = _FakeCapturePage(screenshot_ok=True, text_ok=True)
+        cfg = Config(output_dir=tmp_path, settle_delay=0.4)
+        await runner._capture(CaptureRequest(page, "https://ok.test/", cfg, trigger=trigger))
+
+        assert (0.4 in slept) is expect_settle_sleep
+
+    asyncio.run(scenario())
