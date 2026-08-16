@@ -15,6 +15,7 @@ import asyncio
 import re
 import weakref
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -124,6 +125,27 @@ def _step(tag: str, url: str, done=None):
         log(f"[skip {tag}] {url}  ({e})")
 
 
+@dataclass
+class CaptureRequest:
+    """撮影 1 回分の要求。spawn→_pending→_worker→_capture を貫通する 1 オブジェクト。
+
+    以前は `(url, config, selector, group_id)` の位置引数タプルが 4 経路を貫通していた
+    （順序に依存し、要素を 1 個足すたびに 4 箇所の分解を直す必要があった）。1 オブジェクトへ
+    集約したことで、以後の機能（F-A1 索引 CSV の「撮影契機」など）は「フィールドを 1 個
+    足す」だけで全経路へ伝わる。ここでは器だけを用意し、フィールド追加はフェーズ 2 で行う。
+
+    page は撮影対象ページ。_pending / _workers のキーでもあるが、要求そのものにも保持して
+    「1 要求＝1 オブジェクト」で完結させる。selector は _part.txt 抜き出しの対象（実行時の
+    バー入力値）。group_id は保存先サブフォルダ（lineage-<id>）と保存ログの系譜表記に使う。
+    """
+
+    page: Page
+    url: str
+    config: Config
+    selector: str = ""
+    group_id: str = ""
+
+
 class CaptureRunner:
     """1 監視セッション分の撮影実行器。
 
@@ -144,10 +166,10 @@ class CaptureRunner:
         # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
         self._tasks: set[asyncio.Task] = set()
 
-        # ページごとの「最新の保留要求」(url, config, selector, group_id)。新しい要求で
-        # 上書きするのが coalesce の本体。撮影中に何度要求が来ても、次に走るのは最後の1件だけ。
+        # ページごとの「最新の保留要求」(CaptureRequest)。新しい要求で上書きするのが
+        # coalesce の本体。撮影中に何度要求が来ても、次に走るのは最後の1件だけ。
         # ページが閉じたらエントリは自動で消えるよう WeakKeyDictionary を使う。
-        self._pending: weakref.WeakKeyDictionary[Page, tuple[str, Config, str, str]] = (
+        self._pending: weakref.WeakKeyDictionary[Page, CaptureRequest] = (
             weakref.WeakKeyDictionary()
         )
 
@@ -158,23 +180,22 @@ class CaptureRunner:
             weakref.WeakKeyDictionary()
         )
 
-    def spawn(
-        self, page: Page, url: str, config: Config, selector: str = "", group_id: str = ""
-    ) -> None:
-        """撮影要求を投入する（ページごとに合流。B-3）。
+    def spawn(self, req: CaptureRequest) -> None:
+        """撮影要求（CaptureRequest）を投入する（ページごとに合流。B-3）。
 
         最新要求で _pending を上書きし、そのページの worker が居なければ起動する。
         撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は _capture() のスクショ処理が
         内部で行うので、ここでは要求の登録と worker 起動だけを担う。
-        selector は _part.txt 抜き出しの対象（実行時のバー入力値）を _capture() へ渡す。
-        group_id は保存先サブフォルダ（lineage-<id>）と保存ログの系譜表記に使う識別子。
+        req.selector は _part.txt 抜き出しの対象（実行時のバー入力値）を _capture() へ渡す。
+        req.group_id は保存先サブフォルダ（lineage-<id>）と保存ログの系譜表記に使う識別子。
         id は系譜を作った時刻（ミリ秒まで）。空文字なら未採番として output_dir 直下へ保存する。
 
         この関数は同期で、内部に await が無い＝不可分に実行される。worker の終了
         シーケンス（_worker 参照）も不可分なので、両者は「前か後」でしか噛み合わず、
         要求が宙に浮く取りこぼしは起きない。
         """
-        self._pending[page] = (url, config, selector, group_id)
+        page = req.page
+        self._pending[page] = req
         if page not in self._workers:
             task = asyncio.create_task(self._worker(page))
             self._workers[page] = task
@@ -196,18 +217,27 @@ class CaptureRunner:
                 # 「空を見て終了しようとした矢先に新要求が来て取りこぼす」競合は起きない。
                 self._workers.pop(page, None)
                 return
-            url, config, selector, group_id = req
-            await self._capture(page, url, config, selector, group_id)
+            await self._capture(req)
 
-    async def _capture(
-        self, page: Page, url: str, config: Config, selector: str = "", group_id: str = ""
-    ) -> None:
-        # selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
+    async def _capture(self, req: CaptureRequest) -> None:
+        """撮影 1 回分の司会。ts 確定 → load 待ち → title 確定 → save_dir 用意 →
+        各 _save_* 呼び出し → [saved]/[保存できず] ログ、の順に進める。
+
+        個々の保存（png / txt / part）は _save_screenshot / _save_text / _save_part に
+        委ねる。F-A2（_part.png）・F-A3（HTML）・F-A1（索引 CSV）はここへ保存物を足すため、
+        「保存物 1 種＝メソッド 1 本」の粒度に分けてある。保存順・ファイル名・ログ文言は不変。
+        """
+        # req.selector は「一部抜き出し(_part.txt)」の対象 CSS セレクタ。操作バーの入力欄で
         # 実行時に変えられるため、config 固定値ではなく呼び出し時の値を使う
         #（初期値は config.target_selector）。空なら _part.txt はスキップ。
         # ファイル名は「日時（ミリ秒まで）_ページタイトル」。ミリ秒付き日時で一意性と
         # 時系列順を保証し、末尾のタイトルは人がページを見分けるための情報。
         # ts は await より前に確定させる。タイトルはページ読み込み後に確定させる。
+        page = req.page
+        url = req.url
+        config = req.config
+        selector = req.selector
+        group_id = req.group_id
         ts = now_stamp()                                     # 例: 2026-08-11_14-30-25-123
 
         # 読み込み完了を待つ（タイムアウトしても続行）
@@ -228,13 +258,35 @@ class CaptureRunner:
 
         # 実際に保存できたステップの記録（A-3）。png / txt / part だけを積み、
         # 全滅時に [saved] と嘘のログを残さないための判定材料にする。
+        # done は各 _save_* へ渡し、成功したステップだけが自分の tag を積む。
         done: list[str] = []
 
         # 1) フルページ スクリーンショット
-        #    撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、撮影後に
-        #    シャッターフラッシュ＋バー復帰。captureEnd は失敗時も戻すため finally で必ず呼ぶ。
-        #    同一ページの撮影は worker が1件ずつ直列化するので（_worker 参照）、退避中に別撮影が
-        #    割り込んで操作バーが写り込むことはない。別ページ同士は別 worker なので並行できる。
+        await self._save_screenshot(page, save_dir, stem, url, config, done)
+        # 2) ページ全文テキスト
+        await self._save_text(page, save_dir, stem, url, config, done)
+        # 3) 一部抜き出し（セレクタ設定時のみ）
+        if selector:
+            await self._save_part(page, save_dir, stem, url, selector, done)
+
+        # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
+        # group_id が採番済みなら、どの系譜（lineage）の保存かも併記する（＝保存先フォルダ名）。
+        who = f"{group_folder_name(group_id)} " if group_id else ""
+        if done:
+            log(f"[saved] {who}{stem}.*  ({','.join(done)})  <- {url}")
+        else:
+            log(f"[保存できず] {who}{stem}  <- {url}")
+
+    async def _save_screenshot(
+        self, page: Page, save_dir: Path, stem: str, url: str, config: Config, done: list[str]
+    ) -> None:
+        """フルページ スクリーンショット（png）を保存する。
+
+        撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、撮影後に
+        シャッターフラッシュ＋バー復帰。captureEnd は失敗時も戻すため finally で必ず呼ぶ。
+        同一ページの撮影は worker が1件ずつ直列化するので（_worker 参照）、退避中に別撮影が
+        割り込んで操作バーが写り込むことはない。別ページ同士は別 worker なので並行できる。
+        """
         eval_timeout = config.eval_timeout / 1000               # ミリ秒 → 秒（E-6）
         with _step("png", url, done):
             try:
@@ -248,10 +300,15 @@ class CaptureRunner:
                 # フラッシュ＋復帰（必ず実行）。ここも同じく打ち切り付きで待つ。
                 await try_eval(page, badge.CAPTURE_END_CALL, eval_timeout)
 
-        # 2) ページ全文テキスト（操作バーは除外して取得）
-        #    evaluate はタイムアウト引数を持たず set_default_timeout も効かないため、
-        #    asyncio.wait_for で打ち切る（E-6）。戻らないと _step の外＝worker が止まる。
-        #    打ち切りの TimeoutError は _step が握って [skip txt] を出し、worker は次へ進む。
+    async def _save_text(
+        self, page: Page, save_dir: Path, stem: str, url: str, config: Config, done: list[str]
+    ) -> None:
+        """ページ全文テキスト（txt）を保存する（操作バーは除外して取得）。
+
+        evaluate はタイムアウト引数を持たず set_default_timeout も効かないため、
+        asyncio.wait_for で打ち切る（E-6）。戻らないと _step の外＝worker が止まる。
+        打ち切りの TimeoutError は _step が握って [skip txt] を出し、worker は次へ進む。
+        """
         with _step("txt", url, done):
             text = await asyncio.wait_for(
                 page.evaluate(badge.BODY_TEXT_CALL), timeout=config.eval_timeout / 1000
@@ -260,24 +317,18 @@ class CaptureRunner:
                 f"URL: {url}\n\n{text}", encoding="utf-8"
             )
 
-        # 3) 一部抜き出し（セレクタ設定時のみ）
-        if selector:
-            with _step("part", url, done):
-                # 操作バーはシャドウ内にあり locator（querySelector 相当）は境界を越えない。
-                # 広いセレクタ（div / body / * など）でもバーの文言は拾わないので隠す必要はない。
-                parts = await page.locator(selector).all_inner_texts()
-                # 空文字（該当なし要素）は落とす。
-                parts = [p for p in parts if p.strip()]
-                body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
-                (save_dir / f"{stem}_part.txt").write_text(
-                    f"URL: {url}\nSELECTOR: {selector}\n\n{body}",
-                    encoding="utf-8",
-                )
-
-        # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
-        # group_id が採番済みなら、どの系譜（lineage）の保存かも併記する（＝保存先フォルダ名）。
-        who = f"{group_folder_name(group_id)} " if group_id else ""
-        if done:
-            log(f"[saved] {who}{stem}.*  ({','.join(done)})  <- {url}")
-        else:
-            log(f"[保存できず] {who}{stem}  <- {url}")
+    async def _save_part(
+        self, page: Page, save_dir: Path, stem: str, url: str, selector: str, done: list[str]
+    ) -> None:
+        """セレクタで指定した一部だけを抜き出したテキスト（_part.txt）を保存する。"""
+        with _step("part", url, done):
+            # 操作バーはシャドウ内にあり locator（querySelector 相当）は境界を越えない。
+            # 広いセレクタ（div / body / * など）でもバーの文言は拾わないので隠す必要はない。
+            parts = await page.locator(selector).all_inner_texts()
+            # 空文字（該当なし要素）は落とす。
+            parts = [p for p in parts if p.strip()]
+            body = "\n---\n".join(parts) if parts else "(該当箇所が見つかりませんでした)"
+            (save_dir / f"{stem}_part.txt").write_text(
+                f"URL: {url}\nSELECTOR: {selector}\n\n{body}",
+                encoding="utf-8",
+            )

@@ -1,4 +1,4 @@
-"""操作バー JS（badge.js / badge.BADGE_SCRIPT）のスモークテスト。
+"""操作バー JS（badge.js / badge.build_badge_script()）のスモークテスト。
 
 実際の Edge を headless で起動し、add_init_script でバーを注入して
 「操作バー（シャドウホスト＋中身）が実際に構築されるか」「Python から呼ぶ
@@ -78,7 +78,8 @@ def run(strict: bool = False) -> int:
                 lambda m: errors.append(f"console.error: {m.text}") if m.type == "error" else None,
             )
             # add_init_script は「以後の遷移」で走るので、スクリプト登録→遷移の順にする。
-            page.add_init_script(badge.BADGE_SCRIPT)
+            # 完成スクリプトは必要時に build_badge_script() で組み立てる（R5a: import 時 I/O 回避）。
+            page.add_init_script(badge.build_badge_script())
             page.goto("about:blank")
 
             # 1) シャドウホストが構築されるか（＝スクリプトがパース/実行できている）

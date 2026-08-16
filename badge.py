@@ -109,9 +109,12 @@ def build_badge_script(token: str = "", settle_ms: int = 300) -> str:
     return src.replace("$CONFIG", json.dumps(config))
 
 
-# 各ページへ注入する完成済みスクリプト（token 無し）。スモークテストなど、バインディングを
-# 公開せず見た目だけ確認する用途向け。実運用では build_badge_script(token) を使う。
-BADGE_SCRIPT = build_badge_script()
+# 完成済みスクリプト（token 無し）は、以前ここで BADGE_SCRIPT = build_badge_script() として
+# モジュール読み込み時に作っていたが、import しただけで badge.js の read_text（I/O）が走り、
+# 凍結（PyInstaller）環境などで失敗経路を 1 つ抱えていた（R5a）。実運用では token 付きの
+# build_badge_script(token) を都度呼ぶだけで、この完成済みスクリプトは使わない。スモークテスト
+# など「バインディングを公開せず見た目だけ確認する」用途は、build_badge_script() を必要時に
+# 呼ぶ（＝遅延化）。これで import 時 I/O を無くした。
 
 # --- expose_binding で公開するバインディング名（ページ側 → Python の呼び出し口）---
 # badge.js 内の window.__eac_* 呼び出し名と 1:1 で一致させること。言語境界をまたぐため
