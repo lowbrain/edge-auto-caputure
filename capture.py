@@ -15,6 +15,7 @@ import asyncio
 import csv
 import re
 import weakref
+from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -178,6 +179,11 @@ class CaptureRunner:
     """
 
     def __init__(self) -> None:
+        # 撮影 1 回が終わるたびに成否（done 有無）を通知するコールバック（F-D3）。
+        # 監視セッション（CaptureSession）が撮影カウンタの本体を持つため、ここで結果だけを渡す。
+        # 既定は None（撮影実行器を単体で使うテストや、通知が要らない場面では何もしない）。
+        self.on_result: Optional[Callable[[bool], Awaitable[None]]] = None
+
         # 実行中の worker タスクへの強参照を保持する集合。
         # これが無いとイベントループはタスクを弱参照でしか持たず、
         # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
@@ -201,8 +207,8 @@ class CaptureRunner:
         """撮影要求（CaptureRequest）を投入する（ページごとに合流。B-3）。
 
         最新要求で _pending を上書きし、そのページの worker が居なければ起動する。
-        撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は _capture() のスクショ処理が
-        内部で行うので、ここでは要求の登録と worker 起動だけを担う。
+        撮影の合図（バー退避→撮影→シャッターフラッシュ＋復帰）は _capture() が保存処理全体を
+        くるんで行うので、ここでは要求の登録と worker 起動だけを担う。
         req.selector は _part.txt 抜き出しの対象（実行時のバー入力値）を _capture() へ渡す。
         req.group_id は保存先サブフォルダ（lineage-<id>）と保存ログの系譜表記に使う識別子。
         id は系譜を作った時刻（ミリ秒まで）。空文字なら未採番として output_dir 直下へ保存する。
@@ -282,13 +288,23 @@ class CaptureRunner:
         # done は各 _save_* へ渡し、成功したステップだけが自分の tag を積む。
         done: list[str] = []
 
-        # 1) フルページ スクリーンショット
-        await self._save_screenshot(page, save_dir, stem, url, config, done)
-        # 2) ページ全文テキスト
-        await self._save_text(page, save_dir, stem, url, config, done)
-        # 3) 一部抜き出し（セレクタ設定時のみ）
-        if selector:
-            await self._save_part(page, save_dir, stem, url, selector, done)
+        # 撮影の合図つきで 3 種を保存する。バーを退避し切ってからスクショを撮り（画像に写し込ま
+        # ない）、全種の保存後に成否（done 有無）に応じた色でシャッターフラッシュ＋バー復帰。
+        # 退避は png のためだが、txt/txt(part) は本文取得側でバーを除外するので退避したままでも
+        # 支障はなく、フラッシュ色を _capture 全体の成否に一致させるため復帰は最後にまとめて行う。
+        # captureEnd は失敗時も戻すため finally で必ず呼ぶ（フラッシュ色は done 有無で決める）。
+        eval_timeout = config.eval_timeout / 1000                # ミリ秒 → 秒（E-6）
+        await try_eval(page, badge.CAPTURE_START_CALL, eval_timeout)
+        try:
+            # 1) フルページ スクリーンショット
+            await self._save_screenshot(page, save_dir, stem, url, done)
+            # 2) ページ全文テキスト
+            await self._save_text(page, save_dir, stem, url, config, done)
+            # 3) 一部抜き出し（セレクタ設定時のみ）
+            if selector:
+                await self._save_part(page, save_dir, stem, url, selector, done)
+        finally:
+            await try_eval(page, badge.capture_end_call(bool(done)), eval_timeout)
 
         # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
         # group_id が採番済みなら、どの系譜（lineage）の保存かも併記する（＝保存先フォルダ名）。
@@ -300,6 +316,14 @@ class CaptureRunner:
 
         # 撮影ごとに索引 CSV へ 1 行追記（F-A1）。成否は done（実際に保存できたステップ）で決める。
         self._append_index(config, captured_at, url, title, stem, trigger, selector, done)
+
+        # 撮影 1 回分の成否を監視セッションへ通知する（F-D3。撮影カウンタ／失敗の把握に使う）。
+        # 通知先が未設定（単体テスト等）や通知自体が失敗しても、撮影本体は成立しているので握る。
+        if self.on_result is not None:
+            try:
+                await self.on_result(bool(done))
+            except Exception as e:
+                log(f"[skip result] {url}  ({e})")
 
     def _append_index(
         self,
@@ -340,27 +364,19 @@ class CaptureRunner:
             log(f"[skip index] {url}  ({e})")
 
     async def _save_screenshot(
-        self, page: Page, save_dir: Path, stem: str, url: str, config: Config, done: list[str]
+        self, page: Page, save_dir: Path, stem: str, url: str, done: list[str]
     ) -> None:
         """フルページ スクリーンショット（png）を保存する。
 
-        撮影の合図つき: バーを上へ退避し切ってから撮り（保存画像へ写し込まない）、撮影後に
-        シャッターフラッシュ＋バー復帰。captureEnd は失敗時も戻すため finally で必ず呼ぶ。
-        同一ページの撮影は worker が1件ずつ直列化するので（_worker 参照）、退避中に別撮影が
-        割り込んで操作バーが写り込むことはない。別ページ同士は別 worker なので並行できる。
+        バーの退避（撮影直前）と復帰＋シャッターフラッシュ（撮影直後）は、呼び出し元の _capture()
+        が 3 種の保存全体をくるむ形で受け持つ（フラッシュ色を _capture 全体の成否に合わせるため）。
+        ここでは退避済み前提でスクショだけ撮る。同一ページの撮影は worker が1件ずつ直列化するので
+        （_worker 参照）、退避中に別撮影が割り込んで操作バーが写り込むことはない。
         """
-        eval_timeout = config.eval_timeout / 1000               # ミリ秒 → 秒（E-6）
         with _step("png", url, done):
-            try:
-                # 退避し切るまで待つ。ページが固まって戻らない場合は eval_timeout で打ち切り、
-                # 退避の合図に永久に張り付いて worker を止めない（E-6）。
-                await try_eval(page, badge.CAPTURE_START_CALL, eval_timeout)
-                await page.screenshot(
-                    path=str(save_dir / f"{stem}.png"), full_page=True
-                )
-            finally:
-                # フラッシュ＋復帰（必ず実行）。ここも同じく打ち切り付きで待つ。
-                await try_eval(page, badge.CAPTURE_END_CALL, eval_timeout)
+            await page.screenshot(
+                path=str(save_dir / f"{stem}.png"), full_page=True
+            )
 
     async def _save_text(
         self, page: Page, save_dir: Path, stem: str, url: str, config: Config, done: list[str]

@@ -232,6 +232,38 @@ def run(strict: bool = False) -> int:
                     f"B-6(b): SPA検知OFF後も DOM 変化で通知が来ました（{leaked_calls}件・"
                     "Observer が切断されていない）"
                 )
+
+            # 11) F-D3: 撮影カウンタと失敗フラッシュの色分け。
+            #     (a) captureEnd(false)（保存全滅）は成功（赤）と別色（.fail）でフラッシュする。
+            #         成功（引数なし＝赤）では .fail が付かないこと。frame は closed シャドウ内。
+            def _frame_classes() -> str:
+                return page.evaluate(
+                    "(() => { const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
+                    " const f = sr && sr.querySelector('[data-eac=\"frame\"]');"
+                    " return f ? f.className : ''; })()"
+                )
+
+            page.evaluate("window.__eac_captureEnd(false)")   # 失敗の合図
+            fail_cls = _frame_classes()
+            page.evaluate(badge.CAPTURE_START_CALL)           # 後始末（フラッシュを畳む）
+            page.evaluate("window.__eac_captureEnd(true)")    # 成功の合図
+            ok_cls = _frame_classes()
+            page.evaluate(badge.CAPTURE_START_CALL)           # 後始末
+            page.evaluate(badge.CAPTURE_END_CALL)             # capDepth を均衡させる
+            if "flash" not in fail_cls or "fail" not in fail_cls:
+                errors.append(f"F-D3: 失敗フラッシュに .fail が付いていません（class='{fail_cls}'）")
+            if "fail" in ok_cls:
+                errors.append(f"F-D3: 成功フラッシュに .fail が付いています（class='{ok_cls}'）")
+
+            #     (b) __eacSetCount(n) がバーの撮影カウンタ表示（本セッション N 枚）へ反映されること。
+            shots_text = page.evaluate(
+                "(() => { window.__eacSetCount(3);"
+                " const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
+                " const s = sr && sr.querySelector('[data-eac=\"shots\"]');"
+                " return s ? s.textContent : ''; })()"
+            )
+            if "3" not in shots_text:
+                errors.append(f"F-D3: 撮影カウンタが更新されません（表示='{shots_text}'）")
         finally:
             context.close()
 
@@ -243,7 +275,8 @@ def run(strict: bool = False) -> int:
     print(
         "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
         "SPA検知の通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・"
-        "Observer の必要時のみ稼働(B-6)・JSエラー無しを確認しました。"
+        "Observer の必要時のみ稼働(B-6)・撮影カウンタ/失敗フラッシュ(F-D3)・"
+        "JSエラー無しを確認しました。"
     )
     return 0
 
