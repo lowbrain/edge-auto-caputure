@@ -8,6 +8,8 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
 > トラブル対処など）は **[USAGE.txt](USAGE.txt)** に一本化している。
 > この README は**開発・ビルド向け**の情報（仕組み・構成・設定リファレンス・テスト・配布）をまとめる。
 > **このコードを触るときの落とし穴・作業環境・検証手順**は [CONTRIBUTING.md](CONTRIBUTING.md)。
+> **これから作る / 直すもの（残タスクと優先順）**は
+> Issue [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38)（ピン留め）が正。
 
 ## 仕組み（概要）
 
