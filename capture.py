@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import csv
 import re
 import weakref
 from contextlib import contextmanager
@@ -24,7 +25,20 @@ from playwright.async_api import Page
 
 import badge
 from config import Config
-from infra import log
+from infra import iso_timestamp, log
+
+# 索引 CSV のファイル名と見出し。撮影ごとに 1 行追記して「いつ・何を撮ったか」を一覧にする（F-A1）。
+INDEX_CSV_NAME = "index.csv"
+INDEX_CSV_HEADER = ["時刻", "URL", "タイトル", "ファイル名接頭辞", "撮影契機", "セレクタ", "成否"]
+
+# 撮影契機（CaptureRequest.trigger）の内部値 → 索引 CSV に書く日本語表記。
+# 内部は経路を跨いでも壊れにくい短い英字（"manual"/"url"/"spa"）、CSV は人が読む列なので日本語。
+_TRIGGER_LABELS = {"manual": "手動", "url": "URL変化", "spa": "SPA変化"}
+
+
+def trigger_label(trigger: str) -> str:
+    """撮影契機の内部値を索引 CSV 用の日本語表記へ。未知・未設定はそのまま（空なら空）返す。"""
+    return _TRIGGER_LABELS.get(trigger, trigger)
 
 # safe_name() がファイル名スラッグを切り詰める最大長。
 NAME_MAX_LEN = 80
@@ -132,11 +146,13 @@ class CaptureRequest:
     以前は `(url, config, selector, group_id)` の位置引数タプルが 4 経路を貫通していた
     （順序に依存し、要素を 1 個足すたびに 4 箇所の分解を直す必要があった）。1 オブジェクトへ
     集約したことで、以後の機能（F-A1 索引 CSV の「撮影契機」など）は「フィールドを 1 個
-    足す」だけで全経路へ伝わる。ここでは器だけを用意し、フィールド追加はフェーズ 2 で行う。
+    足す」だけで全経路へ伝わる。trigger はその最初の実例（フェーズ 2）。
 
     page は撮影対象ページ。_pending / _workers のキーでもあるが、要求そのものにも保持して
     「1 要求＝1 オブジェクト」で完結させる。selector は _part.txt 抜き出しの対象（実行時の
     バー入力値）。group_id は保存先サブフォルダ（lineage-<id>）と保存ログの系譜表記に使う。
+    trigger は撮影契機（"manual"=今すぐ1枚 / "url"=URL変化・記録開始時 / "spa"=SPA変化）で、
+    投入元 3 経路から _capture の索引 CSV まで貫通させる（F-A1）。既定は空（未指定）。
     """
 
     page: Page
@@ -144,6 +160,7 @@ class CaptureRequest:
     config: Config
     selector: str = ""
     group_id: str = ""
+    trigger: str = ""
 
 
 class CaptureRunner:
@@ -238,7 +255,11 @@ class CaptureRunner:
         config = req.config
         selector = req.selector
         group_id = req.group_id
+        trigger = req.trigger
         ts = now_stamp()                                     # 例: 2026-08-11_14-30-25-123
+        # 索引 CSV 用の撮影時刻。ファイル名（ts）とは別に、オフセット付き ISO で撮影開始時刻を
+        # 押さえる（F-A4）。後から遡って直せない情報なので、await より前のこの時点で確定させる。
+        captured_at = iso_timestamp()                        # 例: 2026-08-11T14:30:25.123+09:00
 
         # 読み込み完了を待つ（タイムアウトしても続行）
         with _step("load", url):
@@ -276,6 +297,47 @@ class CaptureRunner:
             log(f"[saved] {who}{stem}.*  ({','.join(done)})  <- {url}")
         else:
             log(f"[保存できず] {who}{stem}  <- {url}")
+
+        # 撮影ごとに索引 CSV へ 1 行追記（F-A1）。成否は done（実際に保存できたステップ）で決める。
+        self._append_index(config, captured_at, url, title, stem, trigger, selector, done)
+
+    def _append_index(
+        self,
+        config: Config,
+        captured_at: str,
+        url: str,
+        title: str,
+        stem: str,
+        trigger: str,
+        selector: str,
+        done: list[str],
+    ) -> None:
+        """撮影 1 回分を索引 CSV（output_dir/index.csv）へ 1 行追記する（F-A1）。
+
+        系譜ごとのサブフォルダではなく output_dir 直下に置き、全系譜の撮影を 1 本の索引にまとめる
+        （log.txt と同じ粒度）。列は時刻/URL/タイトル/ファイル名接頭辞/撮影契機/セレクタ/成否。
+
+        文字化け対策（地雷）: Excel で開く前提なので BOM 付き（utf-8-sig）で書く。ただし追記のたびに
+        utf-8-sig で開くと毎回 BOM を書き足して行頭へ紛れ込むため、BOM は新規作成時の 1 度だけにし、
+        既存への追記は utf-8 で開く。csv.writer に任せて 値中のカンマ/改行/引用符を正しく退避する。
+        newline="" は csv が改行を二重化しないための定石（Windows でも空行が入らない）。
+        撮影本体は成立しているので、索引の書き込み失敗はログに残すだけで握り、撮影を巻き込まない。
+        """
+        path = config.output_dir / INDEX_CSV_NAME
+        row = [
+            captured_at, url, title, stem,
+            trigger_label(trigger), selector, "成功" if done else "失敗",
+        ]
+        try:
+            new_file = not path.exists()
+            encoding = "utf-8-sig" if new_file else "utf-8"
+            with path.open("a", encoding=encoding, newline="") as f:
+                writer = csv.writer(f)
+                if new_file:
+                    writer.writerow(INDEX_CSV_HEADER)
+                writer.writerow(row)
+        except Exception as e:
+            log(f"[skip index] {url}  ({e})")
 
     async def _save_screenshot(
         self, page: Page, save_dir: Path, stem: str, url: str, config: Config, done: list[str]

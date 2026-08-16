@@ -310,12 +310,13 @@ class CaptureSession:
         """root を共有する現存ページ（＝同じグループのページ）を返す。"""
         return [pg for pg in self.context.pages if self.page_root.get(pg) is root]
 
-    def _shoot(self, pg, grp: "GroupState") -> Optional[str]:
+    def _shoot(self, pg, grp: "GroupState", trigger: str) -> Optional[str]:
         """1ページを撮る。url 取得失敗と skip_urls を弾き、撮れば url を返す（弾けば None）。
 
         「url 取得 → skip 判定 → runner.spawn」の定型を1か所に集約する（各コールバックと監視
         ループで同じ並びを書かないため）。記録状態のゲートは呼び出し側の責務（ここでは見ない）。
         撮影対象の抜き出しセレクタは、そのページが属するグループの selector を使う。
+        trigger は撮影契機（"manual"/"url"/"spa"）で、CaptureRequest に載せて索引 CSV まで通す（F-A1）。
         """
         try:
             url = pg.url
@@ -323,7 +324,7 @@ class CaptureSession:
             return None
         if url in self.config.skip_urls:
             return None
-        self.runner.spawn(CaptureRequest(pg, url, self.config, grp.selector, grp.id))
+        self.runner.spawn(CaptureRequest(pg, url, self.config, grp.selector, grp.id, trigger))
         return url
 
     async def on_toggle(self, source, token=None) -> None:
@@ -347,7 +348,8 @@ class CaptureSession:
         if grp.on:
             root = self.page_root[source["page"]]
             for pg in self._group_pages(root):
-                url = self._shoot(pg, grp)
+                # 記録開始時の即撮りは URL 追跡の基準（seen）を張る初回撮影なので契機は "url"。
+                url = self._shoot(pg, grp, "url")
                 if url is not None:
                     self.seen[pg] = _url_key(url)
 
@@ -361,7 +363,7 @@ class CaptureSession:
         if not self._authorized(token):
             return
         grp = await self._resolve_group(source["page"])
-        url = self._shoot(source["page"], grp)
+        url = self._shoot(source["page"], grp, "manual")
         if url is not None:
             log(f"[手動] {group_folder_name(grp.id)}  {url}")
 
@@ -408,7 +410,7 @@ class CaptureSession:
         grp = await self._resolve_group(source["page"])
         if not (grp.on and grp.spa_on):
             return
-        url = self._shoot(source["page"], grp)
+        url = self._shoot(source["page"], grp, "spa")
         if url is not None:
             log(f"[SPA変化] {group_folder_name(grp.id)}  {url}")
 
@@ -566,7 +568,9 @@ class CaptureSession:
         key = _url_key(url)
         if self.seen.get(page) != key:
             self.seen[page] = key
-            self.runner.spawn(CaptureRequest(page, url, self.config, grp.selector, grp.id))
+            self.runner.spawn(
+                CaptureRequest(page, url, self.config, grp.selector, grp.id, "url")
+            )
 
     def _on_page_closed(self, page) -> None:
         """閉じられたページを管理から除去する（毎tickの _prune を置き換え）。
