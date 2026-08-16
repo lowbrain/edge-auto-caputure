@@ -29,6 +29,10 @@ from capture import (
 )
 from config import Config, load_config, should_capture
 
+# session_stamp の実装本体への参照（autouse フィクスチャが "" へ差し替える前に押さえる）。
+# 差し替え後も本物の書式を検証できるようにするため（F-C3）。
+_REAL_SESSION_STAMP = config_mod.session_stamp
+
 
 @pytest.fixture(autouse=True)
 def _no_dialog_no_repo_writes(monkeypatch, tmp_path):
@@ -37,9 +41,14 @@ def _no_dialog_no_repo_writes(monkeypatch, tmp_path):
     - notify_fatal 経由の _message_box はダイアログを出しテストを止めるので no-op に。
     - log() の書き込み先（LOG_PATH）を一時フォルダへ逃がす。
     どちらも基盤ユーティリティ（infra）にあるので infra を差し替える。
+    - session_stamp（F-C3 の起動時刻サブフォルダ名）を "" に固定する。実時刻由来だと
+      load_config が返す output_dir が起動秒ごとに変わり、下の設定パース系テストの
+      output_dir 比較が不安定になるため、既定では無効化して基準フォルダのままにする。
+      セッションフォルダ挿入そのものは test_load_config_inserts_session_folder 系で検証する。
     """
     monkeypatch.setattr(infra, "_message_box", lambda *a, **k: None)
     monkeypatch.setattr(infra, "LOG_PATH", tmp_path / "log.txt")
+    monkeypatch.setattr(config_mod, "session_stamp", lambda: "")
 
 
 # --------------------------------------------------------------------------- #
@@ -531,6 +540,78 @@ profile_dir = {prof}
 """,
     )
     assert load_config().profile_dir == str(prof)
+
+
+# --------------------------------------------------------------------------- #
+# セッションフォルダ（F-C3: 起動単位で output_dir の下に 1 段挟む）
+# --------------------------------------------------------------------------- #
+
+
+def test_session_stamp_format():
+    # 起動時刻を「YYYY-MM-DD_HHMMSS」で表す（フォルダ名に使うので区切りは - と _ のみ）。
+    # autouse フィクスチャが session_stamp を "" に固定するため、実装本体（_REAL_SESSION_STAMP）を呼ぶ。
+    assert re.match(r"^\d{4}-\d{2}-\d{2}_\d{6}$", _REAL_SESSION_STAMP())
+
+
+def test_load_config_inserts_session_folder(monkeypatch, tmp_path):
+    # F-C3: 確定した output_dir の直下へ、起動時刻のセッションフォルダを 1 段挟む。
+    # 実時刻由来だとテストが不安定なので session_stamp を固定値へ差し替える
+    #（autouse フィクスチャは "" にしているが、ここでは実挿入を検証するため上書きする）。
+    monkeypatch.setattr(config_mod, "session_stamp", lambda: "2026-08-11_143025")
+    out = tmp_path / "out"
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        f"""[capture]
+output_dir = {out}
+""",
+    )
+    c = load_config()
+    assert c.output_dir == out / "2026-08-11_143025"
+
+
+def test_load_config_session_folder_redirects_log(monkeypatch, tmp_path):
+    # log.txt もセッションフォルダへ寄る（set_log_dir が output_dir 直下ではなく
+    # セッションフォルダを指す）。受け渡しが「このフォルダを渡す」で閉じる肝。
+    monkeypatch.setattr(config_mod, "session_stamp", lambda: "2026-08-11_143025")
+    out = tmp_path / "out"
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        f"""[capture]
+output_dir = {out}
+""",
+    )
+    load_config()
+    assert infra.LOG_PATH == out / "2026-08-11_143025" / "log.txt"
+
+
+def test_session_folder_keeps_lineage_and_downloads_relative(monkeypatch, tmp_path):
+    # lineage-<id> / downloads / index.csv は output_dir からの相対で決まるので、
+    # output_dir がセッションフォルダになれば自動でその配下へ入る（相対関係は不変）。
+    monkeypatch.setattr(config_mod, "session_stamp", lambda: "2026-08-11_143025")
+    out = tmp_path / "out"
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        f"""[capture]
+output_dir = {out}
+""",
+    )
+    c = load_config()
+    session = out / "2026-08-11_143025"
+    # 撮影物の系譜サブフォルダ（capture.group_subdir）はセッションフォルダ配下。
+    assert capture.group_subdir(c.output_dir, "20260811143025000") == (
+        session / "lineage-20260811143025000"
+    )
+    # ダウンロード退避先（edge_auto_capture._downloads_dir）もセッションフォルダ配下。
+    from edge_auto_capture import _downloads_dir
+
+    assert _downloads_dir(c, "20260811143025000") == (
+        session / "lineage-20260811143025000" / "downloads"
+    )
+    # 索引 CSV はセッションフォルダ直下（全系譜を 1 本にまとめる粒度は据え置き）。
+    assert c.output_dir / capture.INDEX_CSV_NAME == session / "index.csv"
 
 
 # --------------------------------------------------------------------------- #

@@ -634,7 +634,8 @@ class CaptureSession:
 
 
 async def main(config: Config) -> None:
-    # output_dir は load_config で書き込み可能な場所へ解決済み（D-C1）だが、その後に
+    # output_dir は load_config で書き込み可能な場所へ解決済み（D-C1）で、起動単位の
+    # セッションフォルダ（F-C3。例: .../output/2026-08-11_143025）まで含んでいる。その後に
     # 消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知して抜ける。
     try:
         config.output_dir.mkdir(parents=True, exist_ok=True)
