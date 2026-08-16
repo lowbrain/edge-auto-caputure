@@ -537,7 +537,9 @@ class CaptureSession:
         # badge.js には今回の合言葉（token）と SPA検知のデバウンス時間（settle_delay をミリ秒へ）を
         # 埋め込む。token は各バインディング呼び出しの照合、settle は落ち着き判定に使う。
         settle_ms = int(self.config.settle_delay * 1000)
-        await self.context.add_init_script(badge.build_badge_script(self.token, settle_ms))
+        await self.context.add_init_script(
+            badge.build_badge_script(self.token, settle_ms, self.config.hide_selectors)
+        )
         # ダウンロードは context 単位で拾う（全タブ・以後開く新規タブも自動対象）。
         # 各ファイルを保存先へ退避しないと終了時に消える（E-4）。
         self.context.on("download", self.on_download)

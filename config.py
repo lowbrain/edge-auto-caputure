@@ -58,6 +58,12 @@ skip_urls = about:blank
 # 例: h1  /  article  /  .price  /  #main .title
 target_selector =
 
+# 撮影中だけ隠す要素の CSS セレクタ（カンマ区切り。空なら何も隠さない）
+# 同意バナーや追従ヘッダなどが証跡（スクショ）に被るのを防ぐ。撮影の瞬間だけ
+# visibility:hidden で隠し、撮影後に元へ戻す（ページの操作や記録には影響しない）。
+# 例: #cookie-banner, .sticky-header
+hide_selectors =
+
 # 起動直後に記録を開始するか（false=待機状態で起動し、パネルの「記録開始」で撮り始める）
 # true にすると起動時から記録ON（従来どおり URL/タブ変化で自動保存）になる
 start_recording = false
@@ -113,6 +119,7 @@ class Config:
     eval_timeout: int = 5000                # ページ側 JS 実行（本文取得・撮影合図）の上限（ミリ秒。E-6）
     skip_urls: tuple[str, ...] = ("about:blank", "")   # 撮らないURL
     target_selector: str = ""               # 一部抜き出しの CSS セレクタ（空ならスキップ）
+    hide_selectors: tuple[str, ...] = ()    # 撮影中だけ隠す CSS セレクタ（空なら何も隠さない。F-B2）
     start_recording: bool = False           # 起動直後に記録を開始するか（False=待機状態で起動）
     profile_dir: str = ""                    # 再利用するブラウザプロファイルの場所（空なら毎回使い捨て）
 
@@ -127,6 +134,7 @@ def summarize_config(config: Config) -> str:
     """
     browser = config.browser or "自動(Edge→Chrome)"
     selector = config.target_selector or "(無)"
+    hides = ",".join(config.hide_selectors) or "(無)"
     skips = ",".join(u for u in config.skip_urls if u) or "(無)"
     return (
         "[config] "
@@ -140,6 +148,7 @@ def summarize_config(config: Config) -> str:
         f"eval_timeout={config.eval_timeout} "
         f"start_recording={config.start_recording} "
         f"target_selector={selector} "
+        f"hide_selectors={hides} "
         f"skip_urls={skips} "
         f"profile_dir={config.profile_dir or '使い捨て'}"
     )
@@ -214,6 +223,9 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
     urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
 
+    # 撮影中だけ隠すセレクタ。カンマ区切りをタプル化（空要素は落とす。F-B2）。
+    hides = [s.strip() for s in sec.get("hide_selectors", "").split(",") if s.strip()]
+
     # 再利用プロファイルの場所。空なら毎回使い捨て（既定の挙動を据え置く）。
     # 指定時のみ、相対パスは基準フォルダ基準に固定して絶対パス文字列で保持する
     # （output_dir と同じ扱い。書き込み可能な exe 隣を既定基準にできる）。
@@ -237,6 +249,7 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
         eval_timeout=eval_timeout,
         skip_urls=tuple(urls) + ("",),
         target_selector=sec.get("target_selector", "").strip(),
+        hide_selectors=tuple(hides),
         start_recording=sec.getboolean("start_recording", defaults.start_recording),
         profile_dir=profile_dir,
     )

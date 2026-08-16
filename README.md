@@ -97,6 +97,7 @@ python edge_auto_capture.py
 | `load_timeout` | ページ読み込み待ちの上限（ミリ秒） |
 | `skip_urls` | 撮らない URL（カンマ区切り） |
 | `target_selector` | 一部抜き出し／SPA検知の対象 CSS セレクタの初期値（バーで実行時に変更可・空可） |
+| `hide_selectors` | 撮影中だけ隠す要素の CSS セレクタ（カンマ区切り・空可）。同意バナーや追従ヘッダが証跡に被るのを防ぐ。撮影の瞬間だけ `visibility:hidden` にして撮影後に戻す |
 | `start_recording` | 起動直後に記録を開始するか（`false`=待機で起動、`true`=起動時から記録ON） |
 | `profile_dir` | 再利用するブラウザプロファイルの場所（空なら毎回まっさらな使い捨て＝既定）。指定するとログイン状態などを保存し次回へ引き継ぐ。相対なら本体/exe と同じ場所基準。指定フォルダに Cookie・認証情報がディスク保存される点に注意 |
 

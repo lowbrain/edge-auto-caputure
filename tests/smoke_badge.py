@@ -264,6 +264,37 @@ def run(strict: bool = False) -> int:
             )
             if "3" not in shots_text:
                 errors.append(f"F-D3: 撮影カウンタが更新されません（表示='{shots_text}'）")
+
+            # 12) F-B2: hide_selectors 指定時、撮影中（captureStart 後）だけ該当要素が
+            #     visibility:hidden になり、撮影後（captureEnd 後）に元へ戻ること。
+            #     hide_selectors は build_badge_script に埋め込むので、別ページを用意して検証する。
+            hp = context.new_page()
+            hp.on("pageerror", lambda exc: errors.append(f"pageerror(F-B2): {exc}"))
+            hp.add_init_script(badge.build_badge_script("", 300, ("#eac-hide-me",)))
+            hp.goto("about:blank")
+            hp.wait_for_selector(BADGE_SEL, state="attached", timeout=5000)
+            hp.evaluate(
+                "document.body.appendChild(Object.assign(document.createElement('div'),"
+                " { id: 'eac-hide-me', textContent: 'banner' }))"
+            )
+
+            def _hide_vis() -> str:
+                return hp.evaluate(
+                    "(() => { const el = document.getElementById('eac-hide-me');"
+                    " return el ? el.style.visibility : '(no-el)'; })()"
+                )
+
+            before = _hide_vis()
+            hp.evaluate(badge.CAPTURE_START_CALL)   # 撮影退避＋対象を隠す
+            during = _hide_vis()
+            hp.evaluate(badge.CAPTURE_END_CALL)     # 撮影後＝元へ戻す
+            after = _hide_vis()
+            if during != "hidden":
+                errors.append(f"F-B2: 撮影中に対象が隠れていません（visibility='{during}'）")
+            if after == "hidden":
+                errors.append("F-B2: 撮影後も対象が隠れたままです（元へ戻っていない）")
+            if before == "hidden":
+                errors.append("F-B2: 撮影前から対象が隠れています（テストの前提が崩れている）")
         finally:
             context.close()
 
@@ -276,7 +307,7 @@ def run(strict: bool = False) -> int:
         "PASS: 操作バーの構築・ヘルパ動作・シャドウ closed・透過トグル・"
         "SPA検知の通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・"
         "Observer の必要時のみ稼働(B-6)・撮影カウンタ/失敗フラッシュ(F-D3)・"
-        "JSエラー無しを確認しました。"
+        "撮影中バナー除去(F-B2)・JSエラー無しを確認しました。"
     )
     return 0
 

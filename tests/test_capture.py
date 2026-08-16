@@ -206,6 +206,7 @@ load_timeout = 3000
 eval_timeout = 4000
 skip_urls = about:blank, https://skip.me
 target_selector = .price
+hide_selectors = #cookie-banner, .sticky-header
 start_recording = true
 """,
     )
@@ -218,6 +219,8 @@ start_recording = true
     # 指定した skip_urls ＋ 常に付く空URL。
     assert c.skip_urls == ("about:blank", "https://skip.me", "")
     assert c.target_selector == ".price"
+    # カンマ区切りをタプル化（空要素は落とす。F-B2）。
+    assert c.hide_selectors == ("#cookie-banner", ".sticky-header")
     assert c.start_recording is True
 
 
@@ -236,6 +239,7 @@ output_dir = {out}
     assert c.settle_delay == d.settle_delay
     assert c.load_timeout == d.load_timeout
     assert c.eval_timeout == d.eval_timeout
+    assert c.hide_selectors == d.hide_selectors == ()
     assert c.start_recording is d.start_recording
     assert c.start_url == "about:blank"
 
@@ -503,12 +507,18 @@ def test_startup_environment_line_has_os_and_python():
 def test_summarize_config_reports_key_values():
     from config import summarize_config
 
-    c = Config(browser="edge", output_dir=Path("/tmp/out"), target_selector=".price")
+    c = Config(
+        browser="edge",
+        output_dir=Path("/tmp/out"),
+        target_selector=".price",
+        hide_selectors=("#cookie-banner", ".sticky-header"),
+    )
     line = summarize_config(c)
     assert line.startswith("[config] ")
     assert "browser=edge" in line
     assert "output_dir=/tmp/out" in line or "output_dir=\\tmp\\out" in line
     assert "target_selector=.price" in line
+    assert "hide_selectors=#cookie-banner,.sticky-header" in line
 
 
 def test_summarize_config_marks_empty_values_readably():
@@ -519,6 +529,7 @@ def test_summarize_config_marks_empty_values_readably():
     assert "edge_path=自動" in line
     assert "profile_dir=使い捨て" in line
     assert "target_selector=(無)" in line
+    assert "hide_selectors=(無)" in line
 
 
 # --------------------------------------------------------------------------- #
