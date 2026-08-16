@@ -181,6 +181,31 @@ def notify_fatal(msg: str) -> None:
     _message_box(msg)
 
 
+def open_in_file_manager(path: Path) -> bool:
+    """保存先フォルダを OS のファイルマネージャで開く（F-D4）。開けたら True。
+
+    操作バーの「フォルダを開く」ボタンから呼ぶ。撮影物・ダウンロード・log.txt が
+    集まった保存先（起動単位のセッションフォルダ）を、利用者がその場で開けるようにする
+    （受け渡しが「このフォルダを渡す」で閉じる F-C3 と対の導線）。
+
+    配布対象は Windows なので本命は os.startfile だが、開発機の macOS や Linux でも
+    確認できるよう OS ごとに分岐する（_message_box と同じ方針）。存在しないフォルダや
+    権限不足で開けなくても例外は握り潰し、False を返す（バー操作を壊さない）。
+    """
+    try:
+        if sys.platform == "win32":
+            # os.startfile は Windows 専用（typeshed も sys.platform ガード下でのみ公開）。
+            # この分岐に入るのは win32 のときだけなので mypy も他 OS で解決を試みない。
+            os.startfile(str(path))
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except Exception:
+        return False
+    return True
+
+
 def startup_environment_line() -> str:
     """起動環境（OS・Python・実行形態・基準フォルダ）を1行に整形する（D-B2）。
 

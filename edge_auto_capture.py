@@ -71,6 +71,7 @@ from infra import (
     cleanup_old_profiles,
     log,
     notify_fatal,
+    open_in_file_manager,
     startup_environment_line,
 )
 
@@ -393,6 +394,20 @@ class CaptureSession:
         if url is not None:
             log(f"[手動] {group_folder_name(grp.id)}  {url}")
 
+    async def on_open_folder(self, source, token=None) -> None:
+        """「保存先」ボタン: 撮影物・ダウンロード・log.txt の保存先フォルダを開く（F-D4）。
+
+        開くのは起動単位のセッションフォルダ（config.output_dir。F-C3 で 1 段挟んだ場所）。
+        記録状態やグループには依存しない（どのページのバーから押しても同じ保存先を開く）ので
+        グループ解決はしない。OS のファイルマネージャで開く操作はローカルで完結し、閲覧中の
+        サイトへは何も送らない。token 不一致（操作バー以外）は黙って無視する。
+        """
+        if not self._authorized(token):
+            return
+        target = self.config.output_dir
+        ok = open_in_file_manager(target)
+        log(f"[フォルダ] {'開きました' if ok else '開けませんでした'}: {target}")
+
     async def on_spa_toggle(self, source, token=None) -> None:
         """「SPA検知」ボタン: 中身の変化を契機にした自動保存を ON/OFF する。
 
@@ -530,6 +545,7 @@ class CaptureSession:
         # バインディング名は badge.py の BIND_* に集約（badge.js 側の呼び出し名と一致）。
         await self.context.expose_binding(badge.BIND_TOGGLE, self.on_toggle)
         await self.context.expose_binding(badge.BIND_SHOT, self.on_shot)
+        await self.context.expose_binding(badge.BIND_OPEN_FOLDER, self.on_open_folder)
         await self.context.expose_binding(badge.BIND_SPA_TOGGLE, self.on_spa_toggle)
         await self.context.expose_binding(badge.BIND_SET_SELECTOR, self.on_set_selector)
         await self.context.expose_binding(badge.BIND_COMMIT_SELECTOR, self.on_commit_selector)

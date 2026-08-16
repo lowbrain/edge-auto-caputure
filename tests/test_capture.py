@@ -1201,6 +1201,63 @@ def test_shoot_passes_group_id_to_spawn():
     asyncio.run(scenario())
 
 
+# --------------------------------------------------------------------------- #
+# F-D4: 保存先フォルダを開く
+#
+# 「保存先」ボタンは config.output_dir（起動単位のセッションフォルダ）を OS の
+# ファイルマネージャで開く。グループ状態には依存せず、token 照合だけを見る。
+# 実際にフォルダを開くのは避け、open_in_file_manager をスタブして呼び出しを検証する。
+# --------------------------------------------------------------------------- #
+
+
+def test_open_folder_opens_session_output_dir(monkeypatch, tmp_path):
+    # 押すと config.output_dir がそのまま opener へ渡る（記録状態やグループに依らない）。
+    import edge_auto_capture as eac
+
+    async def scenario():
+        opened: list = []
+        monkeypatch.setattr(eac, "open_in_file_manager", lambda p: opened.append(p) or True)
+        out = tmp_path / "2026-08-11_143025"
+        s = _make_session([_GroupPage("r")], config=Config(output_dir=out))
+        await s.on_open_folder({"page": _GroupPage("r")}, token=s.token)
+        assert opened == [out]
+
+    asyncio.run(scenario())
+
+
+def test_open_folder_ignores_wrong_token(monkeypatch, tmp_path):
+    # token 不一致（操作バー以外からの呼び出し）はフォルダを開かない。
+    import edge_auto_capture as eac
+
+    async def scenario():
+        opened: list = []
+        monkeypatch.setattr(eac, "open_in_file_manager", lambda p: opened.append(p) or True)
+        s = _make_session([_GroupPage("r")], config=Config(output_dir=tmp_path))
+        await s.on_open_folder({"page": _GroupPage("r")}, token="wrong")
+        assert opened == []
+
+    asyncio.run(scenario())
+
+
+def test_open_in_file_manager_returns_false_on_error(monkeypatch):
+    # 開けない（存在しない・権限不足で例外）ときは握り潰して False を返す（バー操作を壊さない）。
+    def boom(*a, **k):
+        raise OSError("nope")
+
+    monkeypatch.setattr(infra.subprocess, "run", boom)
+    monkeypatch.setattr(infra.os, "startfile", boom, raising=False)
+    assert infra.open_in_file_manager(Path("/no/such/folder")) is False
+
+
+def test_open_in_file_manager_invokes_platform_opener(monkeypatch, tmp_path):
+    # 開けたら True。macOS では open コマンドへ対象パスを渡す（OS 分岐の回帰）。
+    monkeypatch.setattr(infra.sys, "platform", "darwin")
+    calls: list = []
+    monkeypatch.setattr(infra.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    assert infra.open_in_file_manager(tmp_path) is True
+    assert calls == [["open", str(tmp_path)]]
+
+
 def test_trigger_threaded_per_path():
     # 撮影契機が投入元 3 経路から CaptureRequest.trigger に載る（F-A1）:
     # on_shot="manual" / on_spa_changed="spa" / _shoot_if_changed="url" /
