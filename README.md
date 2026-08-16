@@ -7,6 +7,9 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
 > **利用者向けの使い方**（操作バーの操作、SPA検知の使い方、CSSセレクタの入れ方・調べ方、
 > トラブル対処など）は **[USAGE.txt](USAGE.txt)** に一本化している。
 > この README は**開発・ビルド向け**の情報（仕組み・構成・設定リファレンス・テスト・配布）をまとめる。
+> **このコードを触るときの落とし穴・作業環境・検証手順**は [CONTRIBUTING.md](CONTRIBUTING.md)。
+> **これから作る / 直すもの（残タスクと優先順）**は
+> Issue [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38)（ピン留め）が正。
 
 ## 仕組み（概要）
 
@@ -15,16 +18,33 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
   変化ごとに capture（`png` / `txt`、セレクタ指定時は `_part.txt`）を走らせる。ポーリング間隔
   （旧 `poll_interval`）は廃止し、変化から撮影までの遅延も無くした。Edge の起動・監視・終了・
   一時プロファイルの後始末までを一括で行う（毎回まっさらな一時プロファイルで起動）。
+- **撮影のたびに索引 CSV（`index.csv`）へ 1 行追記する**。列は 時刻 / URL / タイトル /
+  ファイル名接頭辞 / 撮影契機（手動・URL変化・SPA） / セレクタ / 成否。時刻は ISO 8601（オフセット付き）、
+  Excel で開く前提なので **BOM 付き（`utf-8-sig`）で新規作成し、追記は `utf-8`**（BOM の二重付与を避ける）。
+  全系譜ぶんを 1 本にまとめる粒度は `log.txt` と同じ。
 - **タブ系譜（グループ）ごとの独立制御**: 記録ON/OFF・SPA検知・セレクタは、セッション全体で
   共有せず「タブ系譜」ごとに独立して持つ。系譜とは、起動時の最初のタブ（または手動で開いた別タブ）と、
   そこから `window.open` / `target="_blank"` で派生したポップアップ/ウィンドウの一族で、
   `page.opener()` の連鎖で判定する。系譜内のページは操作バーの状態を共有し、別系譜には影響しない。
   手動で開いた別タブ（`Ctrl+T` 等、opener が無いページ）は**初期OFF**の独立グループになり、
   そのタブの操作バーで ON にするまで撮影されない（起動時の最初のグループだけ `start_recording` に従う）。
-- **保存先も系譜ごとに分ける**: 撮影物（`png`/`txt`/`_part.txt`）とダウンロード退避は、
-  系譜ごとの `output_dir/lineage-<id>/`（ダウンロードは `output_dir/lineage-<id>/downloads/`）へ保存する。
-  `<id>` はその系譜を作った時刻（ミリ秒まで・区切りなし。例 `20260814101105674`）で、ログの `lineage-<id>`
+- **保存先は「起動ごと」→「系譜ごと」の 2 段**: `output_dir` の直下に起動 1 回分の
+  **セッションフォルダ**（`YYYY-MM-DD_HHMMSS`。`config.session_stamp()`）を 1 段挟み、
+  その中を系譜ごとの `lineage-<id>/`（ダウンロードは `lineage-<id>/downloads/`）に分ける。
+  **`log.txt` と `index.csv` もセッションフォルダ直下**に置かれる（`output_dir` 直下ではない）。
+
+  ```
+  output/2026-08-16_143025/          # 起動 1 回分。受け渡しはこのフォルダを丸ごと渡せば済む
+  ├─ log.txt / index.csv
+  └─ lineage-20260814101105674/      # タブ系譜ごと
+     ├─ *.png / *.txt / *_part.txt
+     └─ downloads/
+  ```
+
+  `<id>` はその系譜を作った時刻（ミリ秒まで・区切りなし）で、ログの `lineage-<id>`
   表記＝保存フォルダ名と一致するため、ログから保存先をそのまま辿れる。フォルダは保存時に必要に応じて作成する。
+  セッション粒度は秒までで、同一秒に二重起動するとまれにフォルダを共有するが、`mkdir` の `exist_ok` と
+  同じ許容範囲として扱っている。
 - **SPA検知**: 中身変化の検出はページ側（`badge.js`）がイベント駆動で行う。`MutationObserver` で
   DOM 変化を捉え、`settle_delay` ぶん変化が止まって「落ち着いた」ら対象の innerText を短いハッシュ
   （コンテンツ署名）にし、前回保存時と署名が異なるときだけ Python へ通知して保存する（重複除外＋
@@ -38,6 +58,13 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
   にも写り込まない。保存が終わるとバーを一瞬フラッシュして「保存した」ことを知らせる。
 - バー右端の**「透過」トグル**（枠なしの目アイコン）で、バーを一時的に半透明にして下に隠れた
   ページ内容を確認できる（見た目だけのローカル状態で、記録状態や保存物には影響しない）。
+- バーはこのほかに次を持つ。文言は `badge.py` の `_BADGE_CONFIG` に集約してある。
+  - **撮影カウンタ**（`本セッション N 枚`）… 保存できた枚数だけを数える（全滅した回は数えない）。
+    動作している実感と、意図しない連写の早期発見のために常時表示する。保存に失敗した回は
+    フラッシュを失敗色にして成功と区別する。
+  - **「保存先」ボタン** … セッションフォルダを OS のファイルマネージャで開く。
+    撮り終わったフォルダをそのまま渡せる導線。
+  - **セレクタ履歴** … 確定したセレクタを `datalist` の候補として入力欄に出す（最近使った順・上限あり）。
 
 ## 動作条件
 
@@ -48,7 +75,7 @@ Microsoft Edge（無ければ Google Chrome）で開いたページを、**記�
 ## リポジトリ構成
 
 役割ごとに分割している。依存方向は下向きの一方向で循環なし:
-`edge_auto_capture →（capture / config）→ infra`、`capture → badge`、`config → infra`。
+`edge_auto_capture →（capture / config / badge）→ infra`、`capture → badge`、`config → infra`。
 `infra` は Playwright 非依存で、`config`（設定読み込み）も同様なので実 Edge 無しでテストできる。
 ページ側 JS は実ファイル `badge.js` に置き、エディタ/リンタで構文検査できるようにしてある。
 
@@ -63,13 +90,17 @@ edge-auto-capture/
 ├─ tests/
 │  ├─ smoke_badge.py         操作バーJS＋SPA検知監視のスモークテスト（Edge headless）
 │  ├─ test_capture.py        純粋関数（capture）・設定読み込み（config）のユニットテスト（pytest）
+│  ├─ test_downloads.py      ダウンロード退避の回帰テスト（pytest）
 │  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
 │  └─ conftest.py            pytest 共通設定
+├─ .github/workflows/ci.yml  CI（ruff+mypy / pytest / smoke --strict）
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
 ├─ README.md              このファイル（開発者向け）
+├─ CONTRIBUTING.md        触る人向けの落とし穴・作業環境・検証手順
 ├─ USAGE.txt              配布物(exe)に同梱する利用者向けの使い方（Shift-JIS）
-└─ build.ps1             配布用 exe のビルド（PyInstaller）
+├─ LICENSE                MIT License
+└─ build.ps1              配布用 exe のビルド（PyInstaller）
 ```
 
 生成物（`build/` `dist/` `output/` `__pycache__/` `*.spec`）は Git 管理外。
@@ -93,8 +124,9 @@ python edge_auto_capture.py
 | `edge_path` | Edge 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `chrome_path` | Chrome 実行ファイルのパス（空なら自動検出。非標準インストール時のみ） |
 | `output_dir` | 保存先。相対なら本体/exe と同じ場所基準、絶対パスも可 |
-| `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数 |
+| `settle_delay` | 変化検知後、描画が落ち着くまで待つ秒数。SPA 検知経由の撮影ではページ側で既に待っているため、撮影前の sleep は省く（二重待ち回避） |
 | `load_timeout` | ページ読み込み待ちの上限（ミリ秒） |
+| `eval_timeout` | ページ側 JS（本文取得・撮影の合図）の実行を待つ上限（ミリ秒）。重い処理で固まったページを打ち切って次へ進むための保険 |
 | `skip_urls` | 撮らない URL（カンマ区切り）。前方一致で判定（クエリ付きでも効く）。`* ? [` を含めるとワイルドカード（fnmatch）扱い |
 | `allow_urls` | 撮る URL をこれだけに絞る（カンマ区切り・空なら無効）。指定すると合致しない URL は全スキップ。`skip_urls` も併用可（合致しても `skip_urls` に当たれば撮らない）。判定は `skip_urls` と同じ前方一致/ワイルドカード |
 | `target_selector` | 一部抜き出し／SPA検知の対象 CSS セレクタの初期値（バーで実行時に変更可・空可） |
@@ -122,30 +154,35 @@ python edge_auto_capture.py
 
 実 Edge を使わずに、間違えやすいロジックと「微妙な仕様」を回帰から守る。
 
-- `test_capture.py` … 純粋関数（`safe_name` / `page_label`）と設定読み込み（`load_config`）。
-  切り詰め・フォールバック・既定値・空値や範囲外値の扱いを検証。
+- `test_capture.py` … 純粋関数（`safe_name` / `page_label`）、設定読み込み（`load_config`）、
+  撮影キューの合流、URL 判定（`should_capture`）、系譜解決、索引 CSV など。
+- `test_downloads.py` … ダウンロード退避の回帰。
 - `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合
   （SPA変化通知 `__eac_spa_changed` の記録状態ゲートを含む）。
 
 SPA検知の落ち着き判定はページ側（`badge.js`）へ移したため、その回帰確認はスモークテストが担う。
 
+**2. スモークテスト（実 Edge/Chrome・遅い）**
+
+操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）と
+SPA検知の監視（本文を変えると `__eac_spa_changed` が発火する一連）が例外なく動くかを確認する。
+
 ```bash
 pip install -e ".[dev]"
 pytest
+python tests/smoke_badge.py --strict
+ruff check .
+mypy .
 ```
 
-**2. スモークテスト（実 Edge headless・遅い）**
+> **`--strict` を必ず付けること。** 付けないと、ブラウザが無い環境では `SKIP`（終了コード 0）で
+> 抜けてしまい「何も検証していないのに緑」になる。`--strict` はこれを FAIL 化する。
 
-操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）と
-SPA検知の監視（本文を変えると `__eac_spa_changed` が発火する一連）が例外なく動くかを、
-システムの Edge を headless で使って確認する。
+CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）でも同じ 4 点が回る。`ruff` + `mypy` と
+`pytest` は Linux、**smoke は実 Edge が要るので Windows runner** で `--strict` 付き。
 
-```bash
-python tests/smoke_badge.py
-```
-
-`PASS`（終了コード 0）で正常。以前混入した JS 構文エラー（`render` 引数と `st` の
-二重宣言）のような不具合を、実行前に自動検出することを狙ったもの。
+**変更時に踏みやすい落とし穴（`$CONFIG` 置換・バインディング名の二重管理・Shift-JIS・
+新モジュール追加時の同時更新など）は [CONTRIBUTING.md](CONTRIBUTING.md) にまとめてある。**
 
 ## 配布用 exe のビルド
 
@@ -161,7 +198,7 @@ PyInstaller が `dist\edge-auto-capture\` を生成し、`config.ini` / `USAGE.t
 実行時は `sys._MEIPASS` から読み込まれる（`badge.py` `capture.py` は import から自動で辿られる）。
 最後に配布用の `dist\edge-auto-capture.zip` と、その `*.zip.sha256`（完全性確認用）を作る。
 
-#### コードサイニング署名（任意）
+#### コードサイニング署名（任意・`D-D1`）
 
 証明書を持っている場合はビルド時に署名できる。指定が無ければ署名ステップは素通りし、
 現状どおり未署名で配布される。
@@ -172,6 +209,12 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -CertPath cert.pfx -CertPassw
 # 証明書ストア上の証明書を拇印で指定（EV トークン等）
 powershell -ExecutionPolicy Bypass -File build.ps1 -CertThumbprint <THUMBPRINT>
 ```
+
+> **受け口は実装済み、証明書の取得は保留（組織判断）。** 企業環境では SmartScreen の「警告」ではなく
+> **「ブロック」**（AppLocker / WDAC / Intune）になることがあり、「詳細情報 → 実行」では回避できない。
+> 本格配布ならコードサイニング証明書が最も効く（OV で警告軽減、EV なら SmartScreen 評価が即付く）。
+> 年額コストと発行手続きが要るため、技術判断ではなく組織判断として保留している。
+> 取得できない間は下の「配布先 IT へ許可登録を依頼する連絡テンプレート」を使う。
 
 ### 配布方法
 
@@ -197,8 +240,45 @@ edge-auto-capture\
 > `_internal\` は動作に必須。exe だけ取り出しても動かない。
 > 未署名 exe のため初回に Windows SmartScreen 警告が出る場合がある
 > （「詳細情報」→「実行」で起動可能）。企業環境では警告ではなくブロックに
-> なることがある（AppLocker / WDAC / Intune）。その場合は配布先 IT への
-> 許可登録が要る（`docs/DISTRIBUTION.md` の依頼テンプレート参照）。
+> なることがある（AppLocker / WDAC / Intune）。その場合は下の依頼テンプレートで
+> 配布先 IT へ許可登録を依頼する。
+
+### 配布前の確認
+
+- **アンチウイルスの誤検知（`D-D2`）** — PyInstaller 製バイナリはヒューリスティックで誤検知されやすい。
+  `--onedir`（`--onefile` より誤検知しにくい）は採用済み。**配布前に主要な AV で一度確認**しておく。
+  出る場合は署名するかベンダーへ誤検知報告。技術改修ではなく都度対応の運用事項。
+- **配布物のサイズ実測** — `--collect-all playwright` は Node ドライバごと同梱するため
+  100MB 超になる可能性がある。配布経路（メール添付の可否等）に影響するので実測する。
+- `output\` の同梱は `build.ps1` が自動で行う。空の `output\` を作り、展開時点で書き込み可否が
+  分かるようにしている（`Compress-Archive` は空フォルダを ZIP に含めないため、フォルダ保持と
+  利用者案内を兼ねた説明ファイルを 1 つ置く）。狙いは権限問題に早く気づけること。
+
+### 配布先 IT へ許可登録を依頼する連絡テンプレート
+
+証明書を取得しない間、企業環境でブロックされる場合はこれで許可登録を依頼する。
+`< >` は配布ごとに埋める。SHA256 は `build.ps1` が出力する `*.zip.sha256` の値を使う。
+
+```
+件名: 業務ツール「edge-auto-capture」の実行許可のお願い
+
+<IT 部門ご担当者> 様
+
+業務調査で使用するツール「edge-auto-capture」を配布します。
+現時点でコードサイニング署名が無いため、SmartScreen / AppLocker / WDAC / Intune の
+ポリシーによってはブロックされる可能性があります。以下の実行ファイルの許可登録
+（許可リストへの追加）をご検討いただけますでしょうか。
+
+- ツール名 : edge-auto-capture
+- 用途     : Web ページのスクリーンショット・テキストの自動保存（社内調査用）
+- 配布物   : edge-auto-capture.zip（PyInstaller onedir 形式・未署名）
+- 実行ファイル: edge-auto-capture.exe
+- SHA256(zip): <build.ps1 が出力した SHA256 値>
+- 依存      : Microsoft Edge / Google Chrome（同梱の Playwright ドライバ経由）
+- 配布元    : <配布者名・連絡先>
+
+ご不明点があればお知らせください。よろしくお願いいたします。
+```
 
 ## ライセンス
 
