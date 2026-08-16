@@ -52,6 +52,16 @@
 7. **`ruff check` は緑（終了コード 0）が正常** — UP037 は Python 3.9 化で解消済み。
    **指摘が出たらそれは新しく入れた問題**なので直すこと。`mypy` も導入済み（緑が正常）。
 
+8. **新モジュール（`lineage.py` / `browser.py` / サニタイズ器 等）を足すときは 2 箇所を同時更新** —
+   漏れると配布/CI が黙って割れる。[`pyproject.toml`](../pyproject.toml) の
+   `[tool.setuptools] py-modules`（~L35）と `[tool.mypy] files`（~L57）の**両方**へモジュール名を追加する。
+   `ruff` は `extend-exclude` 方式なので追記不要、[`build.ps1`](../build.ps1) は import 追従なので変更不要。
+   （旧 `REFACTORING.md` §4 の恒久ルールをここへ集約）
+
+9. **コメントは資産。関数を移動するときは一緒に運ぶ** — 各所の日本語コメントは
+   A-1/A-2/B-3/E-6 等の落とし穴回避の記録。リファクタで関数を移すときもコメントを削らない・要約しない。
+   （旧 `REFACTORING.md` §0 の大原則より）
+
 ---
 
 ## 2. 未検証事項（憶測で「確認済み」と書かないこと）
@@ -105,17 +115,24 @@
 
 ---
 
-## 4. 検証手順
+## 4. 検証手順（4 点セット）
+
+変更のたびに **pytest / smoke / ruff / mypy の 4 点**を全部緑にする（旧 `REFACTORING.md` §5 の「各フェーズ末で 4 点」を恒久化）。
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest                                 # 速い純粋関数・token 照合・DL の回帰
+python tests/smoke_badge.py --strict   # 実 Edge。バー構築・SPA検知・写り込み防止・JS エラー無し
 ruff check .
 mypy .
-python tests/smoke_badge.py   # Edge/Chrome があれば。SKIP されたら「未検証」と報告する
 ```
 
-`ruff` は `line-length = 100`、`select = ["E","F","I","UP","B"]`。
+- **smoke は実 Edge/Chrome 必須**（Windows で実行）。手元に無ければ `SKIP`（終了コード 0）で抜けるので
+  **PASS 表示を鵜呑みにしない**。CI・検証では **`--strict`** を付けて FAIL 化する（付けないと
+  ブラウザ不在環境で「何も検証せず緑」になる）。SKIP されたら報告では「未検証」と明記する。
+- **新モジュールを足したときは** mypy を回す前に §1-8 の 2 箇所（`py-modules` / `[tool.mypy] files`）を更新する。
+- リファクタでは**新規テストを足せる場所は足す**（純粋関数・判定ロジック・レジストリ等はブラウザ無しで単体化できる）。
+- `ruff` は `line-length = 100`、`select = ["E","F","I","UP","B"]`。
 
 ---
 
