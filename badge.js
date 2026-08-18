@@ -13,34 +13,75 @@
 // バーを上へスライドさせて画面外へ退避してから撮る（意図した動作に見せる）。撮影が
 // 終わったら全画面を赤く一瞬フラッシュ（シャッター確定の合図）し、バーを元位置へ戻す。
 //
-// Python から使う API:
-//   - window.__eacApplyState(recording, spaOn, selector) : 見た目を現在状態へ更新
-//   - window.__eacSetCount(n)                             : 撮影カウンタ（本セッション枚数）を更新
-//   - window.__eacSetHistory(list)                        : セレクタ入力欄の候補（datalist）を更新（F-D2）
-//   - window.__eac_captureStart()                         : バーを退避し切るまで待つ（撮影直前）
-//   - window.__eac_captureEnd(ok)                         : シャッターフラッシュ（ok=成功は赤/失敗は琥珀）＋バー復帰（撮影直後）
-//   - window.__eac_getstate(tok)（expose_binding）        : 描画前に現在状態を取得（枚数 count も含む）
-//   - window.__eac_bodyText()                             : バー除外の本文 innerText
-//   - window.__eac_signature(selector)                   : コンテンツ署名（スモークテスト用）
-//   - SPA検知はページ側がイベント駆動で行い、落ち着いた変化を検知したら Python の
-//     window.__eac_spa_changed(tok, sig)（expose_binding）を呼んで保存を要求する。
-//   - ボタン類は window.__eac_toggle(tok)/__eac_shot(tok)/__eac_spa_toggle(tok)/
-//     __eac_set_selector(tok,v)/__eac_commit_selector(tok,v)（すべて expose_binding）を呼ぶ。
+// Python から使う API（E-3: 固定名を window に生やさない）:
+//   Python→ページのヘルパは、起動ごとのランダム名 NS（$CONFIG の ns）の下へ 1 オブジェクトに
+//   まとめ、enumerable:false で公開する。固定名が無いのでサイトから存在検知できない。Python は
+//   NS を知っているので window[NS].xxx(...) の形で呼ぶ（badge.py の *_call が式を組み立てる）:
+//   - window[NS].applyState(recording, spaOn, selector) : 見た目を現在状態へ更新
+//   - window[NS].setCount(n)                             : 撮影カウンタ（本セッション枚数）を更新
+//   - window[NS].setHistory(list)                        : セレクタ入力欄の候補（datalist）を更新（F-D2）
+//   - window[NS].captureStart()                          : バーを退避し切るまで待つ（撮影直前）
+//   - window[NS].captureEnd(ok)                          : シャッターフラッシュ（ok=成功は赤/失敗は琥珀）＋バー復帰（撮影直後）
+//   - window[NS].bodyText()                              : バー除外の本文 innerText
+//   - window[NS].signature(selector)                    : コンテンツ署名（スモークテスト用）
+//   ページ→Python は expose_binding（下記）。呼び出し名は BOUND へ退避後に window から消す（E-3）:
+//   - __eac_getstate(tok)         : 描画前に現在状態を取得（枚数 count も含む）
+//   - SPA検知はページ側がイベント駆動で行い、落ち着いた変化を検知したら __eac_spa_changed(tok, sig)
+//     を呼んで保存を要求する。
+//   - ボタン類は __eac_toggle(tok)/__eac_shot(tok)/__eac_spa_toggle(tok)/
+//     __eac_set_selector(tok,v)/__eac_commit_selector(tok,v) を呼ぶ。
 //     第1引数の tok は合言葉（$CONFIG の tok）。Python 側が照合し、一致しない呼び出しは無視する。
 //
-// 閲覧中サイトからの干渉に対する防御（2 段構え）:
+// 閲覧中サイトからの干渉・検知に対する防御（3 段構え）:
 //   1. シャドウは mode:'closed'。host.shadowRoot が null になるため、サイト側スクリプトは
 //      バー内部の要素を取得できず、ボタンを click() して記録操作を起こすこともできない。
 //      （open だった頃は、tok を知らなくても UI 経由で記録の開始/停止や連写を起こせた）
 //   2. expose_binding の参照は IIFE 冒頭で退避する（BOUND）。add_init_script はサイトの JS より
 //      先に走るので、ここで掴んだ参照は本物。サイトが window.__eac_toggle を自前関数で包んでも、
 //      利用者のクリックはその関数を通らないため、第1引数の tok を盗まれない。
+//   3. E-3（存在検知の防止）: Python→ページのヘルパは固定名でなくランダム名 NS の非列挙プロパティ
+//      へ収め、ページ→Python の expose_binding 固定名は退避後に window から削除する。これにより
+//      `'__eacApplyState' in window` や `'__eac_toggle' in window` のような固定名での検知が効かない。
 (() => {
-  // add_init_script は各 iframe にも注入される。最上位フレーム以外では
-  // 何もしない（iframe の数だけバーが重複表示されるのを防ぐ）。
-  if (window.top !== window.self) return;
   // 表示文言などの設定は Python 側で定義し、$CONFIG（1個の JSON）でまとめて渡す。
+  // 設定と TOK はサブフレームでも先に読む（下の②の掃除に TOK と名前が要るため）。
   const C = $CONFIG;
+  // expose_binding（__eac_* 群）を呼ぶときの合言葉。各呼び出しの第1引数に付け、Python 側が
+  // 照合する。閲覧中サイトのスクリプトが token を知らずに記録操作・連写・セレクタ書き換えを
+  // 行っても Python 側で無視される。起動ごとにランダム生成した値が Python から渡ってくる。
+  const TOK = C.tok || "";
+
+  // --- expose_binding（Python 側の呼び出し口）の参照を退避し、固定名を window から消す（E-3）---
+  // add_init_script はサイトの JS より先に実行されるため、ここで掴んだ参照は「本物」である。
+  // (1) 参照の退避（BOUND）: これをしないと、サイト側が
+  //       const orig = window.__eac_toggle;
+  //       window.__eac_toggle = (t) => { stolen = t; return orig(t); };
+  //     のように包んでおくだけで、利用者がボタンを押した瞬間に合言葉（TOK）を盗める。
+  //     盗まれれば token 照合は無意味になり、以後は自由に記録操作・連写ができてしまう。
+  // (2) 固定名の削除（E-3）: expose_binding は全フレームの window に固定名（__eac_toggle 等）で
+  //     生えるため、サイトは `'__eac_toggle' in window` でツールの存在を検知できてしまう。
+  //     本物の参照を BOUND へ退避したうえで window 上の固定名を消す。以後の呼び出しは BOUND を
+  //     使う（callBinding）ので機能は保たれ、サイト JS が動き出す前には固定名が消えている。
+  //     iframe にも生える（掃除はフレーム単位）ので、この処理は最上位フレームの早期 return より
+  //     前で全フレーム分行う。token 無し（スモーク）ビルドはバインディングを公開せず後から
+  //     window へ差し込むため、掃除せず callBinding の実行時フォールバックに任せる。
+  const BINDING_NAMES = [
+    '__eac_toggle', '__eac_shot', '__eac_open_folder', '__eac_spa_toggle',
+    '__eac_set_selector', '__eac_commit_selector',
+    '__eac_spa_changed', '__eac_getstate',
+  ];
+  const BOUND = {};
+  BINDING_NAMES.forEach((n) => {
+    BOUND[n] = window[n];
+    if (TOK) {
+      try { delete window[n]; } catch (e) { try { window[n] = undefined; } catch (e2) { /* noop */ } }
+    }
+  });
+
+  // add_init_script は各 iframe にも注入される。バー本体は最上位フレームだけが作る
+  // （iframe の数だけバーが重複表示されるのを防ぐ）。②の掃除は上で全フレーム分済ませてある。
+  if (window.top !== window.self) return;
+
   const ID = C.id;
   const S_ON = C.sOn, S_OFF = C.sOff, L_START = C.lStart, L_STOP = C.lStop, L_SHOT = C.lShot;
   const L_OPEN = C.lOpen, TITLE_OPEN = C.titleOpen;   // F-D4: 保存先フォルダを開くボタンの文言/説明
@@ -48,27 +89,11 @@
   const TITLE_PEEK = C.titlePeek;
   const ARIA_PEEK = C.ariaPeek;   // E-1: アイコンのみの透過ボタンのアクセシブル名
   const L_SPA = C.lSpa, PH_SEL = C.phSel, TITLE_SEL = C.titleSel, TITLE_SPA = C.titleSpa;
-  // expose_binding（__eac_* 群）を呼ぶときの合言葉。各呼び出しの第1引数に付け、Python 側が
-  // 照合する。閲覧中サイトのスクリプトが token を知らずに記録操作・連写・セレクタ書き換えを
-  // 行っても Python 側で無視される。起動ごとにランダム生成した値が Python から渡ってくる。
-  const TOK = C.tok || "";
+  // E-3: Python から呼ぶページ側ヘルパを収める、起動ごとのランダムな window プロパティ名。
+  // 固定名（window.__eacApplyState 等）を生やさないための隠し名。空なら公開しない（テスト用）。
+  const NS = C.ns || "";
   // F-B2: 撮影中だけ隠す要素の CSS セレクタ群（同意バナー・追従ヘッダ対策）。空なら何もしない。
   const HIDE_SEL = Array.isArray(C.hideSel) ? C.hideSel : [];
-
-  // --- expose_binding（Python 側の呼び出し口）の参照を退避する ---
-  // add_init_script はサイトの JS より先に実行されるため、ここで掴んだ参照は「本物」である。
-  // これをしないと、サイト側が
-  //     const orig = window.__eac_toggle;
-  //     window.__eac_toggle = (t) => { stolen = t; return orig(t); };
-  // のように包んでおくだけで、利用者がボタンを押した瞬間に合言葉（TOK）を盗める。
-  // 盗まれれば token 照合は無意味になり、以後は自由に記録操作・連写ができてしまう。
-  const BINDING_NAMES = [
-    '__eac_toggle', '__eac_shot', '__eac_open_folder', '__eac_spa_toggle',
-    '__eac_set_selector', '__eac_commit_selector',
-    '__eac_spa_changed', '__eac_getstate',
-  ];
-  const BOUND = {};
-  BINDING_NAMES.forEach((n) => { BOUND[n] = window[n]; });
 
   // バインディング呼び出しの唯一の入り口。退避済み参照を優先して使う。
   // 退避できていなければ実行時の window を見る（スモークテストのように、バインディングを
@@ -97,8 +122,8 @@
   let spaOn = false;       // 直近に適用された SPA 検知状態
   let selector = "";       // 直近に適用された SPA 検知対象セレクタ（入力欄の値）
   let peekOn = false;      // 透過（半透明）表示中か。下に隠れた内容を確認するための一時状態。
-  let shotCount = 0;       // 本セッションで保存できた枚数（Python が本体を持ち、__eacSetCount で配る）。
-  let selHistory = [];     // 過去に確定したセレクタの候補（datalist）。Python が本体を持ち __eacSetHistory で配る（F-D2）。
+  let shotCount = 0;       // 本セッションで保存できた枚数（Python が本体を持ち、setCount で配る）。
+  let selHistory = [];     // 過去に確定したセレクタの候補（datalist）。Python が本体を持ち setHistory で配る（F-D2）。
   let capDepth = 0;        // 進行中の撮影数（重なっても最後の1つで復帰させるための入れ子カウント）
   let frameTimer = null;   // シャッターフラッシュ（.flash クラス）を消すためのタイマー
   let barTimer = null;     // フラッシュ後にバー復帰を少し遅らせるためのタイマー
@@ -314,7 +339,7 @@
   }
 
   // 撮影カウンタ（本セッション N 枚）の表示を更新する（F-D3）。枚数の本体は Python が持ち、
-  // 保存成功のたびに __eacSetCount で配られる。バー未構築なら値だけ覚えて描画時に反映する。
+  // 保存成功のたびに setCount で配られる。バー未構築なら値だけ覚えて描画時に反映する。
   function renderShots() {
     if (els && els.shots) els.shots.textContent = L_SHOTS.replace('{n}', shotCount);
   }
@@ -327,7 +352,7 @@
   }
 
   // F-D2: セレクタ入力欄の候補（datalist の <option>）を過去の確定値で作り直す。候補の
-  // 本体は Python が持ち、セレクタ確定（blur/Enter）のたびに __eacSetHistory で全バーへ配られる。
+  // 本体は Python が持ち、セレクタ確定（blur/Enter）のたびに setHistory で全バーへ配られる。
   // バー未構築なら値だけ覚えておき、描画時（build）に反映する。
   function renderHistory() {
     if (!els || !els.history) return;
@@ -660,13 +685,28 @@
     spaSchedule();
   }
 
-  window.__eacApplyState = apply;
-  window.__eacSetCount = setShotCount;
-  window.__eacSetHistory = setHistory;
-  window.__eac_captureStart = captureStart;
-  window.__eac_captureEnd = captureEnd;
-  window.__eac_bodyText = bodyText;
-  window.__eac_signature = signature;
+  // --- ① Python から呼ぶページ側ヘルパを、ランダム名の隠しプロパティへ収める（E-3）---
+  // 固定名（window.__eacApplyState 等）だと `'__eacApplyState' in window` で存在検知できてしまう。
+  // 起動ごとのランダム名 NS の下へ 1 オブジェクトとしてまとめ、enumerable:false にして
+  // Object.keys / for-in / JSON.stringify に出ないようにする。Python は NS を知っているので
+  // window[NS].applyState(...) の形で呼べる（badge.py の *_call が NS 込みで式を組み立てる）。
+  // NS 空（見た目だけ確認するテスト用ビルド）のときは公開しない。
+  if (NS) {
+    Object.defineProperty(window, NS, {
+      value: {
+        applyState: apply,
+        setCount: setShotCount,
+        setHistory: setHistory,
+        captureStart: captureStart,
+        captureEnd: captureEnd,
+        bodyText: bodyText,
+        signature: signature,
+      },
+      enumerable: false,
+      configurable: true,
+      writable: false,
+    });
+  }
 
   // スモークテスト専用の入り口。シャドウが closed になったことで host.shadowRoot から
   // 中を検査できなくなったため、テストだけが使えるアクセサを用意する。

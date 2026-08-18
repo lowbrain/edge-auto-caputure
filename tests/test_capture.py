@@ -1341,9 +1341,11 @@ def test_get_state_includes_selector_history():
 
 
 def test_set_history_call_serializes_values():
-    # 日本語/記号を含む値も JS 配列リテラルとして安全に埋め込む。
-    call = badge.set_history_call(["#main", ".一覧"])
-    assert call.startswith("window.__eacSetHistory && window.__eacSetHistory(")
+    # 日本語/記号を含む値も JS 配列リテラルとして安全に埋め込む。E-3: 固定名でなく
+    # 起動ごとのランダム名 ns の隠しオブジェクト window[ns].setHistory(...) を呼ぶ式を組む。
+    call = badge.set_history_call("nabc", ["#main", ".一覧"])
+    assert call.startswith('window["nabc"] && window["nabc"].setHistory && '
+                           'window["nabc"].setHistory(')
     # json.dumps で ASCII 化（\uXXXX）され、二重引用符の配列になる。
     assert '"#main"' in call
 
@@ -1659,18 +1661,43 @@ def test_append_index_failure_does_not_raise(monkeypatch, tmp_path):
 
 def test_capture_end_call_encodes_success_and_failure():
     # done 有無を真偽値としてページ側 captureEnd へ渡す呼び出し式を組む（成功=赤/失敗=琥珀）。
-    assert badge.capture_end_call(True) == (
-        "window.__eac_captureEnd && window.__eac_captureEnd(true)"
+    # E-3: 固定名でなく起動ごとのランダム名 ns の隠しオブジェクト window[ns].captureEnd(...) を呼ぶ。
+    assert badge.capture_end_call("nabc", True) == (
+        'window["nabc"] && window["nabc"].captureEnd && window["nabc"].captureEnd(true)'
     )
-    assert badge.capture_end_call(False) == (
-        "window.__eac_captureEnd && window.__eac_captureEnd(false)"
+    assert badge.capture_end_call("nabc", False) == (
+        'window["nabc"] && window["nabc"].captureEnd && window["nabc"].captureEnd(false)'
     )
 
 
 def test_set_count_call_encodes_count():
-    # 撮影カウンタ（本セッション枚数）をバーへ配る呼び出し式を組む。
-    assert badge.set_count_call(0) == "window.__eacSetCount && window.__eacSetCount(0)"
-    assert badge.set_count_call(7) == "window.__eacSetCount && window.__eacSetCount(7)"
+    # 撮影カウンタ（本セッション枚数）をバーへ配る呼び出し式を組む（E-3: window[ns].setCount）。
+    assert badge.set_count_call("nabc", 0) == (
+        'window["nabc"] && window["nabc"].setCount && window["nabc"].setCount(0)'
+    )
+    assert badge.set_count_call("nabc", 7) == (
+        'window["nabc"] && window["nabc"].setCount && window["nabc"].setCount(7)'
+    )
+
+
+def test_new_namespace_is_random_and_carries_no_hint():
+    # E-3: 起動ごとに使い捨てるランダム名。先頭は英字（数値インデックス的扱いを避ける）で、
+    # __eac のような固定の手掛かりを含まない（含めると全文一致でなくても勘付かれうる）。
+    a, b = badge.new_namespace(), badge.new_namespace()
+    assert a != b
+    assert a[0].isalpha()
+    assert "__eac" not in a and "eac" not in a
+
+
+def test_build_badge_script_hides_fixed_globals():
+    # E-3: 固定名（window.__eacApplyState 等）を生やさず、ランダム名 ns の非列挙プロパティへ収める。
+    # ②のページ→Python バインディング固定名は退避後に window から削除する。
+    script = badge.build_badge_script(token="t", ns="nXYZ")
+    assert '"ns": "nXYZ"' in script                       # ns が $CONFIG に載る
+    assert "window.__eacApplyState =" not in script       # 旧方式の固定名代入が残っていない
+    assert "window.__eacSetCount =" not in script
+    assert "Object.defineProperty(window, NS" in script   # ①を隠しプロパティで公開
+    assert "delete window[n]" in script                   # ②の固定名を削除
 
 
 class _EvalPage:
@@ -1705,8 +1732,9 @@ def test_on_capture_result_counts_only_success_and_pushes():
         await session._on_capture_result(True)
         assert session.shots == 1
         # 成功のたびに現在の枚数を全ページへ配る（set_count_call の式が evaluate される）。
-        assert p1.evals == ["window.__eacSetCount && window.__eacSetCount(1)"]
-        assert p2.evals == ["window.__eacSetCount && window.__eacSetCount(1)"]
+        # E-3: 呼び出し式はセッションのランダム名 ns（window[ns].setCount）を使う。
+        assert p1.evals == [badge.set_count_call(session.ns, 1)]
+        assert p2.evals == [badge.set_count_call(session.ns, 1)]
 
         await session._on_capture_result(False)   # 全滅は「撮れた1枚」に数えない
         assert session.shots == 1
@@ -1714,7 +1742,7 @@ def test_on_capture_result_counts_only_success_and_pushes():
 
         await session._on_capture_result(True)
         assert session.shots == 2
-        assert p1.evals[-1] == "window.__eacSetCount && window.__eacSetCount(2)"
+        assert p1.evals[-1] == badge.set_count_call(session.ns, 2)
 
     asyncio.run(scenario())
 
@@ -1755,7 +1783,8 @@ class _FakeCapturePage:
 
     async def evaluate(self, js, *args):
         self.eval_calls.append(js)
-        if js == badge.BODY_TEXT_CALL:
+        # 既定の CaptureRunner は ns="" なので、_capture は body_text_call("") を渡す（E-3）。
+        if js == badge.body_text_call(""):
             if not self.text_ok:
                 raise RuntimeError("no text")
             return "body text"
@@ -1777,8 +1806,8 @@ def test_capture_notifies_result_true_on_success(tmp_path):
         await runner._capture(CaptureRequest(page, "https://ok.test/", cfg, trigger="manual"))
 
         assert got == [True]
-        assert badge.capture_end_call(True) in page.eval_calls
-        assert badge.capture_end_call(False) not in page.eval_calls
+        assert badge.capture_end_call(runner.ns, True) in page.eval_calls
+        assert badge.capture_end_call(runner.ns, False) not in page.eval_calls
 
     asyncio.run(scenario())
 
@@ -1798,8 +1827,8 @@ def test_capture_notifies_result_false_on_total_failure(tmp_path):
         await runner._capture(CaptureRequest(page, "https://ng.test/", cfg, trigger="manual"))
 
         assert got == [False]
-        assert badge.capture_end_call(False) in page.eval_calls
-        assert badge.capture_end_call(True) not in page.eval_calls
+        assert badge.capture_end_call(runner.ns, False) in page.eval_calls
+        assert badge.capture_end_call(runner.ns, True) not in page.eval_calls
 
     asyncio.run(scenario())
 

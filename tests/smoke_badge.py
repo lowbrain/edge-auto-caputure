@@ -46,6 +46,9 @@ _CHANNELS = ("msedge", "chrome")
 
 def run(strict: bool = False) -> int:
     errors: list[str] = []
+    # E-3: ページ側ヘルパは固定名でなく、起動ごとのランダム名 ns の隠しオブジェクトに収まる。
+    # 実アプリと同じく new_namespace() で採番し、build_badge_script と各 *_call へ通す。
+    ns = badge.new_namespace()
     with sync_playwright() as p:
         context = None
         launched = ""
@@ -79,20 +82,21 @@ def run(strict: bool = False) -> int:
             )
             # add_init_script は「以後の遷移」で走るので、スクリプト登録→遷移の順にする。
             # 完成スクリプトは必要時に build_badge_script() で組み立てる（R5a: import 時 I/O 回避）。
-            page.add_init_script(badge.build_badge_script())
+            # E-3: ns を渡し、ページ側ヘルパを window[ns] の隠しオブジェクトへ収める。
+            page.add_init_script(badge.build_badge_script(ns=ns))
             page.goto("about:blank")
 
             # 1) シャドウホストが構築されるか（＝スクリプトがパース/実行できている）
             page.wait_for_selector(BADGE_SEL, state="attached", timeout=5000)
 
             # 2) 状態反映（apply）が例外なく動くか
-            page.evaluate("window.__eacApplyState(true, true, 'body')")
+            page.evaluate(badge.apply_state_call(ns, True, True, "body"))
 
             # 3) ページ側ヘルパが動くか
-            sig = page.evaluate(badge.SIG_CALL, "body")
-            body_text = page.evaluate(badge.BODY_TEXT_CALL)
-            page.evaluate(badge.CAPTURE_START_CALL)  # 撮影退避（Promise を待つ）
-            page.evaluate(badge.CAPTURE_END_CALL)    # シャッターフラッシュ＋バー復帰
+            sig = page.evaluate(badge.sig_call(ns), "body")
+            body_text = page.evaluate(badge.body_text_call(ns))
+            page.evaluate(badge.capture_start_call(ns))  # 撮影退避（Promise を待つ）
+            page.evaluate(badge.capture_end_call(ns, True))    # シャッターフラッシュ＋バー復帰
 
             # 署名は "<長さ>_<hash>" 形式の文字列を返す。
             if not (isinstance(sig, str) and "_" in sig):
@@ -154,9 +158,9 @@ def run(strict: bool = False) -> int:
                 errors.append(f"F-D4: 「保存先」ボタンが機能していません: {open_folder}")
 
             # 6c) F-D2: セレクタ入力欄の datalist に候補が入り、input が list 属性で紐づくか。
-            #     __eacSetHistory で候補を配り、datalist の <option> と input.list が一致するか見る。
+            #     setHistory で候補を配り、datalist の <option> と input.list が一致するか見る。
             history = page.evaluate(
-                "(() => { window.__eacSetHistory(['#main', '.price']);"
+                "(() => { " + badge.set_history_call(ns, ['#main', '.price']) + ";"
                 " const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
                 " const dl = sr && sr.querySelector('[data-eac=\"history\"]');"
                 " const inp = sr && sr.querySelector('[data-eac=\"selector\"]');"
@@ -182,7 +186,7 @@ def run(strict: bool = False) -> int:
                 "window.__spaCalls = [];"
                 "window.__eac_spa_changed = (tok, sig) => { window.__spaCalls.push(sig); };"
             )
-            page.evaluate("window.__eacApplyState(true, true, '')")  # 記録ON・SPA検知ON・既定ルート
+            page.evaluate(badge.apply_state_call(ns, True, True, ""))  # 記録ON・SPA検知ON・既定ルート
             page.evaluate(
                 "document.body.appendChild(Object.assign("
                 "document.createElement('div'), { textContent: 'spa-change-' + Date.now() }))"
@@ -205,11 +209,11 @@ def run(strict: bool = False) -> int:
                     " return !!(f && f.classList.contains('flash')); })()"
                 )
 
-            page.evaluate(badge.CAPTURE_END_CALL)     # フラッシュを付ける（撮影直後の合図）
+            page.evaluate(badge.capture_end_call(ns, True))     # フラッシュを付ける（撮影直後の合図）
             had_flash = _has_flash()
-            page.evaluate(badge.CAPTURE_START_CALL)   # 次の退避（A-1: フラッシュを畳む）
+            page.evaluate(badge.capture_start_call(ns))   # 次の退避（A-1: フラッシュを畳む）
             still_flash = _has_flash()
-            page.evaluate(badge.CAPTURE_END_CALL)     # 状態を戻す（capDepth を均衡させる）
+            page.evaluate(badge.capture_end_call(ns, True))     # 状態を戻す（capDepth を均衡させる）
             if not had_flash:
                 errors.append("captureEnd 後にフラッシュが付いていません（A-1 テストの前提が崩れている）")
             if still_flash:
@@ -221,12 +225,12 @@ def run(strict: bool = False) -> int:
             #    CAP_FALLBACK_MS(500ms) まで無駄に待っていた。
             #    captureEnd 直後（capturing を外す barTimer が発火する前）に captureStart を
             #    呼ぶと、バーは capturing のまま capDepth が 1 に戻り、この分岐に入る。
-            page.evaluate(badge.CAPTURE_START_CALL)   # 退避（capturing=true, capDepth=1）
-            page.evaluate(badge.CAPTURE_END_CALL)     # 終了（capDepth=0、直後は capturing 継続）
+            page.evaluate(badge.capture_start_call(ns))   # 退避（capturing=true, capDepth=1）
+            page.evaluate(badge.capture_end_call(ns, True))     # 終了（capDepth=0、直後は capturing 継続）
             t0 = time.monotonic()
-            page.evaluate(badge.CAPTURE_START_CALL)   # 退避済みからの再退避（A-2: 即解決するはず）
+            page.evaluate(badge.capture_start_call(ns))   # 退避済みからの再退避（A-2: 即解決するはず）
             elapsed_ms = (time.monotonic() - t0) * 1000.0
-            page.evaluate(badge.CAPTURE_END_CALL)     # 後始末（capDepth を均衡させる）
+            page.evaluate(badge.capture_end_call(ns, True))     # 後始末（capDepth を均衡させる）
             # 修正あり: 数ms。修正なし: CAP_FALLBACK_MS(500ms) 近く待つ。間を取って 250ms で判定。
             if elapsed_ms >= 250:
                 errors.append(
@@ -247,8 +251,8 @@ def run(strict: bool = False) -> int:
 
             # (b) いったん SPA ON で監視が繋がっている状態から OFF へ落とし、以降の DOM 変化で
             #     通知（__eac_spa_changed）が増えないことを確認する（Observer が切断されている）。
-            page.evaluate("window.__eacApplyState(true, true, '')")   # 記録ON・SPA ON（接続）
-            page.evaluate("window.__eacApplyState(false, false, '')")  # 記録OFF・SPA OFF（切断）
+            page.evaluate(badge.apply_state_call(ns, True, True, ""))   # 記録ON・SPA ON（接続）
+            page.evaluate(badge.apply_state_call(ns, False, False, ""))  # 記録OFF・SPA OFF（切断）
             page.evaluate("window.__spaCalls = [];")
             for i in range(5):
                 page.evaluate(
@@ -274,21 +278,21 @@ def run(strict: bool = False) -> int:
                     " return f ? f.className : ''; })()"
                 )
 
-            page.evaluate("window.__eac_captureEnd(false)")   # 失敗の合図
+            page.evaluate(badge.capture_end_call(ns, False))   # 失敗の合図
             fail_cls = _frame_classes()
-            page.evaluate(badge.CAPTURE_START_CALL)           # 後始末（フラッシュを畳む）
-            page.evaluate("window.__eac_captureEnd(true)")    # 成功の合図
+            page.evaluate(badge.capture_start_call(ns))           # 後始末（フラッシュを畳む）
+            page.evaluate(badge.capture_end_call(ns, True))    # 成功の合図
             ok_cls = _frame_classes()
-            page.evaluate(badge.CAPTURE_START_CALL)           # 後始末
-            page.evaluate(badge.CAPTURE_END_CALL)             # capDepth を均衡させる
+            page.evaluate(badge.capture_start_call(ns))           # 後始末
+            page.evaluate(badge.capture_end_call(ns, True))             # capDepth を均衡させる
             if "flash" not in fail_cls or "fail" not in fail_cls:
                 errors.append(f"F-D3: 失敗フラッシュに .fail が付いていません（class='{fail_cls}'）")
             if "fail" in ok_cls:
                 errors.append(f"F-D3: 成功フラッシュに .fail が付いています（class='{ok_cls}'）")
 
-            #     (b) __eacSetCount(n) がバーの撮影カウンタ表示（本セッション N 枚）へ反映されること。
+            #     (b) setCount(n) がバーの撮影カウンタ表示（本セッション N 枚）へ反映されること。
             shots_text = page.evaluate(
-                "(() => { window.__eacSetCount(3);"
+                "(() => { " + badge.set_count_call(ns, 3) + ";"
                 " const sr = window.__eac_debugRoot && window.__eac_debugRoot();"
                 " const s = sr && sr.querySelector('[data-eac=\"shots\"]');"
                 " return s ? s.textContent : ''; })()"
@@ -301,7 +305,7 @@ def run(strict: bool = False) -> int:
             #     hide_selectors は build_badge_script に埋め込むので、別ページを用意して検証する。
             hp = context.new_page()
             hp.on("pageerror", lambda exc: errors.append(f"pageerror(F-B2): {exc}"))
-            hp.add_init_script(badge.build_badge_script("", 300, ("#eac-hide-me",)))
+            hp.add_init_script(badge.build_badge_script("", 300, ("#eac-hide-me",), ns))
             hp.goto("about:blank")
             hp.wait_for_selector(BADGE_SEL, state="attached", timeout=5000)
             hp.evaluate(
@@ -316,9 +320,9 @@ def run(strict: bool = False) -> int:
                 )
 
             before = _hide_vis()
-            hp.evaluate(badge.CAPTURE_START_CALL)   # 撮影退避＋対象を隠す
+            hp.evaluate(badge.capture_start_call(ns))   # 撮影退避＋対象を隠す
             during = _hide_vis()
-            hp.evaluate(badge.CAPTURE_END_CALL)     # 撮影後＝元へ戻す
+            hp.evaluate(badge.capture_end_call(ns, True))     # 撮影後＝元へ戻す
             after = _hide_vis()
             if during != "hidden":
                 errors.append(f"F-B2: 撮影中に対象が隠れていません（visibility='{during}'）")
@@ -326,6 +330,58 @@ def run(strict: bool = False) -> int:
                 errors.append("F-B2: 撮影後も対象が隠れたままです（元へ戻っていない）")
             if before == "hidden":
                 errors.append("F-B2: 撮影前から対象が隠れています（テストの前提が崩れている）")
+
+            # 13) E-3: 実運用ビルド（token 付き）で、サイトから固定名の存在検知ができないこと。
+            #     これまでのステップは token 無しビルドで、②の固定名削除経路を通っていない。
+            #     ここだけ実運用と同じく expose_binding を生やし、token/ns 付きで注入して確認する:
+            #       (a) Python→ページのヘルパ固定名（__eacApplyState 等）が window に無い。
+            #       (b) ページ→Python のバインディング固定名（__eac_toggle 等）が退避後に消えている。
+            #       (c) ヘルパは列挙されないランダム名 ns の隠しオブジェクトからは使える（非列挙）。
+            #       (d) 固定名を消しても機能は保たれる（badge.js が build 時に呼ぶ __eac_getstate が
+            #           Python まで届く＝退避した本物参照が delete 後も生きている）。
+            _BINDINGS = [
+                "__eac_toggle", "__eac_shot", "__eac_open_folder", "__eac_spa_toggle",
+                "__eac_set_selector", "__eac_commit_selector", "__eac_spa_changed",
+                "__eac_getstate",
+            ]
+            getstate_hits: list[int] = []
+            ep = context.new_page()
+            ep.on("pageerror", lambda exc: errors.append(f"pageerror(E-3): {exc}"))
+            # __eac_getstate だけ着火を数える。他はダミー（本物同様に window へ生やして削除対象にする）。
+            ep.expose_binding("__eac_getstate", lambda source, *a: getstate_hits.append(1))
+            for _bname in _BINDINGS:
+                if _bname == "__eac_getstate":
+                    continue
+                ep.expose_binding(_bname, lambda source, *a: None)
+            ns_prod = badge.new_namespace()
+            ep.add_init_script(badge.build_badge_script("smoke-token", 300, (), ns_prod))
+            ep.goto("about:blank")
+            ep.wait_for_selector(BADGE_SEL, state="attached", timeout=5000)
+            detect = ep.evaluate(
+                "(() => ({"
+                " applyFixed: ('__eacApplyState' in window),"
+                " toggleFixed: ('__eac_toggle' in window),"
+                " getstateFixed: ('__eac_getstate' in window),"
+                " nsPresent: (" + repr(ns_prod) + " in window),"
+                " nsEnum: Object.keys(window).includes(" + repr(ns_prod) + "),"
+                " nsHasApply: !!(window[" + repr(ns_prod) + "]"
+                "   && typeof window[" + repr(ns_prod) + "].applyState === 'function')"
+                "}))()"
+            )
+            if detect["applyFixed"]:
+                errors.append("E-3(a): __eacApplyState が window に残っています（ヘルパ固定名の検知が可能）")
+            if detect["toggleFixed"] or detect["getstateFixed"]:
+                errors.append(f"E-3(b): バインディング固定名が window に残っています（{detect}）")
+            if not detect["nsPresent"] or not detect["nsHasApply"]:
+                errors.append(f"E-3(c): ヘルパの隠しオブジェクト（ns）が使えません（{detect}）")
+            if detect["nsEnum"]:
+                errors.append("E-3(c): ns プロパティが列挙可能（enumerable）です（Object.keys に出る）")
+            ep.wait_for_timeout(300)  # build 時の __eac_getstate 着火を待つ
+            if not getstate_hits:
+                errors.append(
+                    "E-3(d): 固定名削除後に __eac_getstate が Python へ届きません"
+                    "（退避参照が delete で失われた＝機能退行）"
+                )
         finally:
             context.close()
 
@@ -339,7 +395,7 @@ def run(strict: bool = False) -> int:
         "保存先フォルダを開く(F-D4)・セレクタ履歴(F-D2)・"
         "SPA検知の通知・フラッシュ写り込み防止(A-1)・退避済み即解決(A-2)・"
         "Observer の必要時のみ稼働(B-6)・撮影カウンタ/失敗フラッシュ(F-D3)・"
-        "撮影中バナー除去(F-B2)・JSエラー無しを確認しました。"
+        "撮影中バナー除去(F-B2)・固定名の存在検知不能化(E-3)・JSエラー無しを確認しました。"
     )
     return 0
 

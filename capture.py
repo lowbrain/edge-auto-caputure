@@ -184,6 +184,11 @@ class CaptureRunner:
         # 既定は None（撮影実行器を単体で使うテストや、通知が要らない場面では何もしない）。
         self.on_result: Optional[Callable[[bool], Awaitable[None]]] = None
 
+        # Python→ページのヘルパ（captureStart/captureEnd/bodyText）を収める window プロパティ名（E-3）。
+        # 監視セッション（CaptureSession）が起動ごとのランダム名を生成し、ここへ配る。空（既定）は
+        # 未公開＝呼び出しは no-op（撮影実行器を単体で使うテストや、ヘルパを呼ばない場面向け）。
+        self.ns: str = ""
+
         # 実行中の worker タスクへの強参照を保持する集合。
         # これが無いとイベントループはタスクを弱参照でしか持たず、
         # 実行途中で GC されて消える恐れがある（例外も握り潰される）。
@@ -299,7 +304,7 @@ class CaptureRunner:
         # 支障はなく、フラッシュ色を _capture 全体の成否に一致させるため復帰は最後にまとめて行う。
         # captureEnd は失敗時も戻すため finally で必ず呼ぶ（フラッシュ色は done 有無で決める）。
         eval_timeout = config.eval_timeout / 1000                # ミリ秒 → 秒（E-6）
-        await try_eval(page, badge.CAPTURE_START_CALL, eval_timeout)
+        await try_eval(page, badge.capture_start_call(self.ns), eval_timeout)
         try:
             # 1) フルページ スクリーンショット
             await self._save_screenshot(page, save_dir, stem, url, done)
@@ -309,7 +314,7 @@ class CaptureRunner:
             if selector:
                 await self._save_part(page, save_dir, stem, url, selector, done)
         finally:
-            await try_eval(page, badge.capture_end_call(bool(done)), eval_timeout)
+            await try_eval(page, badge.capture_end_call(self.ns, bool(done)), eval_timeout)
 
         # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
         # group_id が採番済みなら、どの系譜（lineage）の保存かも併記する（＝保存先フォルダ名）。
@@ -394,7 +399,7 @@ class CaptureRunner:
         """
         with _step("txt", url, done):
             text = await asyncio.wait_for(
-                page.evaluate(badge.BODY_TEXT_CALL), timeout=config.eval_timeout / 1000
+                page.evaluate(badge.body_text_call(self.ns)), timeout=config.eval_timeout / 1000
             )
             (save_dir / f"{stem}.txt").write_text(
                 f"URL: {url}\n\n{text}", encoding="utf-8"

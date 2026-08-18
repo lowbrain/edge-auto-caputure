@@ -44,7 +44,6 @@ Edge の起動・監視・後始末はこのスクリプトが一括で行う（
 """
 
 import asyncio
-import json
 import secrets
 import shutil
 import sys
@@ -223,10 +222,16 @@ class CaptureSession:
         # 生成して badge.js へ埋め込む。閲覧中サイトのスクリプトが token を知らずに記録操作・
         # 連写・セレクタ書き換えを試みても、下の各コールバックが token 不一致で無視する。
         self.token = secrets.token_hex(16)
+        # Python→ページのヘルパ（applyState/captureStart 等）を収める window プロパティ名（E-3）。
+        # 起動ごとにランダム生成し、固定名を window に生やさないことでサイトからの存在検知を防ぐ。
+        # badge.js へ埋め込み、各呼び出し式（badge.*_call）にもこの名前を渡す。
+        self.ns = badge.new_namespace()
         # 撮影の実行器（実行中タスク・ページ単位ロックを own する）。1 セッションに 1 個。
         # 撮影 1 回ごとの成否は on_result で受け、撮影カウンタ／失敗把握に使う（F-D3）。
         self.runner = CaptureRunner()
         self.runner.on_result = self._on_capture_result
+        # 撮影の合図（captureStart/captureEnd）と本文取得（bodyText）を呼ぶときの名前空間を渡す。
+        self.runner.ns = self.ns
         # 本セッションで保存できた枚数（F-D3）。動作実感＋暴走の早期発見のため全バーへ配る。
         # 本体はここに持ち、成功のたびに増やして全ページの操作バーへ反映する。
         self.shots = 0
@@ -256,12 +261,9 @@ class CaptureSession:
         """
         async def _apply(pg) -> None:
             grp = await self._resolve_group(pg)
-            flag = "true" if grp.on else "false"
-            spa_flag = "true" if grp.spa_on else "false"
-            sel = json.dumps(grp.selector)  # 日本語/記号を含んでも安全に JS リテラル化
             await try_eval(
                 pg,
-                f"window.__eacApplyState && window.__eacApplyState({flag}, {spa_flag}, {sel})",
+                badge.apply_state_call(self.ns, grp.on, grp.spa_on, grp.selector),
             )
 
         await asyncio.gather(*(_apply(pg) for pg in list(self.context.pages)))
@@ -281,7 +283,7 @@ class CaptureSession:
 
     async def _push_count(self) -> None:
         """現在の撮影カウンタ（本セッション枚数）を開いている全ページの操作バーへ配る（F-D3）。"""
-        call = badge.set_count_call(self.shots)
+        call = badge.set_count_call(self.ns, self.shots)
         await asyncio.gather(
             *(try_eval(pg, call) for pg in list(self.context.pages))
         )
@@ -306,7 +308,7 @@ class CaptureSession:
 
     async def _push_history(self) -> None:
         """現在のセレクタ履歴（datalist 候補）を開いている全ページの操作バーへ配る（F-D2）。"""
-        call = badge.set_history_call(self.selector_history)
+        call = badge.set_history_call(self.ns, self.selector_history)
         await asyncio.gather(
             *(try_eval(pg, call) for pg in list(self.context.pages))
         )
@@ -598,7 +600,7 @@ class CaptureSession:
         # 埋め込む。token は各バインディング呼び出しの照合、settle は落ち着き判定に使う。
         settle_ms = int(self.config.settle_delay * 1000)
         await self.context.add_init_script(
-            badge.build_badge_script(self.token, settle_ms, self.config.hide_selectors)
+            badge.build_badge_script(self.token, settle_ms, self.config.hide_selectors, self.ns)
         )
         # ダウンロードは context 単位で拾う（全タブ・以後開く新規タブも自動対象）。
         # 各ファイルを保存先へ退避しないと終了時に消える（E-4）。

@@ -54,6 +54,20 @@
    - `window.__eac_toggle(...)` のような**直接呼び出しを新たに書かないこと**。
      必ず `callBinding('__eac_toggle', TOK, ...)` を使う（サイト側が差し替えた関数へ token を渡さないため）
    - `mode: 'open'` に戻すとスモークテストが失敗する（回帰チェックを入れてある）
+   - **固定名を `window` に生やさない**（`E-3` 対応済み・存在検知の防止）:
+     - Python→ページのヘルパは固定名（`window.__eacApplyState` 等）ではなく、起動ごとの
+       ランダム名 `ns`（`badge.new_namespace()`）の**非列挙**プロパティ `window[ns]` に
+       まとめて公開する。呼び出し式は `badge.*_call(ns, ...)`（`body_text_call` / `sig_call` /
+       `capture_start_call` / `capture_end_call` / `apply_state_call` / `set_count_call` /
+       `set_history_call`）が `ns` 込みで組み立てる。**`ns` を第1引数に取る**ので、呼び出し側
+       （`edge_auto_capture` の `self.ns`・`capture` の `runner.ns`）から必ず渡すこと。
+     - ページ→Python の `expose_binding` 固定名（`__eac_toggle` 等）は、`badge.js` 冒頭で本物の
+       参照を `BOUND` へ退避したうえで `delete window[name]` して消す。この退避＋削除は
+       **最上位フレームの早期 `return` より前**で全フレーム分行う（iframe にも生えるため）。
+       token 無し（スモーク）ビルドは削除せず `callBinding` の実行時フォールバックに任せる。
+     - `window.__eacApplyState` 等の**固定名代入を復活させない**こと（`E-3` が無効化する）。
+       スモークテストの手順 13 が `'__eacApplyState' in window` / `'__eac_toggle' in window` を
+       回帰チェックしている。
 
 7. **`ruff check` / `mypy` は緑（終了コード 0）が正常** — **指摘が出たらそれは新しく入れた問題**なので直すこと。
 
@@ -108,7 +122,7 @@
 ```bash
 pip install -e ".[dev]"
 pytest                                 # 速い純粋関数・token 照合・DL の回帰
-python tests/smoke_badge.py --strict   # 実 Edge。バー構築・SPA検知・写り込み防止・JS エラー無し
+python tests/smoke_badge.py --strict   # 実 Edge。バー構築・SPA検知・写り込み防止・検知不能化(E-3)・JS エラー無し
 ruff check .
 mypy .
 ```
