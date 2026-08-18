@@ -11,6 +11,7 @@
 """
 
 import json
+import secrets
 import sys
 from pathlib import Path
 
@@ -104,8 +105,24 @@ def _badge_js_path() -> Path:
     return base / "badge.js"
 
 
+def new_namespace() -> str:
+    """このセッションのページ側ヘルパ（Python→ページ）を収める window プロパティ名を返す（E-3）。
+
+    以前は `window.__eacApplyState` 等の固定名でページ側へ公開していたため、閲覧中サイトが
+    `'__eacApplyState' in window` のようにしてツールの存在を検知できた。起動ごとにランダムな
+    名前を生成し、その 1 プロパティ（非列挙）へヘルパをまとめることで、固定名での存在検知を
+    できなくする。Python 側は生成した名前を知っているので `window[<name>].applyState(...)` の
+    形で呼べる（下の *_call が名前込みで呼び出し式を組み立てる）。token と同様、起動ごとに
+    使い捨てる。先頭を英字にして数値インデックス的な扱いを避ける。
+    """
+    return "n" + secrets.token_hex(16)
+
+
 def build_badge_script(
-    token: str = "", settle_ms: int = 300, hide_selectors: tuple[str, ...] = ()
+    token: str = "",
+    settle_ms: int = 300,
+    hide_selectors: tuple[str, ...] = (),
+    ns: str = "",
 ) -> str:
     """badge.js を読み込み、$CONFIG を設定 JSON で置換した完成スクリプトを返す。
 
@@ -123,12 +140,19 @@ def build_badge_script(
     visibility:hidden にして撮影後に戻す。同意バナー・追従ヘッダなどが証跡（スクショ）に
     被るのを防ぐ。空なら何も隠さない（既定）。
 
+    ns は Python→ページのヘルパを収める window プロパティ名（E-3, new_namespace() が生成）。
+    badge.js はこの名前で 1 個の非列挙プロパティを作り、apply/captureStart 等をその配下へ
+    まとめる。固定名を window に生やさないので、サイトから固定名で存在検知できなくなる。
+    空（既定）のときは公開しない（見た目だけ確認するテスト用ビルドで、ヘルパを呼ばない場面）。
+
     置換対象は文字列 "$CONFIG" のみ。badge.js はテンプレートリテラル（バッククォート）を
     使うが、補間は `${...}` の形だけで、この JS では `${` を使わないため `$CONFIG` と
     衝突しない。よって単純な文字列置換で足りる（絵文字/日本語も json.dumps で
     \\uXXXX に安全化される）。
     """
-    config = dict(_BADGE_CONFIG, tok=token, settleMs=settle_ms, hideSel=list(hide_selectors))
+    config = dict(
+        _BADGE_CONFIG, tok=token, settleMs=settle_ms, hideSel=list(hide_selectors), ns=ns
+    )
     src = _badge_js_path().read_text(encoding="utf-8")
     return src.replace("$CONFIG", json.dumps(config))
 
@@ -153,51 +177,86 @@ BIND_COMMIT_SELECTOR = "__eac_commit_selector" # セレクタ確定（blur/Enter
 BIND_SPA_CHANGED = "__eac_spa_changed"         # SPA検知の変化通知
 BIND_GETSTATE = "__eac_getstate"               # 描画前の状態問い合わせ
 
-# --- capture 側が page.evaluate で呼ぶ、ページ側ヘルパの呼び出し式 ---
-# いずれも window.__eac_* が未定義でも落ちないよう、存在チェック付きの式にしてある。
-
-# 本文テキスト（バー除外）。未注入時は素の innerText にフォールバック。
-BODY_TEXT_CALL = (
-    "window.__eac_bodyText ? window.__eac_bodyText() "
-    ": (document.body ? document.body.innerText : '')"
-)
-# SPA検知の署名。引数 sel を受け取る関数式（page.evaluate(SIG_CALL, selector) で使う）。
-SIG_CALL = "(sel) => window.__eac_signature ? window.__eac_signature(sel) : '0_0'"
-
-# 撮影の合図。撮影直前に captureStart（バーを退避し切るまで待つ・Promise を返す）、
-# 撮影直後に captureEnd（全画面のシャッターフラッシュ＋バー復帰）を page.evaluate で呼ぶ。
-# captureStart は未注入でも await できるよう、関数式で null を返す形にしておく。
-CAPTURE_START_CALL = "(() => window.__eac_captureStart ? window.__eac_captureStart() : null)()"
-# 引数なしの captureEnd は「成功（赤フラッシュ）」扱い。実運用は capture_end_call(ok) で
-# 成否を渡す（スモークテストはこの無引数版を使う）。
-CAPTURE_END_CALL = "window.__eac_captureEnd && window.__eac_captureEnd()"
+# --- capture 側が page.evaluate で呼ぶ、ページ側ヘルパの呼び出し式（E-3）---
+# ヘルパは固定名を window に生やさず、起動ごとのランダム名 ns（new_namespace()）の下へ
+# 1 オブジェクトとしてまとめて公開する（badge.js）。ここではその ns を受け取り、
+# window[ns].applyState(...) 等を呼ぶ式を組み立てる。ns 未公開（未注入や ns 空）でも落ちない
+# よう、いずれも存在チェック付きの式にしてある。
 
 
-def capture_end_call(ok: bool) -> str:
+def _ns_ref(ns: str) -> str:
+    """ページ側ヘルパを収めた隠しオブジェクト window[ns] への参照式（E-3）。
+
+    ns は new_namespace() 由来のランダム文字列。json.dumps で JS 文字列リテラル化して
+    ブラケット参照する（数値始まり等でも安全）。
+    """
+    return f"window[{json.dumps(ns)}]"
+
+
+def body_text_call(ns: str) -> str:
+    """本文テキスト（バー除外）を取り出す呼び出し式。未注入時は素の innerText にフォールバック。"""
+    ref = _ns_ref(ns)
+    return (
+        f"{ref} && {ref}.bodyText ? {ref}.bodyText() "
+        ": (document.body ? document.body.innerText : '')"
+    )
+
+
+def sig_call(ns: str) -> str:
+    """SPA検知の署名。引数 sel を受け取る関数式（page.evaluate(sig_call(ns), selector) で使う）。"""
+    ref = _ns_ref(ns)
+    return f"(sel) => {ref} && {ref}.signature ? {ref}.signature(sel) : '0_0'"
+
+
+def capture_start_call(ns: str) -> str:
+    """撮影直前の captureStart 呼び出し式（バーを退避し切るまで待つ・Promise を返す）。
+
+    未注入でも await できるよう、関数式で null を返す形にしておく。
+    """
+    ref = _ns_ref(ns)
+    return f"(() => {ref} && {ref}.captureStart ? {ref}.captureStart() : null)()"
+
+
+def capture_end_call(ns: str, ok: bool) -> str:
     """撮影直後の captureEnd 呼び出し式を組み立てる（F-D3）。
 
     ok は `_capture` の done 有無（1 種でも保存できたか）。ページ側の captureEnd へ真偽値で
-    渡し、成功（赤）と失敗（琥珀）でシャッターフラッシュの色を分ける。現状 captureEnd は成否を
-    受け取らなかったため、この引数付き呼び出し式を capture 側から使う経路を用意する。
+    渡し、成功（赤）と失敗（琥珀）でシャッターフラッシュの色を分ける。
     """
+    ref = _ns_ref(ns)
     flag = "true" if ok else "false"
-    return f"window.__eac_captureEnd && window.__eac_captureEnd({flag})"
+    return f"{ref} && {ref}.captureEnd && {ref}.captureEnd({flag})"
 
 
-def set_count_call(count: int) -> str:
+def apply_state_call(ns: str, recording: bool, spa_on: bool, selector: str) -> str:
+    """操作バーの見た目を現在状態へ反映する applyState 呼び出し式を組み立てる。
+
+    記録ON/OFF・SPA検知・セレクタが変わったとき、開いている全ページのバーへ配る（refresh_panels）。
+    selector は日本語/記号を含んでも安全に JS リテラル化する（json.dumps）。
+    """
+    ref = _ns_ref(ns)
+    flag = "true" if recording else "false"
+    spa_flag = "true" if spa_on else "false"
+    sel = json.dumps(selector)
+    return f"{ref} && {ref}.applyState({flag}, {spa_flag}, {sel})"
+
+
+def set_count_call(ns: str, count: int) -> str:
     """撮影カウンタ（本セッション枚数）をバーへ反映する呼び出し式を組み立てる（F-D3）。
 
     枚数は Python 側（監視セッション）が本体として持ち、成功のたびに全ページのバーへ配る。
     バーがサイト側の再描画で作り直されても __eac_getstate（count 同梱）で自己同期する。
     """
-    return f"window.__eacSetCount && window.__eacSetCount({int(count)})"
+    ref = _ns_ref(ns)
+    return f"{ref} && {ref}.setCount && {ref}.setCount({int(count)})"
 
 
-def set_history_call(history: list[str]) -> str:
+def set_history_call(ns: str, history: list[str]) -> str:
     """セレクタ候補（datalist の過去値）をバーへ反映する呼び出し式を組み立てる（F-D2）。
 
     候補は Python 側（監視セッション）が本体として持ち、セレクタ確定（blur/Enter）のたびに
     全ページのバーへ配る。バーがサイト側の再描画で作り直されても __eac_getstate（history
     同梱）で自己同期する。日本語/記号を含む値も json.dumps で安全に JS 配列リテラル化する。
     """
-    return f"window.__eacSetHistory && window.__eacSetHistory({json.dumps(history)})"
+    ref = _ns_ref(ns)
+    return f"{ref} && {ref}.setHistory && {ref}.setHistory({json.dumps(history)})"
