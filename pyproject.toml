@@ -32,7 +32,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 # 役割ごとに分割したトップレベル・モジュール群（パッケージフォルダは作らない）。
 # ページ側 JS 本体は badge.js（データファイル）で、配布 exe には build.ps1 が同梱する。
-py-modules = ["edge_auto_capture", "badge", "capture", "config", "infra"]
+py-modules = ["edge_auto_capture", "badge", "browser", "capture", "config", "infra"]
 
 [tool.setuptools.dynamic]
 # バージョンは infra.__version__ を出所にする（project.dynamic と対）。
@@ -54,7 +54,7 @@ python_files = ["test_*.py"]
 # PEP 585 の dict[]/list[] までで X|Y は使わない — HANDOFF「落とし穴」参照）。
 python_version = "3.10"
 # 生成物やテスト（smoke は実 Edge 前提でスタブ化が重い）は対象外。まずは配布コード本体を守る。
-files = ["edge_auto_capture.py", "badge.py", "capture.py", "config.py", "infra.py"]
+files = ["edge_auto_capture.py", "badge.py", "browser.py", "capture.py", "config.py", "infra.py"]
 exclude = ["build", "dist", "output", "tests"]
 # 注釈漏れの新規混入を防ぐ最低限。既存はほぼ注釈済みで、これで追加負担はほぼ無い。
 warn_unused_ignores = true
