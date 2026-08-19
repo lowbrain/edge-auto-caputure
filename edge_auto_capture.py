@@ -48,7 +48,6 @@ import secrets
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -59,9 +58,6 @@ from browser import browser_candidates, browser_launch_kwargs
 from capture import (
     CaptureRequest,
     CaptureRunner,
-    group_folder_name,
-    group_stamp,
-    group_subdir,
     try_eval,
 )
 from config import Config, load_config, should_capture, summarize_config
@@ -73,6 +69,13 @@ from infra import (
     notify_fatal,
     open_in_file_manager,
     startup_environment_line,
+)
+from lineage import (
+    GroupState,
+    LineageRegistry,
+    group_folder_name,
+    group_subdir,
+    make_group,
 )
 
 
@@ -119,21 +122,6 @@ def _unique_path(directory: Path, name: str) -> Path:
 SELECTOR_HISTORY_MAX = 20
 
 
-@dataclass
-class GroupState:
-    """タブ系譜（グループ）1 つぶんの実行時状態。
-
-    グループ = root ページ（起動時の最初のタブ、または手動で開いた別タブ）と、そこから
-    window.open / target="_blank" で派生したポップアップ/ウィンドウの一族。各グループが
-    記録ON/OFF・SPA検知・対象セレクタを独立して持ち、系譜内のページはこの状態を共有する。
-    """
-
-    on: bool          # 記録中か（このグループの自動保存マスタースイッチ）
-    spa_on: bool      # SPA検知（中身変化を契機に保存）
-    selector: str     # 検知/抜き出しの対象 CSS セレクタ
-    id: str = ""      # 系譜を作った時刻（ミリ秒まで・区切りなし）。フォルダ名/ログの識別子。空＝未採番
-
-
 class CaptureSession:
     """1 回の起動ぶんの監視セッション。
 
@@ -176,13 +164,26 @@ class CaptureSession:
         # （どのタブで入れた値でも次に別タブで使い回せる方が実用的なので、あえて session 単位）。
         self.selector_history: list[str] = []
         # --- グループ単位の実行時状態 ---
-        # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。
-        self.groups: dict[Page, GroupState] = {}  # root ページ -> そのグループの状態
-        self.page_root: dict[Page, Page] = {}     # 各ページ -> 所属グループの root（メモ化）
+        # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。系譜の
+        # 状態（groups / page_root）と解決ロジックは lineage.LineageRegistry へ寄せてある（#36）。
+        # 新規タブに与える既定セレクタは config.target_selector（レジストリが握って使う）。
+        # groups / page_root は下のプロパティでレジストリへ委譲する（既存の参照経路を保つ）。
+        self._lineage = LineageRegistry(config.target_selector)
         # --- ページごとの追跡情報 ---
         self.seen: dict[Page, str] = {}           # page -> 直近のURL
         # framenavigated / close を配線済みのページ（二重配線を防ぐ。B-1）
         self._tracked: set[Page] = set()
+
+    # 系譜の状態はレジストリが持つ。既存コード/テストが session.groups・session.page_root で
+    # 参照・変更（items 代入・del・in 判定）できるよう、レジストリの辞書をそのまま返す。
+    # 辞書オブジェクト自体を返すので `self.groups[k] = v` 等の in-place 変更もそのまま届く。
+    @property
+    def groups(self) -> dict[Page, GroupState]:
+        return self._lineage.groups
+
+    @property
+    def page_root(self) -> dict[Page, Page]:
+        return self._lineage.page_root
 
     # ---- ページ側とのやり取り ----
 
@@ -263,46 +264,16 @@ class CaptureSession:
     # ---- タブ系譜（グループ）の解決 ----
 
     def _make_group(self, on: bool, spa_on: bool, selector: str) -> GroupState:
-        """GroupState を作る。id は「作った時刻（ミリ秒まで・区切りなし）」で、フォルダ名/ログに使う。"""
-        return GroupState(on=on, spa_on=spa_on, selector=selector, id=group_stamp())
+        """GroupState を作る（lineage.make_group へ委譲）。呼び出し側の従来インタフェースを保つ。"""
+        return make_group(on=on, spa_on=spa_on, selector=selector)
 
     async def _find_root(self, page) -> Page:
-        """page の所属グループの root ページを opener 連鎖から求める。
-
-        既知の root（page_root に載っているページ）に達したらそれを、opener が None に達したら
-        その末端ページ自身を root とする。opener 取得に失敗したら、その時点のページを root 扱い
-        にする（系譜を辿れないページは、それ自身を独立グループの起点にする）。
-        """
-        p = page
-        while True:
-            known = self.page_root.get(p)
-            if known is not None:
-                return known
-            try:
-                parent = await p.opener()
-            except Exception:
-                return p
-            if parent is None:
-                return p
-            p = parent
+        """page の所属グループの root を opener 連鎖から求める（LineageRegistry へ委譲）。"""
+        return await self._lineage.find_root(page)
 
     async def _resolve_group(self, page) -> GroupState:
-        """page が属するグループの状態を返す（無ければ新規グループを OFF で作る）。
-
-        opener を辿って root を決めてメモ化する。root のグループがまだ無い＝手動で開かれた
-        新規タブなので、初期OFF（無関係タブを勝手に撮らない）の独立グループを作る。起動時の
-        最初のグループは setup() が start_recording に従って先に用意している。
-        """
-        root = self.page_root.get(page)
-        if root is None:
-            root = await self._find_root(page)
-            self.page_root[page] = root
-        grp = self.groups.get(root)
-        if grp is None:
-            grp = self._make_group(on=False, spa_on=False, selector=self.config.target_selector)
-            self.groups[root] = grp
-            log(f"[{group_folder_name(grp.id)}] 新しいタブを認識しました（初期は待機）")
-        return grp
+        """page が属するグループの状態を返す（LineageRegistry へ委譲）。無ければ新規 OFF で採番。"""
+        return await self._lineage.resolve(page)
 
     def _group_pages(self, root: Page) -> list[Page]:
         """root を共有する現存ページ（＝同じグループのページ）を返す。"""
