@@ -27,6 +27,7 @@ from playwright.async_api import Page
 import badge
 from config import Config
 from infra import iso_timestamp, log
+from lineage import group_folder_name, group_subdir
 
 # 索引 CSV のファイル名と見出し。撮影ごとに 1 行追記して「いつ・何を撮ったか」を一覧にする（F-A1）。
 INDEX_CSV_NAME = "index.csv"
@@ -52,34 +53,6 @@ def now_stamp() -> str:
     """
     now = datetime.now()
     return f"{now:%Y-%m-%d_%H-%M-%S}-{now.strftime('%f')[:3]}"
-
-
-def group_stamp() -> str:
-    """系譜（lineage）の id を「YYYYMMDDHHMMSSmmm」（ミリ秒まで・区切りなし）で返す。
-
-    系譜を新たに作った時刻をそのまま id にする。区切り記号を入れないので `lineage-<id>` の
-    <id> 部分は連続した数字になる（例: 20260814102028731）。
-    """
-    now = datetime.now()
-    return f"{now:%Y%m%d%H%M%S}{now.strftime('%f')[:3]}"
-
-
-def group_folder_name(group_id: str) -> str:
-    """系譜（lineage）の表示名を返す（フォルダ名とログ表記で共用）。
-
-    id は系譜を新たに作った時刻（ミリ秒まで・区切りなし）。`lineage-<id>` の形にして、
-    フォルダ名とログのトークンを一致させ、ログから保存フォルダをそのまま辿れるようにする。
-    """
-    return f"lineage-{group_id}"
-
-
-def group_subdir(output_dir: Path, group_id: str) -> Path:
-    """系譜（lineage）ごとの保存先サブフォルダを返す。
-
-    保存物を系譜ごとにまとめるための共通規約（`output_dir/lineage-<id>`）。edge_auto_capture の
-    ダウンロード退避先もこれに揃える。group_id が空（未採番）なら output_dir 直下を返す。
-    """
-    return output_dir / group_folder_name(group_id) if group_id else output_dir
 
 
 async def try_eval(page: Page, js: str, timeout: Optional[float] = None) -> None:

@@ -9,10 +9,10 @@ download イベントで save_as して保存先へ退避することで初め�
 import asyncio
 from pathlib import Path
 
+from browser import browser_launch_kwargs
 from config import Config
 from edge_auto_capture import (
     CaptureSession,
-    _browser_launch_kwargs,
     _downloads_dir,
     _unique_path,
 )
@@ -45,7 +45,7 @@ def test_downloads_dir_is_under_output_dir():
 
 def test_launch_kwargs_accept_downloads():
     c = Config(output_dir=Path("/tmp/out"))
-    kwargs = _browser_launch_kwargs(c, user_data_dir="/tmp/prof", channel="msedge")
+    kwargs = browser_launch_kwargs(c, user_data_dir="/tmp/prof", channel="msedge")
     assert kwargs["accept_downloads"] is True
 
 
