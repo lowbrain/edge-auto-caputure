@@ -7,7 +7,7 @@ Playwright には依存しないので、実 Edge 無しで設定読み込みの
 import configparser
 import fnmatch
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -226,9 +226,12 @@ def _write_default_config() -> bool:
 def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     """[capture] セクションから Config を組み立てる（値の検証・既定フォールバック込み）。
 
-    数値項目の変換・範囲チェックに失敗すると ValueError を送出する（呼び出し側が
-    「値の編集ミス」として通知し終了する）。output_dir の書き込み先解決と
-    set_log_dir はここで行う（保存先が確定した時点でログもそこへ寄せる）。
+    値の変換・検証だけを行い、ファイルアクセスやログ切り替え等の副作用は持たない
+    （R5b: 副作用の分離）。数値項目の変換・範囲チェックに失敗すると ValueError を送出する
+    （呼び出し側が「値の編集ミス」として通知し終了する）。output_dir は config.ini で指定された
+    保存先（相対パスは基準フォルダ基準に固定）をそのまま載せる。書き込み可否の解決・
+    セッション階層の挿入・set_log_dir といった副作用は _resolve_output_dir が担い、
+    load_config などが本関数の直後に呼ぶ。
     """
     # 保存先。値が空ならカレントへ落ちないよう既定へ戻す（配布先で編集ミスが起きても安全側に）。
     raw_out = sec.get("output_dir", str(defaults.output_dir)).strip()
@@ -240,39 +243,6 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     output_dir = Path(raw_out)
     if not output_dir.is_absolute():
         output_dir = BASE_DIR / output_dir
-
-    # 書き込み可能なフォルダへ解決する（D-C1）。権限の無い場所へ展開されても
-    # 無言終了せず、%LOCALAPPDATA% 等へ退避して動き続ける。どこにも書けなければ終了。
-    resolved = resolve_writable_dir(output_dir)
-    if resolved is None:
-        notify_fatal(
-            f"保存先フォルダに書き込めませんでした: {output_dir}\n"
-            "書き込み可能な場所（例: ドキュメント配下）へ移して実行してください。"
-        )
-        sys.exit(1)
-
-    # F-C3: 起動 1 回分のセッションフォルダを 1 段挟む（例: output/2026-08-11_143025/）。
-    # 撮影物・log.txt・index.csv・lineage-<id>/downloads はすべて output_dir からの相対で
-    # 決まるので、ここで output_dir をセッションフォルダにすげ替えるだけで全保存物がその下へ
-    # まとまる（起動単位で切り、受け渡しが「このフォルダを渡す」で済む）。書き込み可否の判定と
-    # 退避は、セッション階層を挟む前の resolved（基準フォルダ）で済ませておく。プローブ対象を
-    # 実在フォルダに保ち、退避先の名前が起動時刻に化けないようにするため。
-    session_dir = resolved / session_stamp()
-
-    # ログも PNG などと同じ保存先（セッションフォルダ）へ寄せる（保存先が確定したこの時点で
-    # 切り替え）。先に set_log_dir しておくと、退避の通知が確実に書ける退避先ログへ残る。
-    # set_log_dir がセッションフォルダを mkdir するので、直後の退避通知ログも取りこぼさない。
-    set_log_dir(session_dir)
-
-    # 退避が起きたら、どこへ保存されるのかをログとダイアログの両方で知らせる
-    # （保存先が分からないほうが利用者は困るため）。判定・表示は基準フォルダ（resolved）で行い、
-    # 利用者が config.ini で直す対象＝起動時刻サブ階層を含めない元のパスを示す。
-    if resolved != output_dir:
-        notify_fatal(
-            f"保存先 {output_dir} に書き込めないため、{resolved} へ退避して実行します。\n"
-            "権限のある場所（例: ドキュメント配下）へ移すと元の設定で保存できます。"
-        )
-    output_dir = session_dir
 
     # 数値項目。範囲を検証し、不正なら理由付き ValueError（呼び出し側で通知＆終了）。
     settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
@@ -312,6 +282,8 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
         browser=_normalize_browser(sec.get("browser", defaults.browser)),
         edge_path=sec.get("edge_path", "").strip(),
         chrome_path=sec.get("chrome_path", "").strip(),
+        # 指定された保存先そのまま（書き込み解決前）。_resolve_output_dir が
+        # 書き込み可否の解決とセッション階層の挿入を行って確定させる。
         output_dir=output_dir,
         settle_delay=settle_delay,
         load_timeout=load_timeout,
@@ -325,6 +297,53 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     )
 
 
+def _resolve_output_dir(config: Config) -> Config:
+    """保存先の書き込み可否を解決し、セッション階層を挟んで output_dir を確定させる。
+
+    _build_config（純粋な値組み立て）から分離した副作用側（R5b）。組み立て済みの Config を
+    受け取り、以下を行って output_dir 差し替え済みの Config を返す:
+      - 書き込み可能なフォルダへの解決と %LOCALAPPDATA% 等への退避（D-C1）。どこにも書けなければ終了。
+      - 起動 1 回分のセッションフォルダの挿入（F-C3）。
+      - ログ出力先をその保存先へ切り替え（set_log_dir）。
+      - 退避が起きた場合の通知。
+    """
+    output_dir = config.output_dir
+
+    # 書き込み可能なフォルダへ解決する（D-C1）。権限の無い場所へ展開されても
+    # 無言終了せず、%LOCALAPPDATA% 等へ退避して動き続ける。どこにも書けなければ終了。
+    resolved = resolve_writable_dir(output_dir)
+    if resolved is None:
+        notify_fatal(
+            f"保存先フォルダに書き込めませんでした: {output_dir}\n"
+            "書き込み可能な場所（例: ドキュメント配下）へ移して実行してください。"
+        )
+        sys.exit(1)
+
+    # F-C3: 起動 1 回分のセッションフォルダを 1 段挟む（例: output/2026-08-11_143025/）。
+    # 撮影物・log.txt・index.csv・lineage-<id>/downloads はすべて output_dir からの相対で
+    # 決まるので、ここで output_dir をセッションフォルダにすげ替えるだけで全保存物がその下へ
+    # まとまる（起動単位で切り、受け渡しが「このフォルダを渡す」で済む）。書き込み可否の判定と
+    # 退避は、セッション階層を挟む前の resolved（基準フォルダ）で済ませておく。プローブ対象を
+    # 実在フォルダに保ち、退避先の名前が起動時刻に化けないようにするため。
+    session_dir = resolved / session_stamp()
+
+    # ログも PNG などと同じ保存先（セッションフォルダ）へ寄せる（保存先が確定したこの時点で
+    # 切り替え）。先に set_log_dir しておくと、退避の通知が確実に書ける退避先ログへ残る。
+    # set_log_dir がセッションフォルダを mkdir するので、直後の退避通知ログも取りこぼさない。
+    set_log_dir(session_dir)
+
+    # 退避が起きたら、どこへ保存されるのかをログとダイアログの両方で知らせる
+    # （保存先が分からないほうが利用者は困るため）。判定・表示は基準フォルダ（resolved）で行い、
+    # 利用者が config.ini で直す対象＝起動時刻サブ階層を含めない元のパスを示す。
+    if resolved != output_dir:
+        notify_fatal(
+            f"保存先 {output_dir} に書き込めないため、{resolved} へ退避して実行します。\n"
+            "権限のある場所（例: ドキュメント配下）へ移すと元の設定で保存できます。"
+        )
+
+    return replace(config, output_dir=session_dir)
+
+
 def _config_with_defaults(defaults: Config) -> Config:
     """既定 config.ini（DEFAULT_CONFIG_TEXT）の中身から Config を作る。
 
@@ -334,7 +353,7 @@ def _config_with_defaults(defaults: Config) -> Config:
     """
     parser = configparser.ConfigParser()
     parser.read_string(DEFAULT_CONFIG_TEXT)
-    return _build_config(parser["capture"], defaults)
+    return _resolve_output_dir(_build_config(parser["capture"], defaults))
 
 
 def _recover_broken_config(error: Exception, defaults: Config) -> Config:
@@ -366,7 +385,7 @@ def _recover_broken_config(error: Exception, defaults: Config) -> Config:
         parser = configparser.ConfigParser()
         try:
             parser.read(CONFIG_PATH, encoding="utf-8-sig")
-            return _build_config(parser["capture"], defaults)
+            return _resolve_output_dir(_build_config(parser["capture"], defaults))
         except (configparser.Error, KeyError):
             pass
     return _config_with_defaults(defaults)
@@ -419,7 +438,7 @@ def load_config() -> Config:
         return _recover_broken_config(e, defaults)
 
     try:
-        return _build_config(sec, defaults)
+        return _resolve_output_dir(_build_config(sec, defaults))
     except ValueError as e:
         # 値だけが不正（利用者の編集ミス）。ファイル構造は正しく他の設定は生きているので、
         # 勝手に既定へ戻さず、直し方を伝えて終了する（編集内容を失わせない）。
