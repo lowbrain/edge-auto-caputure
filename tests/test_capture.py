@@ -1201,6 +1201,70 @@ def test_shoot_passes_group_id_to_spawn():
     asyncio.run(scenario())
 
 
+def test_shoot_skips_url_out_of_scope_and_does_not_spawn():
+    # _shoot は should_capture で弾いた URL では None を返し、runner.spawn を呼ばない（#35）。
+    # 判定ロジック自体は should_capture 側で厚く検証済み。ここは _shoot が結果を尊重する配線を守る。
+    from edge_auto_capture import GroupState
+
+    cfg = Config(skip_urls=("https://skip.test/",))
+    s = _make_session([], config=cfg)
+    skip = _GroupPage("skip", url="https://skip.test/logout")  # skip_urls に前方一致
+    grp = GroupState(on=True, spa_on=False, selector="#x")
+    assert s._shoot(skip, grp, "manual") is None
+    assert s.runner.calls == []
+
+
+def test_shoot_returns_none_when_url_unavailable():
+    # pg.url の取得が失敗（ページが切断された等）したら、判定へ進まず None を返し spawn しない（#35）。
+    from edge_auto_capture import GroupState
+
+    class _UrlErrorPage:
+        name = "boom"
+
+        @property
+        def url(self):
+            raise RuntimeError("page detached")
+
+    s = _make_session([])
+    grp = GroupState(on=True, spa_on=False, selector="#x")
+    assert s._shoot(_UrlErrorPage(), grp, "url") is None
+    assert s.runner.calls == []
+
+
+def test_refresh_panels_distributes_each_pages_own_group_state():
+    # refresh_panels は開いている各ページへ、そのページが属するグループの状態を配る（#35）。
+    # ページごとに状態が違うことを、2 グループのダブルで検証する。
+    from edge_auto_capture import GroupState
+
+    class _PanelPage:
+        """opener() を持ちつつ、try_eval 経由で実行された JS を記録するページ代役。"""
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.evals: list[str] = []
+
+        async def evaluate(self, js, *args):
+            self.evals.append(js)
+            return None
+
+        async def opener(self):
+            return None
+
+    async def scenario():
+        p1 = _PanelPage("p1")
+        p2 = _PanelPage("p2")
+        g1 = GroupState(on=True, spa_on=True, selector="#one")
+        g2 = GroupState(on=False, spa_on=False, selector="")
+        s = _make_session([p1, p2], roots={p1: g1, p2: g2})
+        del s.refresh_panels  # _make_session の no-op を外し、本物の refresh_panels を検証する
+        await s.refresh_panels()
+        # 各ページには自分のグループの状態から組んだ applyState 呼び出しだけが届く。
+        assert p1.evals == [badge.apply_state_call(s.ns, g1.on, g1.spa_on, g1.selector)]
+        assert p2.evals == [badge.apply_state_call(s.ns, g2.on, g2.spa_on, g2.selector)]
+
+    asyncio.run(scenario())
+
+
 # --------------------------------------------------------------------------- #
 # F-D4: 保存先フォルダを開く
 #
