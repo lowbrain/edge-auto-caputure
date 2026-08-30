@@ -1084,6 +1084,81 @@ def _make_session(pages, roots=None, config=None):
     return session
 
 
+class _SetupPage(_GroupPage):
+    """setup() の監視配線（page.on）を受け取るページ代役。配線されたイベント名を記録する。"""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.events: list[str] = []
+
+    def on(self, event, handler) -> None:
+        self.events.append(event)
+
+
+class _SetupContext(_FakeContext):
+    """setup() が呼ぶ context 側 API を受け取る代役（実 Edge 無しで setup() を通す）。"""
+
+    def __init__(self, pages) -> None:
+        super().__init__(pages)
+        self.bindings: list[str] = []
+        self.init_scripts: list[str] = []
+        self.events: list[str] = []
+
+    async def expose_binding(self, name, callback) -> None:
+        self.bindings.append(name)
+
+    async def add_init_script(self, script) -> None:
+        self.init_scripts.append(script)
+
+    def on(self, event, handler) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.parametrize("recording", [True, False])
+def test_setup_seeds_startup_pages_as_root_groups(recording):
+    """起動時に開いているページは、start_recording に従う root グループとして種入れされる。
+
+    main() はこの種入れに全面的に依存する（自前で page_root/groups を触らない）ため、
+    「setup() を通せば root 採番・start_recording 反映・監視配線が揃う」ことを固定する。
+    """
+    from edge_auto_capture import CaptureSession
+
+    async def scenario():
+        page = _SetupPage("startup")
+        ctx = _SetupContext([page])
+        session = CaptureSession(ctx, Config(start_recording=recording, target_selector="#main"))
+        await session.setup()
+
+        assert session.page_root[page] is page          # 自分が root
+        grp = session.groups[page]
+        assert (grp.on, grp.spa_on, grp.selector) == (recording, False, "#main")
+        assert page.events == ["framenavigated", "close"]   # URL変化・消滅の監視も配線される
+        assert ctx.events == ["download", "page"]           # DL 退避と新規タブ検知も配線される
+
+    asyncio.run(scenario())
+
+
+def test_setup_without_pages_seeds_nothing():
+    """ページが 1 枚も無ければ種入れは起きない（main() が setup() 前に 1 枚用意する前提）。
+
+    以前は main() が setup() の後に new_page() し、種入れを自前で書き足していた。その順序だと
+    setup() が張った context.on("page") 経由の on_new_page が先に走りえて、start_recording では
+    なく初期OFFの独立グループとして採番されうる。現在は main() が setup() の前に 1 枚用意し、
+    種入れは setup() だけが行う。
+    """
+    from edge_auto_capture import CaptureSession
+
+    async def scenario():
+        ctx = _SetupContext([])
+        session = CaptureSession(ctx, Config(start_recording=True))
+        await session.setup()
+
+        assert session.groups == {}
+        assert session.page_root == {}
+
+    asyncio.run(scenario())
+
+
 def test_manual_tab_becomes_independent_off_group():
     # opener=None の手動タブは、それ自身が root の新グループ・初期OFFになる。
     from edge_auto_capture import GroupState

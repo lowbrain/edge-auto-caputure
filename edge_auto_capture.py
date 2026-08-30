@@ -663,6 +663,15 @@ async def main(config: Config) -> None:
                 shutil.rmtree(user_data_dir, ignore_errors=True)
             return
 
+        # 監視セッションを組む前に、操作対象の1枚を必ず用意しておく。setup() は「起動時に
+        # 開いているページ」を root グループとして種入れし（start_recording に従う）、URL変化・
+        # 消滅の監視まで配線するので、先に作っておけばページが1枚も無い環境でもその1枚が
+        # 同じ経路に乗る。setup() の後に作ると、setup() が張った context.on("page") 経由で
+        # on_new_page が先に走りえて、start_recording ではなく初期OFFの独立グループとして
+        # 採番されてしまう（種入れの重複実装もそこから生まれていた）。
+        if not context.pages:
+            await context.new_page()
+
         session = CaptureSession(context, config)
         await session.setup()
 
@@ -674,15 +683,10 @@ async def main(config: Config) -> None:
         context.on("close", lambda *_: closed.set())
 
         try:
-            # 最初のページで start_url を開く（about:blank ならそのまま）
+            # 最初のページで start_url を開く（about:blank ならそのまま）。種入れと監視配線は
+            # setup() が済ませてある（上で 1 枚を確保済み）。ここへ来るまでにその 1 枚が閉じられた
+            # 場合だけ新しく開くが、その 1 枚は setup() が張った on_new_page が拾って採番する。
             page = context.pages[0] if context.pages else await context.new_page()
-            # setup() は起動時に存在したページだけを種入れする。ページが1枚も無く
-            # ここで作った場合に備え、その1枚を start_recording に従う root グループにする。
-            if page not in session.page_root:
-                session.page_root[page] = page
-                session.groups[page] = session._make_group(
-                    on=config.start_recording, spa_on=False, selector=config.target_selector
-                )
             if config.start_url and config.start_url != "about:blank":
                 try:
                     await page.goto(config.start_url)
