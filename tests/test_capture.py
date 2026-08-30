@@ -1646,13 +1646,11 @@ def test_group_subdir_and_folder_name():
 
 def test_make_group_id_is_timestamp():
     # 新規グループの id は「作成時刻（ミリ秒まで）」の文字列（ログ/フォルダ識別用）。
-    async def scenario():
-        s = _make_session([])
-        g = s._make_group(on=False, spa_on=False, selector="")
-        # 例: 20260814101105674（YYYYMMDDHHMMSSmmm・区切りなし＝17桁）
-        assert re.fullmatch(r"\d{17}", g.id)
+    from lineage import make_group
 
-    asyncio.run(scenario())
+    g = make_group(on=False, spa_on=False, selector="")
+    # 例: 20260814101105674（YYYYMMDDHHMMSSmmm・区切りなし＝17桁）
+    assert re.fullmatch(r"\d{17}", g.id)
 
 
 def test_get_state_returns_group_state():

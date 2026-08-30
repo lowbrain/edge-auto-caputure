@@ -263,14 +263,6 @@ class CaptureSession:
 
     # ---- タブ系譜（グループ）の解決 ----
 
-    def _make_group(self, on: bool, spa_on: bool, selector: str) -> GroupState:
-        """GroupState を作る（lineage.make_group へ委譲）。呼び出し側の従来インタフェースを保つ。"""
-        return make_group(on=on, spa_on=spa_on, selector=selector)
-
-    async def _find_root(self, page) -> Page:
-        """page の所属グループの root を opener 連鎖から求める（LineageRegistry へ委譲）。"""
-        return await self._lineage.find_root(page)
-
     async def _resolve_group(self, page) -> GroupState:
         """page が属するグループの状態を返す（LineageRegistry へ委譲）。無ければ新規 OFF で採番。"""
         return await self._lineage.resolve(page)
@@ -488,7 +480,7 @@ class CaptureSession:
         # framenavigated も拾えるよう、goto より前に張っておく。B-1）。
         for pg in self.context.pages:
             self.page_root[pg] = pg
-            self.groups[pg] = self._make_group(
+            self.groups[pg] = make_group(
                 on=self.config.start_recording,
                 spa_on=False,
                 selector=self.config.target_selector,
