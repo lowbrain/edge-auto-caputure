@@ -218,12 +218,19 @@ class CaptureSession:
         self.shots += 1
         await self._push_count()
 
+    async def _broadcast(self, call: str) -> None:
+        """1 つのページ側呼び出し式を、開いている全ページの操作バーへ配る。
+
+        撮影カウンタ（F-D3）・セレクタ履歴（F-D2）のように「全ページ共通の値」を配る経路の
+        共通部分。ページ数ぶんを直列に待たず asyncio.gather で並列に流し、個々の失敗は
+        try_eval が握る（閉じかけのページが混ざっても他ページへの配布は止まらない）。
+        値がグループごとに違う refresh_panels は式をページ単位で組み立てるため、ここは通さない。
+        """
+        await asyncio.gather(*(try_eval(pg, call) for pg in list(self.context.pages)))
+
     async def _push_count(self) -> None:
         """現在の撮影カウンタ（本セッション枚数）を開いている全ページの操作バーへ配る（F-D3）。"""
-        call = badge.set_count_call(self.ns, self.shots)
-        await asyncio.gather(
-            *(try_eval(pg, call) for pg in list(self.context.pages))
-        )
+        await self._broadcast(badge.set_count_call(self.ns, self.shots))
 
     def _remember_selector(self, value: str) -> bool:
         """確定したセレクタを履歴へ積む（F-D2）。新規に積んだら True、変化なしなら False。
@@ -245,10 +252,7 @@ class CaptureSession:
 
     async def _push_history(self) -> None:
         """現在のセレクタ履歴（datalist 候補）を開いている全ページの操作バーへ配る（F-D2）。"""
-        call = badge.set_history_call(self.ns, self.selector_history)
-        await asyncio.gather(
-            *(try_eval(pg, call) for pg in list(self.context.pages))
-        )
+        await self._broadcast(badge.set_history_call(self.ns, self.selector_history))
 
     # ---- expose_binding で公開するコールバック ----
     #
