@@ -218,12 +218,19 @@ class CaptureSession:
         self.shots += 1
         await self._push_count()
 
+    async def _broadcast(self, call: str) -> None:
+        """1 つのページ側呼び出し式を、開いている全ページの操作バーへ配る。
+
+        撮影カウンタ（F-D3）・セレクタ履歴（F-D2）のように「全ページ共通の値」を配る経路の
+        共通部分。ページ数ぶんを直列に待たず asyncio.gather で並列に流し、個々の失敗は
+        try_eval が握る（閉じかけのページが混ざっても他ページへの配布は止まらない）。
+        値がグループごとに違う refresh_panels は式をページ単位で組み立てるため、ここは通さない。
+        """
+        await asyncio.gather(*(try_eval(pg, call) for pg in list(self.context.pages)))
+
     async def _push_count(self) -> None:
         """現在の撮影カウンタ（本セッション枚数）を開いている全ページの操作バーへ配る（F-D3）。"""
-        call = badge.set_count_call(self.ns, self.shots)
-        await asyncio.gather(
-            *(try_eval(pg, call) for pg in list(self.context.pages))
-        )
+        await self._broadcast(badge.set_count_call(self.ns, self.shots))
 
     def _remember_selector(self, value: str) -> bool:
         """確定したセレクタを履歴へ積む（F-D2）。新規に積んだら True、変化なしなら False。
@@ -245,10 +252,7 @@ class CaptureSession:
 
     async def _push_history(self) -> None:
         """現在のセレクタ履歴（datalist 候補）を開いている全ページの操作バーへ配る（F-D2）。"""
-        call = badge.set_history_call(self.ns, self.selector_history)
-        await asyncio.gather(
-            *(try_eval(pg, call) for pg in list(self.context.pages))
-        )
+        await self._broadcast(badge.set_history_call(self.ns, self.selector_history))
 
     # ---- expose_binding で公開するコールバック ----
     #
@@ -262,14 +266,6 @@ class CaptureSession:
         return isinstance(token, str) and secrets.compare_digest(token, self.token)
 
     # ---- タブ系譜（グループ）の解決 ----
-
-    def _make_group(self, on: bool, spa_on: bool, selector: str) -> GroupState:
-        """GroupState を作る（lineage.make_group へ委譲）。呼び出し側の従来インタフェースを保つ。"""
-        return make_group(on=on, spa_on=spa_on, selector=selector)
-
-    async def _find_root(self, page) -> Page:
-        """page の所属グループの root を opener 連鎖から求める（LineageRegistry へ委譲）。"""
-        return await self._lineage.find_root(page)
 
     async def _resolve_group(self, page) -> GroupState:
         """page が属するグループの状態を返す（LineageRegistry へ委譲）。無ければ新規 OFF で採番。"""
@@ -488,7 +484,7 @@ class CaptureSession:
         # framenavigated も拾えるよう、goto より前に張っておく。B-1）。
         for pg in self.context.pages:
             self.page_root[pg] = pg
-            self.groups[pg] = self._make_group(
+            self.groups[pg] = make_group(
                 on=self.config.start_recording,
                 spa_on=False,
                 selector=self.config.target_selector,
@@ -663,6 +659,15 @@ async def main(config: Config) -> None:
                 shutil.rmtree(user_data_dir, ignore_errors=True)
             return
 
+        # 監視セッションを組む前に、操作対象の1枚を必ず用意しておく。setup() は「起動時に
+        # 開いているページ」を root グループとして種入れし（start_recording に従う）、URL変化・
+        # 消滅の監視まで配線するので、先に作っておけばページが1枚も無い環境でもその1枚が
+        # 同じ経路に乗る。setup() の後に作ると、setup() が張った context.on("page") 経由で
+        # on_new_page が先に走りえて、start_recording ではなく初期OFFの独立グループとして
+        # 採番されてしまう（種入れの重複実装もそこから生まれていた）。
+        if not context.pages:
+            await context.new_page()
+
         session = CaptureSession(context, config)
         await session.setup()
 
@@ -674,15 +679,10 @@ async def main(config: Config) -> None:
         context.on("close", lambda *_: closed.set())
 
         try:
-            # 最初のページで start_url を開く（about:blank ならそのまま）
+            # 最初のページで start_url を開く（about:blank ならそのまま）。種入れと監視配線は
+            # setup() が済ませてある（上で 1 枚を確保済み）。ここへ来るまでにその 1 枚が閉じられた
+            # 場合だけ新しく開くが、その 1 枚は setup() が張った on_new_page が拾って採番する。
             page = context.pages[0] if context.pages else await context.new_page()
-            # setup() は起動時に存在したページだけを種入れする。ページが1枚も無く
-            # ここで作った場合に備え、その1枚を start_recording に従う root グループにする。
-            if page not in session.page_root:
-                session.page_root[page] = page
-                session.groups[page] = session._make_group(
-                    on=config.start_recording, spa_on=False, selector=config.target_selector
-                )
             if config.start_url and config.start_url != "about:blank":
                 try:
                     await page.goto(config.start_url)

@@ -193,6 +193,27 @@ def _ns_ref(ns: str) -> str:
     return f"window[{json.dumps(ns)}]"
 
 
+def _ns_call(ns: str, method: str, *args: str) -> str:
+    """window[ns].<method>(...) を「未公開なら何もしない」ガード付きで呼ぶ式を組み立てる。
+
+    戻り値を使わない一方向の通知（applyState / captureEnd / setCount / setHistory）は
+    すべてこの形。ns 自体が未公開（未注入・ns 空）でも、そのメソッドがまだ生えていなくても
+    落ちないよう `ref && ref.M && ref.M(...)` と二段でガードする。以前は各関数が同じ式を
+    手書きしており、applyState だけメソッド側のガードが抜けていた（try_eval が握るので
+    表には出ないが、同型の関数で形が違うと事故のもとになる）。
+
+    args は JS の式として組み立て済みの文字列を渡す（真偽値なら "true"/"false"、
+    文字列・配列なら json.dumps 済みのリテラル）。
+    """
+    ref = _ns_ref(ns)
+    return f"{ref} && {ref}.{method} && {ref}.{method}({', '.join(args)})"
+
+
+def _js_bool(value: bool) -> str:
+    """Python の真偽値を JS のリテラルへ。"""
+    return "true" if value else "false"
+
+
 def body_text_call(ns: str) -> str:
     """本文テキスト（バー除外）を取り出す呼び出し式。未注入時は素の innerText にフォールバック。"""
     ref = _ns_ref(ns)
@@ -223,9 +244,7 @@ def capture_end_call(ns: str, ok: bool) -> str:
     ok は `_capture` の done 有無（1 種でも保存できたか）。ページ側の captureEnd へ真偽値で
     渡し、成功（赤）と失敗（琥珀）でシャッターフラッシュの色を分ける。
     """
-    ref = _ns_ref(ns)
-    flag = "true" if ok else "false"
-    return f"{ref} && {ref}.captureEnd && {ref}.captureEnd({flag})"
+    return _ns_call(ns, "captureEnd", _js_bool(ok))
 
 
 def apply_state_call(ns: str, recording: bool, spa_on: bool, selector: str) -> str:
@@ -234,11 +253,9 @@ def apply_state_call(ns: str, recording: bool, spa_on: bool, selector: str) -> s
     記録ON/OFF・SPA検知・セレクタが変わったとき、開いている全ページのバーへ配る（refresh_panels）。
     selector は日本語/記号を含んでも安全に JS リテラル化する（json.dumps）。
     """
-    ref = _ns_ref(ns)
-    flag = "true" if recording else "false"
-    spa_flag = "true" if spa_on else "false"
-    sel = json.dumps(selector)
-    return f"{ref} && {ref}.applyState({flag}, {spa_flag}, {sel})"
+    return _ns_call(
+        ns, "applyState", _js_bool(recording), _js_bool(spa_on), json.dumps(selector)
+    )
 
 
 def set_count_call(ns: str, count: int) -> str:
@@ -247,8 +264,7 @@ def set_count_call(ns: str, count: int) -> str:
     枚数は Python 側（監視セッション）が本体として持ち、成功のたびに全ページのバーへ配る。
     バーがサイト側の再描画で作り直されても __eac_getstate（count 同梱）で自己同期する。
     """
-    ref = _ns_ref(ns)
-    return f"{ref} && {ref}.setCount && {ref}.setCount({int(count)})"
+    return _ns_call(ns, "setCount", str(int(count)))
 
 
 def set_history_call(ns: str, history: list[str]) -> str:
@@ -258,5 +274,4 @@ def set_history_call(ns: str, history: list[str]) -> str:
     全ページのバーへ配る。バーがサイト側の再描画で作り直されても __eac_getstate（history
     同梱）で自己同期する。日本語/記号を含む値も json.dumps で安全に JS 配列リテラル化する。
     """
-    ref = _ns_ref(ns)
-    return f"{ref} && {ref}.setHistory && {ref}.setHistory({json.dumps(history)})"
+    return _ns_call(ns, "setHistory", json.dumps(history))
