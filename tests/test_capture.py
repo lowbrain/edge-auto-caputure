@@ -12,6 +12,7 @@ docstring/コメントに書かれた「微妙な仕様」（切り詰め・フ�
 import asyncio
 import csv
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -1994,5 +1995,123 @@ def test_capture_skips_settle_sleep_only_for_spa(tmp_path, monkeypatch, trigger,
         await runner._capture(CaptureRequest(page, "https://ok.test/", cfg, trigger=trigger))
 
         assert (0.4 in slept) is expect_settle_sleep
+
+    asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# 起動シーケンスのヘルパ（_prepare_output_dir / _prepare_profile_dir / _launch_browser）
+#
+# main() から切り出した各段。Playwright を起こさずに「保存先を用意できたか」「使い捨てと
+# 再利用の分岐」「候補ブラウザのフォールバックと全滅時の通知」を回帰から守る。
+# --------------------------------------------------------------------------- #
+
+
+def test_prepare_output_dir_creates_and_reports_success(tmp_path):
+    import edge_auto_capture as eac
+
+    out = tmp_path / "session"
+    assert eac._prepare_output_dir(Config(output_dir=out)) is True
+    assert out.is_dir()
+
+
+def test_prepare_output_dir_notifies_and_fails_when_unwritable(monkeypatch, tmp_path):
+    # 作れないときは無言終了せず通知し、False で呼び出し側に中断させる。
+    import edge_auto_capture as eac
+
+    said: list[str] = []
+    monkeypatch.setattr(eac, "notify_fatal", lambda msg: said.append(msg))
+
+    def boom(*a, **kw):
+        raise PermissionError("読み取り専用です")
+
+    monkeypatch.setattr(Path, "mkdir", boom)
+    assert eac._prepare_output_dir(Config(output_dir=tmp_path / "x")) is False
+    assert said and "保存先フォルダを作成できませんでした" in said[0]
+
+
+def test_prepare_profile_dir_reuses_configured_dir(monkeypatch, tmp_path):
+    # profile_dir 指定時は「そのフォルダ・使い捨てでない」。掃除は keep 付きで呼ぶ。
+    import edge_auto_capture as eac
+
+    kept: list = []
+    monkeypatch.setattr(eac, "cleanup_old_profiles", lambda **kw: kept.append(kw.get("keep")))
+
+    prof = tmp_path / "profile"
+    user_data_dir, ephemeral = eac._prepare_profile_dir(Config(profile_dir=str(prof)))
+
+    assert (user_data_dir, ephemeral) == (str(prof), False)
+    assert prof.is_dir()                    # 無ければ作る
+    assert kept == [prof]                   # 再利用プロファイル自身は掃除対象外
+
+
+def test_prepare_profile_dir_makes_ephemeral_when_unset(monkeypatch):
+    # 未指定なら使い捨ての一時プロファイル。掃除は除外指定なしで呼ぶ。
+    import edge_auto_capture as eac
+
+    calls: list = []
+    monkeypatch.setattr(eac, "cleanup_old_profiles", lambda **kw: calls.append(kw))
+
+    user_data_dir, ephemeral = eac._prepare_profile_dir(Config(profile_dir=""))
+    try:
+        assert ephemeral is True
+        assert Path(user_data_dir).name.startswith("edge-debug-")
+        assert calls == [{}]                # keep を渡さない＝全部が掃除対象
+    finally:
+        shutil.rmtree(user_data_dir, ignore_errors=True)
+
+
+class _FakeChromium:
+    """launch_persistent_context を「指定回数だけ失敗してから成功する」代役。"""
+
+    def __init__(self, fail_first: int) -> None:
+        self.fail_first = fail_first
+        self.channels: list[str] = []
+
+    async def launch_persistent_context(self, **kwargs):
+        self.channels.append(kwargs["channel"])
+        if len(self.channels) <= self.fail_first:
+            raise RuntimeError("未インストール")
+        return _LaunchedContext()
+
+
+class _LaunchedContext:
+    browser = None       # version 取得は「不明」経路（起動を妨げないことの確認）
+
+
+class _FakePlaywright:
+    def __init__(self, chromium) -> None:
+        self.chromium = chromium
+
+
+def test_launch_browser_falls_back_to_next_candidate():
+    # 既定（browser 未指定）は Edge→Chrome。Edge が起動できなければ Chrome へ回る。
+    import edge_auto_capture as eac
+
+    async def scenario():
+        chromium = _FakeChromium(fail_first=1)
+        context = await eac._launch_browser(_FakePlaywright(chromium), Config(), "/tmp/prof")
+
+        assert isinstance(context, _LaunchedContext)
+        assert chromium.channels == ["msedge", "chrome"]   # 優先順に試す
+
+    asyncio.run(scenario())
+
+
+def test_launch_browser_returns_none_and_notifies_when_all_fail(monkeypatch):
+    # 全候補が失敗したら None を返し、試した順と理由を添えて通知する（無言終了にしない）。
+    import edge_auto_capture as eac
+
+    said: list[str] = []
+    monkeypatch.setattr(eac, "notify_fatal", lambda msg: said.append(msg))
+
+    async def scenario():
+        chromium = _FakeChromium(fail_first=99)
+        context = await eac._launch_browser(_FakePlaywright(chromium), Config(), "/tmp/prof")
+
+        assert context is None
+        assert said and "ブラウザを起動できませんでした" in said[0]
+        assert "Edge / Chrome" in said[0]      # 試した候補が分かる
+        assert "未インストール" in said[0]      # 各候補の失敗理由も添える
 
     asyncio.run(scenario())

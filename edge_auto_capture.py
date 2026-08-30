@@ -597,64 +597,93 @@ class CaptureSession:
         await closed.wait()
 
 
-async def main(config: Config) -> None:
-    # output_dir は load_config で書き込み可能な場所へ解決済み（D-C1）で、起動単位の
-    # セッションフォルダ（F-C3。例: .../output/2026-08-11_143025）まで含んでいる。その後に
-    # 消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知して抜ける。
+def _prepare_output_dir(config: Config) -> bool:
+    """保存先フォルダを用意する。作れたら True、作れなければ通知して False を返す。
+
+    output_dir は load_config が書き込み可能な場所へ解決済み（D-C1）で、起動単位の
+    セッションフォルダ（F-C3。例: .../output/2026-08-11_143025）まで含んでいる。その後に
+    消される等の可能性もあるため裸で放置せず、失敗したら無言終了ではなく通知する
+    （中断するかどうかは呼び出し側が決める）。撮影物・ダウンロードを収める系譜ごとの
+    lineage-<id>/ は保存時に必要に応じて作るため、ここでは output_dir だけ用意する。
+    """
     try:
         config.output_dir.mkdir(parents=True, exist_ok=True)
-        # 撮影物・ダウンロードは系譜（lineage）ごとの output_dir/lineage-<id>/ 以下へ保存する。
-        # これらのサブフォルダは保存時に必要に応じて作るため、ここでは output_dir だけ用意する。
+        return True
     except Exception as e:
         notify_fatal(f"保存先フォルダを作成できませんでした: {config.output_dir}\n({e})")
-        return
+        return False
 
-    # プロファイルの置き場所を決める。
-    #   profile_dir 未指定（既定）: 毎回まっさらな使い捨てプロファイル。終了時に削除する。
-    #   profile_dir 指定        : そのフォルダを再利用する（ログイン状態などを保持）。削除しない。
+
+def _prepare_profile_dir(config: Config) -> tuple[str, bool]:
+    """ブラウザプロファイルの置き場所を決め、(パス, 使い捨てか) を返す。
+
+    - profile_dir 指定あり: そのフォルダを再利用する（ログイン状態などを保持）。削除しない。
+    - profile_dir 未指定（既定）: 毎回まっさらな一時プロファイルを作る。
+
+    どちらの経路でも、前回までに残った使い捨てプロファイル（edge-debug-*）の掃除を行う。
+    再利用プロファイルは命名も置き場所も別なので glob に一致しないが、念のため keep で
+    除外指定も渡す。返す第 2 要素が True のとき、呼び出し側は終了時にそのフォルダを
+    消す責務を負う（後始末の所在をここで一意に決める）。
+    """
     if config.profile_dir:
         user_data_dir = config.profile_dir
         Path(user_data_dir).mkdir(parents=True, exist_ok=True)
-        ephemeral = False
-        # 使い捨て分（edge-debug-*）だけを掃除する。再利用プロファイルは掃除対象外
-        # （命名も置き場所も別なので glob に一致しないが、念のため除外指定も渡す）。
         cleanup_old_profiles(keep=Path(user_data_dir))
-    else:
-        cleanup_old_profiles()
-        user_data_dir = tempfile.mkdtemp(prefix="edge-debug-")  # 今回用の一時プロファイル
-        ephemeral = True
+        return user_data_dir, False
+    cleanup_old_profiles()
+    return tempfile.mkdtemp(prefix="edge-debug-"), True   # 今回用の一時プロファイル
+
+
+async def _launch_browser(p, config: Config, user_data_dir: str):
+    """候補ブラウザを優先順に試して persistent context を返す。全滅なら通知して None を返す。
+
+    候補は browser.browser_candidates が決める（config.browser 指定があればその 1 つだけ、
+    空なら Edge→Chrome の順）。起動できたら採用ブラウザの実バージョンをログへ残す（D-B2。
+    Edge/Chrome の更新で挙動が変わったとき log.txt だけで版を追えるようにする。取得に
+    失敗しても起動は妨げない）。全候補が失敗したときは、試した順と各失敗理由を添えて
+    ダイアログとログで知らせる（無言終了にしない）。
+
+    一時プロファイルの後始末はここでは行わない（作った側＝呼び出し側の責務）。
+    """
+    candidates = browser_candidates(config)
+    errors: list[str] = []
+    for channel, label, executable_path in candidates:
+        try:
+            context = await p.chromium.launch_persistent_context(
+                **browser_launch_kwargs(config, user_data_dir, channel, executable_path)
+            )
+        except Exception as e:
+            # 未インストール等で起動できなければ次の候補へ回す（候補が1つなら終了）。
+            log(f"[skip] {label} を起動できませんでした: {e}")
+            errors.append(f"- {label}: {e}")
+            continue
+        log(f"{label} を起動しました。")
+        try:
+            browser = context.browser
+            log(f"[env] {label} version={browser.version if browser else '不明'}")
+        except Exception as e:
+            log(f"[env] {label} version 取得失敗: {e}")
+        return context
+
+    tried = " / ".join(label for _, label, _ in candidates)
+    notify_fatal(
+        f"ブラウザを起動できませんでした（試行: {tried}）。\n"
+        f"{tried} がインストールされているか確認してください。\n"
+        + "\n".join(errors)
+    )
+    return None
+
+
+async def main(config: Config) -> None:
+    """起動から監視終了までの流れ。各段の中身は上のヘルパへ委ね、ここは順序だけを持つ。"""
+    if not _prepare_output_dir(config):
+        return
+
+    user_data_dir, ephemeral = _prepare_profile_dir(config)
 
     async with async_playwright() as p:
-        # config.browser 指定があればそのブラウザのみ、無ければ Edge→Chrome の順で試す。
-        candidates = browser_candidates(config)
-        context = None
-        errors: list[str] = []
-        for channel, label, executable_path in candidates:
-            try:
-                context = await p.chromium.launch_persistent_context(
-                    **browser_launch_kwargs(config, user_data_dir, channel, executable_path)
-                )
-                log(f"{label} を起動しました。")
-                # 採用ブラウザの実バージョンをログへ（D-B2）。Edge/Chrome の更新で挙動が
-                # 変わったとき、log.txt だけで版を追える。取得できなくても起動は妨げない。
-                try:
-                    browser = context.browser
-                    log(f"[env] {label} version={browser.version if browser else '不明'}")
-                except Exception as e:
-                    log(f"[env] {label} version 取得失敗: {e}")
-                break
-            except Exception as e:
-                # 未インストール等で起動できなければ次の候補へ回す（候補が1つなら終了）。
-                log(f"[skip] {label} を起動できませんでした: {e}")
-                errors.append(f"- {label}: {e}")
-
+        context = await _launch_browser(p, config, user_data_dir)
         if context is None:
-            tried = " / ".join(label for _, label, _ in candidates)
-            notify_fatal(
-                f"ブラウザを起動できませんでした（試行: {tried}）。\n"
-                f"{tried} がインストールされているか確認してください。\n"
-                + "\n".join(errors)
-            )
             if ephemeral:
                 shutil.rmtree(user_data_dir, ignore_errors=True)
             return
