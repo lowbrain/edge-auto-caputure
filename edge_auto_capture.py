@@ -26,6 +26,8 @@ Edge の起動・監視・後始末はこのスクリプトが一括で行う（
   - capture.py           … 1ページ分の保存処理（撮影実行器 CaptureRunner）・ページ操作ヘルパ。
   - config.py            … 設定（Config / config.ini の load_config）。
   - infra.py             … 基盤ユーティリティ（パス・ログ・致命エラー通知・一時プロファイル掃除）。
+  - lineage.py           … タブ系譜（lineage）の識別・保存先規約と解決レジストリ。
+  - browser.py           … Edge/Chrome の起動候補と起動オプションの組み立て。
 
 事前準備:
   pip install -e .          （または pip install playwright）
