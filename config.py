@@ -344,6 +344,18 @@ def _resolve_output_dir(config: Config) -> Config:
     return replace(config, output_dir=session_dir)
 
 
+def _config_from_section(sec: configparser.SectionProxy, defaults: Config) -> Config:
+    """[capture] セクションから、保存先まで確定した Config を作る。
+
+    値の組み立て（_build_config・純粋）と保存先の解決（_resolve_output_dir・副作用）は
+    R5b で意図的に分けてあるが、使うときは必ずこの順で 2 段を揃える。以前は 3 経路
+    （通常読み込み・破損からの復旧・既定テキストからの起動）がそれぞれ同じ 2 段重ねを
+    書いていたため、間に処理が増えたときの直し漏れが 3 箇所ぶん起こりえた。組み合わせを
+    ここへ 1 本化して、直す場所を 1 つにする。
+    """
+    return _resolve_output_dir(_build_config(sec, defaults))
+
+
 def _config_with_defaults(defaults: Config) -> Config:
     """既定 config.ini（DEFAULT_CONFIG_TEXT）の中身から Config を作る。
 
@@ -353,7 +365,7 @@ def _config_with_defaults(defaults: Config) -> Config:
     """
     parser = configparser.ConfigParser()
     parser.read_string(DEFAULT_CONFIG_TEXT)
-    return _resolve_output_dir(_build_config(parser["capture"], defaults))
+    return _config_from_section(parser["capture"], defaults)
 
 
 def _recover_broken_config(error: Exception, defaults: Config) -> Config:
@@ -385,7 +397,7 @@ def _recover_broken_config(error: Exception, defaults: Config) -> Config:
         parser = configparser.ConfigParser()
         try:
             parser.read(CONFIG_PATH, encoding="utf-8-sig")
-            return _resolve_output_dir(_build_config(parser["capture"], defaults))
+            return _config_from_section(parser["capture"], defaults)
         except (configparser.Error, KeyError):
             pass
     return _config_with_defaults(defaults)
@@ -438,7 +450,7 @@ def load_config() -> Config:
         return _recover_broken_config(e, defaults)
 
     try:
-        return _resolve_output_dir(_build_config(sec, defaults))
+        return _config_from_section(sec, defaults)
     except ValueError as e:
         # 値だけが不正（利用者の編集ミス）。ファイル構造は正しく他の設定は生きているので、
         # 勝手に既定へ戻さず、直し方を伝えて終了する（編集内容を失わせない）。
