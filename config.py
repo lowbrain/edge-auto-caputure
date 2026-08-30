@@ -223,6 +223,27 @@ def _write_default_config() -> bool:
         return False
 
 
+def _csv_tuple(sec: configparser.SectionProxy, key: str) -> tuple[str, ...]:
+    """カンマ区切りの設定値をタプル化する（各要素を strip し、空要素は捨てる）。
+
+    skip_urls / allow_urls / hide_selectors は書式が同じなので、パースをここへ寄せる
+    （同じ内包表記の 3 連コピーを避け、書式を変えるときの直し漏れを無くす）。
+    項目行が無ければ空タプル。
+    """
+    return tuple(v.strip() for v in sec.get(key, "").split(",") if v.strip())
+
+
+def _under_base_dir(raw: str) -> Path:
+    """設定値のパスを絶対パスにする。相対パスは基準フォルダ（BASE_DIR）基準に固定する。
+
+    exe の隣を基準にすることで、どこから起動しても保存先・プロファイルの場所がぶれない。
+    絶対パス指定はそのまま使う（config.ini で任意の場所を指定できる）。output_dir と
+    profile_dir が同じ規則なので共通化する。
+    """
+    path = Path(raw)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
 def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     """[capture] セクションから Config を組み立てる（値の検証・既定フォールバック込み）。
 
@@ -240,9 +261,7 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
         raw_out = str(defaults.output_dir)
     # 相対パスは基準フォルダ基準に固定（exe 隣の output\ に確実に保存する）。
     # 絶対パス指定時はそのまま使う（config.ini で任意の保存先に変更可能）。
-    output_dir = Path(raw_out)
-    if not output_dir.is_absolute():
-        output_dir = BASE_DIR / output_dir
+    output_dir = _under_base_dir(raw_out)
 
     # 数値項目。範囲を検証し、不正なら理由付き ValueError（呼び出し側で通知＆終了）。
     settle_delay = sec.getfloat("settle_delay", defaults.settle_delay)
@@ -255,27 +274,21 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
     if eval_timeout <= 0:
         raise ValueError(f"eval_timeout は正の整数にしてください（現在: {eval_timeout}）")
 
-    # カンマ区切りをタプル化。空URLは常にスキップ対象へ含める。
-    urls = [u.strip() for u in sec.get("skip_urls", "").split(",") if u.strip()]
+    # 撮らない URL。空URLは常にスキップ対象へ含める（下の Config で ("",) を足す）。
+    skips = _csv_tuple(sec, "skip_urls")
 
     # 撮る URL を明示的に絞るホワイトリスト（指定時は他を全スキップ。F-C2）。
-    # 空なら無効（従来どおり skip_urls だけで判定）。空要素は落とす。
-    allows = [u.strip() for u in sec.get("allow_urls", "").split(",") if u.strip()]
+    # 空なら無効（従来どおり skip_urls だけで判定）。
+    allows = _csv_tuple(sec, "allow_urls")
 
-    # 撮影中だけ隠すセレクタ。カンマ区切りをタプル化（空要素は落とす。F-B2）。
-    hides = [s.strip() for s in sec.get("hide_selectors", "").split(",") if s.strip()]
+    # 撮影中だけ隠すセレクタ（F-B2）。
+    hides = _csv_tuple(sec, "hide_selectors")
 
     # 再利用プロファイルの場所。空なら毎回使い捨て（既定の挙動を据え置く）。
     # 指定時のみ、相対パスは基準フォルダ基準に固定して絶対パス文字列で保持する
     # （output_dir と同じ扱い。書き込み可能な exe 隣を既定基準にできる）。
     raw_profile = sec.get("profile_dir", "").strip()
-    if raw_profile:
-        profile_path = Path(raw_profile)
-        if not profile_path.is_absolute():
-            profile_path = BASE_DIR / profile_path
-        profile_dir = str(profile_path)
-    else:
-        profile_dir = ""
+    profile_dir = str(_under_base_dir(raw_profile)) if raw_profile else ""
 
     return Config(
         start_url=sec.get("start_url", defaults.start_url).strip() or "about:blank",
@@ -288,10 +301,10 @@ def _build_config(sec: configparser.SectionProxy, defaults: Config) -> Config:
         settle_delay=settle_delay,
         load_timeout=load_timeout,
         eval_timeout=eval_timeout,
-        skip_urls=tuple(urls) + ("",),
-        allow_urls=tuple(allows),
+        skip_urls=skips + ("",),
+        allow_urls=allows,
         target_selector=sec.get("target_selector", "").strip(),
-        hide_selectors=tuple(hides),
+        hide_selectors=hides,
         start_recording=sec.getboolean("start_recording", defaults.start_recording),
         profile_dir=profile_dir,
     )
