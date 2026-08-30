@@ -54,14 +54,16 @@ python_files = ["test_*.py"]
 # PEP 585 の dict[]/list[] までで X|Y は使わない — HANDOFF「落とし穴」参照）。
 python_version = "3.10"
 # 生成物やテスト（smoke は実 Edge 前提でスタブ化が重い）は対象外。まずは配布コード本体を守る。
-files = ["edge_auto_capture.py", "badge.py", "browser.py", "capture.py", "config.py", "infra.py", "lineage.py"]
+# 対象はモジュールを列挙せずディレクトリで指定する。列挙にすると新モジュールを足したとき
+# 検査対象への追加を忘れて黙って素通りする（#40 で実際に起きた）。exclude 側だけ保守すればよい。
+files = ["."]
 exclude = ["build", "dist", "output", "tests"]
 # 注釈漏れの新規混入を防ぐ最低限。既存はほぼ注釈済みで、これで追加負担はほぼ無い。
 warn_unused_ignores = true
 warn_redundant_casts = true
 
 [tool.ruff]
-# 対象は分割した3モジュールとテスト。生成物（build/dist/output）は除外。
+# 対象は分割したモジュール群とテスト。生成物（build/dist/output）は除外。
 target-version = "py39"
 # 日本語コメント主体で、ruff は全角文字を表示幅2カラムで数える（E501 が当たりやすい）。
 # コードの実体より余裕を持たせ、コメント行が幅超過で頻繁に引っかからないよう 120 にする。
