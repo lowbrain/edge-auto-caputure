@@ -98,14 +98,19 @@ edge-auto-capture/
 ├─ capture.py             1ページ分の保存処理（撮影実行器 CaptureRunner）・ページ操作ヘルパ
 ├─ config.py              設定（Config / config.ini の load_config）
 ├─ infra.py               基盤ユーティリティ（パス・ログ・致命エラー通知・一時プロファイル掃除）
+├─ lineage.py             タブ系譜（lineage）の識別・保存先規約と解決レジストリ
+├─ browser.py             Edge/Chrome の起動候補と起動オプションの組み立て
 ├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG／バインディング名）
 ├─ badge.js               操作バーのページ側JS本体（実ファイル）
 ├─ tests/
 │  ├─ smoke_badge.py         操作バーJS＋SPA検知監視のスモークテスト（Edge headless）
-│  ├─ test_capture.py        純粋関数（capture）・設定読み込み（config）のユニットテスト（pytest）
+│  ├─ test_capture.py        1ページ分の保存処理（capture）のユニットテスト（pytest）
+│  ├─ test_config.py         設定読み込み（config）のユニットテスト（pytest）
+│  ├─ test_infra.py          基盤ユーティリティ（infra）のユニットテスト（pytest）
+│  ├─ test_session.py        監視セッション・起動シーケンスのユニットテスト（pytest）
 │  ├─ test_downloads.py      ダウンロード退避の回帰テスト（pytest）
 │  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
-│  └─ conftest.py            pytest 共通設定
+│  └─ conftest.py            pytest 共通設定（import パス／共通フィクスチャ）
 ├─ .github/workflows/ci.yml  CI（ruff+mypy / pytest / smoke --strict）
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
@@ -167,8 +172,17 @@ python edge_auto_capture.py
 
 実 Edge を使わずに、間違えやすいロジックと「微妙な仕様」を回帰から守る。
 
-- `test_capture.py` … 純粋関数（`safe_name` / `page_label`）、設定読み込み（`load_config`）、
-  撮影キューの合流、URL 判定（`should_capture`）、系譜解決、索引 CSV など。
+ファイルはソース側のモジュール構成に合わせてある（どこに足すか迷わないように）。
+
+- `test_capture.py` … 1ページ分の保存処理。純粋関数（`safe_name` / `page_label`）、
+  保存ステップの集約（`_step`）、ページ側 JS のハング保護（`try_eval`）、撮影キューの合流、
+  撮影要求（`CaptureRequest`）、索引 CSV。
+- `test_config.py` … 設定読み込み。`load_config` の既定値・自己修復、`profile_dir`、
+  セッションフォルダ、URL 判定（`should_capture`）、`summarize_config`。
+- `test_infra.py` … 基盤ユーティリティ。バージョンの出所、起動環境ログ、
+  書き込み先の退避（`resolve_writable_dir`）、多重起動抑止。
+- `test_session.py` … 監視セッション。タブ系譜（グループ）の解決、URL 変化のイベント駆動、
+  操作バーへの状態配布（セレクタ履歴 / 撮影カウンタ / 保存先を開く）、起動シーケンスのヘルパ。
 - `test_downloads.py` … ダウンロード退避の回帰。
 - `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合
   （SPA変化通知 `__eac_spa_changed` の記録状態ゲートを含む）。
