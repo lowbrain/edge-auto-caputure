@@ -2,7 +2,7 @@
 
 「知らないと壊す仕掛け・作業環境・検証手順」に絞った恒久メモ。**変更前に §1 を読むこと。**
 
-- **これから作る / 直すもの（残タスクと優先順）は Issue [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38)（ピン留め）が正。**
+- **これから作る / 直すもの（残タスクと優先順）は Issue [#78](https://github.com/lowbrain/edge-auto-caputure/issues/78)（ピン留め）が正。**
 - ツールの仕組み・設定リファレンス・ビルド・配布は [`README.md`](README.md)。
 - 過去の完了作業の実装内容は git 履歴を参照。
 
@@ -23,7 +23,7 @@
 
 - **ID の形**: `D-` / `F-` は「節の英字＋連番」が続く（`D-C1` / `F-A1`）。
   `A-` / `B-` / `E-` / `R` は連番のみで、細分は末尾に英字を足す（`A-1` / `R3b` / `R5a`）。
-- **個々のタグが何を指し、いま済んでいるかは Issue [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38) が正。**
+- **個々のタグが何を指し、いま済んでいるかは Issue [#78](https://github.com/lowbrain/edge-auto-caputure/issues/78) が正。**
   ここに全タグの一覧は作らない（二重管理になる。§4 末尾の方針）。この表は接頭辞の凡例だけを持つ。
 - 旧文書の本文は git 履歴に残っている。退役コミットは
   `git log --all --diff-filter=D --name-only --oneline -- 'docs/*'` で辿れ、
@@ -166,7 +166,7 @@ mypy .
 - **smoke が緑でも Windows 実機検証の代わりにはならない。** smoke が見るのは操作バーの JS で、
   `build.ps1` / `infra._message_box_windows` の `ctypes.windll` / `%LOCALAPPDATA%` 退避（`D-C1`）/
   実 Edge 固有の挙動は対象外。実機検証の現在地は Issue
-  [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38) の「検証状況」が正。
+  [#78](https://github.com/lowbrain/edge-auto-caputure/issues/78) の「検証状況」が正。
 - **新モジュールを足したときは** §1-10 のとおり `[tool.setuptools] py-modules` を更新する
   （`[tool.mypy]` は `files = ["."]` + `exclude` 方式なので追記不要。列挙方式へ戻さないこと）。
 - リファクタでは**新規テストを足せる場所は足す**（純粋関数・判定ロジック・レジストリ等はブラウザ無しで単体化できる）。

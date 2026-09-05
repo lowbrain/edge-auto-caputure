@@ -19,10 +19,10 @@ Claude Code 向けの**導線**。ここは内容の出所ではない。
 | 課題タグ（`A-` / `B-` / `D-` / `E-` / `F-` / `R`）の意味 | [`CONTRIBUTING.md`](CONTRIBUTING.md) 冒頭の凡例 |
 | 仕組み・設定・ビルド・配布 | [`README.md`](README.md) |
 | 利用者向けの使い方（Shift-JIS） | [`USAGE.txt`](USAGE.txt) |
-| **残タスクと現在地・個々のタグの状態** | Issue [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38)（ピン留め・これが正） |
+| **残タスクと現在地・個々のタグの状態** | Issue [#78](https://github.com/lowbrain/edge-auto-caputure/issues/78)（ピン留め・これが正） |
 | 過去の完了作業の実装内容 | git 履歴 |
 
-**ドキュメントに残タスクの一覧を作らない**（#38 冒頭の方針）。
+**ドキュメントに残タスクの一覧を作らない**（#78 の運用ルール）。
 
 ## 変更前に読む場所（ファイル → 節）
 
