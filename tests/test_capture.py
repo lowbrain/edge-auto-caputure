@@ -71,6 +71,29 @@ def test_safe_name_truncates_to_max_len():
 
 
 # --------------------------------------------------------------------------- #
+# now_stamp（保存ファイル名の接頭辞。ミリ秒 3 桁は infra.ms3 が持つ。#56）
+# --------------------------------------------------------------------------- #
+
+
+def test_now_stamp_format():
+    # YYYY-MM-DD_HH-MM-SS-mmm（人が時系列で見分けやすいよう区切り付き）。
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}", capture.now_stamp())
+
+
+def test_now_stamp_formats_current_time_to_milliseconds(monkeypatch):
+    # マイクロ秒は切り詰めてミリ秒 3 桁にする（切り出しは infra.ms3。書式はここ固有）。
+    from datetime import datetime
+
+    class _FixedDatetime:
+        @staticmethod
+        def now():
+            return datetime(2026, 8, 11, 14, 30, 25, 123456)
+
+    monkeypatch.setattr(capture, "datetime", _FixedDatetime)
+    assert capture.now_stamp() == "2026-08-11_14-30-25-123"
+
+
+# --------------------------------------------------------------------------- #
 # _step（A-3: 全失敗でも [saved] と出さないための done 集約）
 # --------------------------------------------------------------------------- #
 

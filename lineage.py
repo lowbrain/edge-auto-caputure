@@ -23,7 +23,7 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
-from infra import log
+from infra import log, ms3
 
 
 def group_stamp() -> str:
@@ -31,9 +31,11 @@ def group_stamp() -> str:
 
     系譜を新たに作った時刻をそのまま id にする。区切り記号を入れないので `lineage-<id>` の
     <id> 部分は連続した数字になる（例: 20260814102028731）。
+    ミリ秒 3 桁の切り出しは infra.ms3 が持つ（capture.now_stamp と共通の 1 点。#56）。
+    書式そのものは共通化しない（あちらは人が時系列で読む区切り付きのファイル名接頭辞）。
     """
     now = datetime.now()
-    return f"{now:%Y%m%d%H%M%S}{now.strftime('%f')[:3]}"
+    return f"{now:%Y%m%d%H%M%S}{ms3(now)}"
 
 
 def group_folder_name(group_id: str) -> str:

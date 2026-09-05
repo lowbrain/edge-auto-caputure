@@ -26,7 +26,7 @@ from playwright.async_api import Page
 
 import badge
 from config import Config
-from infra import iso_timestamp, log
+from infra import iso_timestamp, log, ms3
 from lineage import group_folder_name, group_subdir
 
 # 索引 CSV のファイル名と見出し。撮影ごとに 1 行追記して「いつ・何を撮ったか」を一覧にする（F-A1）。
@@ -50,9 +50,11 @@ def now_stamp() -> str:
     """現在時刻を「YYYY-MM-DD_HH-MM-SS-mmm」（ミリ秒まで）で返す。
 
     保存ファイル名の接頭辞に使う（人が時系列で見分けやすいよう区切り付き）。
+    ミリ秒 3 桁の切り出しは infra.ms3 が持つ（lineage.group_stamp と共通の 1 点。#56）。
+    書式そのものは共通化しない（あちらは `lineage-<id>` のトークンで区切り無し）。
     """
     now = datetime.now()
-    return f"{now:%Y-%m-%d_%H-%M-%S}-{now.strftime('%f')[:3]}"
+    return f"{now:%Y-%m-%d_%H-%M-%S}-{ms3(now)}"
 
 
 async def try_eval(page: Page, js: str, timeout: Optional[float] = None) -> None:

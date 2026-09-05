@@ -9,6 +9,7 @@
 """
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -48,6 +49,24 @@ def test_startup_environment_line_has_os_and_python():
     assert "OS=" in line
     assert "Python=" in line
     assert "実行=script" in line
+
+
+# --------------------------------------------------------------------------- #
+# ms3（#56: マイクロ秒 6 桁 → ミリ秒 3 桁。now_stamp / group_stamp の共通部）
+# --------------------------------------------------------------------------- #
+
+
+def test_ms3_truncates_microseconds_to_three_digits():
+    # 切り上げではなく切り捨て（下 3 桁は捨てる）。
+    assert infra.ms3(datetime(2026, 8, 11, 14, 30, 25, 123456)) == "123"
+    assert infra.ms3(datetime(2026, 8, 11, 14, 30, 25, 999999)) == "999"
+
+
+def test_ms3_zero_pads_to_three_digits():
+    # マイクロ秒が小さくても常に 3 桁（%f が 6 桁ゼロ詰めなので先頭が 0 で埋まる）。
+    assert infra.ms3(datetime(2026, 8, 11, 14, 30, 25, 0)) == "000"
+    assert infra.ms3(datetime(2026, 8, 11, 14, 30, 25, 7000)) == "007"
+
 
 # --------------------------------------------------------------------------- #
 # resolve_writable_dir（D-C1: 書き込み不可の場所で無言終了しない）
