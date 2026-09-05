@@ -81,6 +81,8 @@
        `capture_start_call` / `capture_end_call` / `apply_state_call` / `set_count_call` /
        `set_history_call`）が `ns` 込みで組み立てる。**`ns` を第1引数に取る**ので、呼び出し側
        （`edge_auto_capture` の `self.ns`・`capture` の `runner.ns`）から必ず渡すこと。
+       このうち **`sig_call` だけは本番経路では使わない**（`tests/smoke_badge.py` 専用。
+       理由は `badge.py` の `sig_call` の docstring 参照）。
      - ページ→Python の `expose_binding` 固定名（`__eac_toggle` 等）は、`badge.js` 冒頭で本物の
        参照を `BOUND` へ退避したうえで `delete window[name]` して消す。この退避＋削除は
        **最上位フレームの早期 `return` より前**で全フレーム分行う（iframe にも生えるため）。

@@ -6,8 +6,12 @@
 - 表示文言（利用者に見える日本語など）は Python 側で定義し、_BADGE_CONFIG に
   まとめて 1 個の JSON（badge.js 中の $CONFIG）として渡す。追加時に置換の
   引数を並べ直す必要がなく、直し漏れが起きにくい。
-- capture 側が page.evaluate で呼ぶヘルパ（バー隠し/本文取得/署名/保存フラッシュ）の
+- capture 側が page.evaluate で呼ぶヘルパ（バー隠し/本文取得/保存フラッシュ）の
   呼び出し式もここに集約する。
+- sig_call（ページ側 signature の呼び出し式）だけは本番経路では使わない。SPA検知の署名
+  計算は B-1 / B-2 でページ側（badge.js の MutationObserver + デバウンス）へ移り、Python が
+  毎tick 署名を評価するポーリングは廃止された。その名残で、いまは tests/smoke_badge.py が
+  ページ側ヘルパの疎通確認に使うだけ（詳細は sig_call の docstring）。
 """
 
 import json
@@ -224,7 +228,17 @@ def body_text_call(ns: str) -> str:
 
 
 def sig_call(ns: str) -> str:
-    """SPA検知の署名。引数 sel を受け取る関数式（page.evaluate(sig_call(ns), selector) で使う）。"""
+    """SPA検知の署名。引数 sel を受け取る関数式（page.evaluate(sig_call(ns), selector) で使う）。
+
+    **本番経路では未使用。** SPA検知の署名計算は B-1 / B-2 でページ側（badge.js の
+    MutationObserver + デバウンス）へ移り、Python が毎tick 署名を評価するポーリングは
+    廃止された。これはその名残で、現在の呼び出し元は tests/smoke_badge.py の 1 箇所だけ
+    （window[ns] 越しに signature が呼べるかというページ側ヘルパの疎通確認）。
+
+    未使用に見えても消さないこと。消すとスモークテストが壊れるうえ、ページ側ヘルパが
+    生きているかの確認はそれ自体が意味のある検証。badge.js 側も window[NS].signature を
+    「スモークテスト用」と注記済み（ヘルパ一覧コメント）。
+    """
     ref = _ns_ref(ns)
     return f"(sel) => {ref} && {ref}.signature ? {ref}.signature(sel) : '0_0'"
 
