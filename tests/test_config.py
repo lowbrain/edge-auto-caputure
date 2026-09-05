@@ -18,7 +18,7 @@ import capture
 import config as config_mod
 import infra
 import lineage
-from config import Config, load_config, should_capture
+from config import Config, ConfigFatalError, load_config, should_capture
 
 # session_stamp の実装本体への参照（conftest の autouse フィクスチャが "" へ差し替える前に押さえる）。
 # 差し替え後も本物の書式を検証できるようにするため（F-C3）。
@@ -282,8 +282,9 @@ def test_config_with_defaults_uses_template_values(monkeypatch, tmp_path):
     assert c.output_dir == tmp_path / "output"
 
 
-def test_load_config_invalid_number_exits(monkeypatch, tmp_path):
-    # 数値項目の値だけが空/不正だと変換に失敗して終了（ValueError → sys.exit）。
+def test_load_config_invalid_number_raises_fatal(monkeypatch, tmp_path):
+    # 数値項目の値だけが空/不正だと変換に失敗し、ConfigFatalError で返る
+    # （#49: ライブラリ層はプロセスを落とさない。通知と終了は入口 cli の仕事）。
     out = tmp_path / "out"
     _write_config(
         monkeypatch,
@@ -293,9 +294,13 @@ output_dir = {out}
 settle_delay = not-a-number
 """,
     )
-    with pytest.raises(SystemExit) as e:
+    with pytest.raises(ConfigFatalError) as e:
         load_config()
-    assert e.value.code == 1
+    # 利用者向けの文面（何が起きたか・どこを直すか・元の値）をそのまま載せる。
+    msg = str(e.value)
+    assert "config.ini の読み込みに失敗しました" in msg
+    assert "not-a-number" in msg
+    assert "[capture] セクションと各項目の値を確認してください。" in msg
 
 
 def test_load_config_empty_output_dir_falls_back_to_default(monkeypatch, tmp_path):
@@ -313,17 +318,18 @@ output_dir =
 
 
 @pytest.mark.parametrize(
-    "line",
+    ("line", "reason"),
     [
-        "settle_delay = -0.5",
-        "load_timeout = 0",
-        "load_timeout = -100",
-        "eval_timeout = 0",
-        "eval_timeout = -100",
+        ("settle_delay = -0.5", "settle_delay は 0 以上にしてください（現在: -0.5）"),
+        ("load_timeout = 0", "load_timeout は正の整数にしてください（現在: 0）"),
+        ("load_timeout = -100", "load_timeout は正の整数にしてください（現在: -100）"),
+        ("eval_timeout = 0", "eval_timeout は正の整数にしてください（現在: 0）"),
+        ("eval_timeout = -100", "eval_timeout は正の整数にしてください（現在: -100）"),
     ],
 )
-def test_load_config_out_of_range_numbers_exit(monkeypatch, tmp_path, line):
-    # 範囲外の数値（0/負数）は暴走・無意味値になるため終了する。
+def test_load_config_out_of_range_numbers_raise_fatal(monkeypatch, tmp_path, line, reason):
+    # 範囲外の数値（0/負数）は暴走・無意味値になるため起動を止める（#49: ConfigFatalError）。
+    # 「どの項目がどう不正か」まで文面に出ることを固定する（利用者はこれを見て config.ini を直す）。
     out = tmp_path / "out"
     _write_config(
         monkeypatch,
@@ -333,9 +339,33 @@ output_dir = {out}
 {line}
 """,
     )
-    with pytest.raises(SystemExit) as e:
+    with pytest.raises(ConfigFatalError) as e:
         load_config()
-    assert e.value.code == 1
+    assert str(e.value) == (
+        f"config.ini の読み込みに失敗しました: {reason}\n"
+        "[capture] セクションと各項目の値を確認してください。"
+    )
+
+
+def test_load_config_unwritable_output_dir_raises_fatal(monkeypatch, tmp_path):
+    # 保存先がどこにも書けない（D-C1 の退避先も全滅）ときも、config は落とさず
+    # ConfigFatalError で返す（#49）。文面には元の保存先と直し方を載せる。
+    out = tmp_path / "out"
+    _write_config(
+        monkeypatch,
+        tmp_path,
+        f"""[capture]
+output_dir = {out}
+""",
+    )
+    monkeypatch.setattr(config_mod, "resolve_writable_dir", lambda p: None)
+
+    with pytest.raises(ConfigFatalError) as e:
+        load_config()
+    assert str(e.value) == (
+        f"保存先フォルダに書き込めませんでした: {out}\n"
+        "書き込み可能な場所（例: ドキュメント配下）へ移して実行してください。"
+    )
 
 
 # --------------------------------------------------------------------------- #

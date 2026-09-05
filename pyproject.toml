@@ -18,6 +18,12 @@ dependencies = [
     "playwright>=1.60,<2",
 ]
 
+[project.scripts]
+# pip install したときのコマンド。中身は edge_auto_capture.cli()（#50 で __main__ から
+# 切り出した入口。終了コードを返すので、生成されるラッパがそのまま sys.exit へ渡せる）。
+# 配布 exe は build.ps1 が PyInstaller で作るので、こちらは開発・pip 導入時の導線。
+edge-auto-capture = "edge_auto_capture:cli"
+
 [project.optional-dependencies]
 # 配布用 exe をビルドする人向け（配布物の実行には不要）。
 build = ["pyinstaller"]
