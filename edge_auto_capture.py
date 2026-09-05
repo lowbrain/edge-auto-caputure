@@ -50,7 +50,9 @@ import secrets
 import shutil
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 from typing import Optional
 
 from playwright.async_api import Page, async_playwright
@@ -169,23 +171,26 @@ class CaptureSession:
         # 記録ON/OFF・SPA検知・セレクタは「タブ系譜（グループ）」ごとに独立して持つ。系譜の
         # 状態（groups / page_root）と解決ロジックは lineage.LineageRegistry へ寄せてある（#36）。
         # 新規タブに与える既定セレクタは config.target_selector（レジストリが握って使う）。
-        # groups / page_root は下のプロパティでレジストリへ委譲する（既存の参照経路を保つ）。
+        # 採番（resolve）・種入れ（seed_root）・後始末（release）は全てレジストリの API で行い、
+        # こちら側は下のプロパティで読み取り専用ビューだけを公開する（#48）。
         self._lineage = LineageRegistry(config.target_selector)
         # --- ページごとの追跡情報 ---
         self.seen: dict[Page, str] = {}           # page -> 直近のURL
         # framenavigated / close を配線済みのページ（二重配線を防ぐ。B-1）
         self._tracked: set[Page] = set()
 
-    # 系譜の状態はレジストリが持つ。既存コード/テストが session.groups・session.page_root で
-    # 参照・変更（items 代入・del・in 判定）できるよう、レジストリの辞書をそのまま返す。
-    # 辞書オブジェクト自体を返すので `self.groups[k] = v` 等の in-place 変更もそのまま届く。
+    # 系譜の状態はレジストリが own する。ここは参照（in 判定・取り出し・列挙）専用の窓で、
+    # 書き換えはレジストリの API（resolve / seed_root / release）に限る（#48）。
+    # 以前は内部辞書をそのまま返していたため _on_page_closed が外から直接書き換えていて、
+    # 「系譜の生存管理」だけが 2 モジュールに分かれていた。MappingProxyType で包むのは、
+    # うっかり `session.groups[k] = v` と書いたときに黙って通らずその場で落とすため。
     @property
-    def groups(self) -> dict[Page, GroupState]:
-        return self._lineage.groups
+    def groups(self) -> Mapping[Page, GroupState]:
+        return MappingProxyType(self._lineage.groups)
 
     @property
-    def page_root(self) -> dict[Page, Page]:
-        return self._lineage.page_root
+    def page_root(self) -> Mapping[Page, Page]:
+        return MappingProxyType(self._lineage.page_root)
 
     # ---- ページ側とのやり取り ----
 
@@ -485,11 +490,13 @@ class CaptureSession:
         # あわせて URL変化・消滅の監視を配線する（この後 main() が行う start_url への goto の
         # framenavigated も拾えるよう、goto より前に張っておく。B-1）。
         for pg in self.context.pages:
-            self.page_root[pg] = pg
-            self.groups[pg] = make_group(
-                on=self.config.start_recording,
-                spa_on=False,
-                selector=self.config.target_selector,
+            self._lineage.seed_root(
+                pg,
+                make_group(
+                    on=self.config.start_recording,
+                    spa_on=False,
+                    selector=self.config.target_selector,
+                ),
             )
             self._track_page(pg)
         # バインディング名は badge.py の BIND_* に集約（badge.js 側の呼び出し名と一致）。
@@ -570,16 +577,13 @@ class CaptureSession:
     def _on_page_closed(self, page) -> None:
         """閉じられたページを管理から除去する（毎tickの _prune を置き換え）。
 
-        seen / page_root / _tracked から消し、どの生存ページからも参照されなくなった
-        root のグループ状態も捨てる（root ページ自身が閉じても、ポップアップが残る間は保持する）。
+        このセッションが持つ追跡情報（seen / _tracked）から消し、系譜側の後始末（page_root の
+        メモと、どの生存ページからも参照されなくなった root のグループ状態の破棄）はレジストリの
+        release() へ任せる（root ページ自身が閉じても、ポップアップが残る間は保持される。#48）。
         """
         self.seen.pop(page, None)
-        self.page_root.pop(page, None)
         self._tracked.discard(page)
-        alive_roots = set(self.page_root.values())
-        for root in list(self.groups):
-            if root not in alive_roots:
-                del self.groups[root]
+        self._lineage.release(page)
 
     async def run(self, closed: asyncio.Event) -> None:
         """ブラウザのウィンドウが閉じるまで待つ（イベント駆動。ポーリング無し。B-1/B-2）。

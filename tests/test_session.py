@@ -69,7 +69,9 @@ def _make_session(pages, roots=None, config=None):
     """フェイク context を持つ CaptureSession を作る。
 
     roots: {page: GroupState} を渡すと、setup() の種入れ相当（page_root/groups の登録）を
-    済ませた状態にする。runner は記録用スタブへ、refresh_panels は no-op へ差し替える。
+    済ませた状態にする。種入れは setup() と同じくレジストリの seed_root で行う（#48 以降、
+    session.groups / session.page_root は読み取り専用ビューなので外から書けない）。
+    runner は記録用スタブへ、refresh_panels は no-op へ差し替える。
     """
     from edge_auto_capture import CaptureSession
 
@@ -81,8 +83,7 @@ def _make_session(pages, roots=None, config=None):
 
     session.refresh_panels = _noop  # 実 evaluate を避ける（グループ判定だけ検証する）
     for pg, state in (roots or {}).items():
-        session.page_root[pg] = pg
-        session.groups[pg] = state
+        session._lineage.seed_root(pg, state)
     return session
 
 

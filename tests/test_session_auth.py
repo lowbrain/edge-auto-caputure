@@ -41,15 +41,19 @@ def _seeded_session(**state) -> tuple[CaptureSession, _Page]:
     """1 ページを root として seed 済みのセッションと、その root ページを返す。
 
     state は GroupState の初期値（on / spa_on / selector）。runner は記録用スタブへ差し替える。
+    種入れは setup() と同じくレジストリの seed_root で行う（#48 以降、session.groups /
+    session.page_root は読み取り専用ビューなので外から書けない）。
     """
     s = _session()
     s.runner = _RecRunner()
     page = _Page()
-    s.page_root[page] = page
-    s.groups[page] = GroupState(
-        on=state.get("on", False),
-        spa_on=state.get("spa_on", False),
-        selector=state.get("selector", ""),
+    s._lineage.seed_root(
+        page,
+        GroupState(
+            on=state.get("on", False),
+            spa_on=state.get("spa_on", False),
+            selector=state.get("selector", ""),
+        ),
     )
     return s, page
 

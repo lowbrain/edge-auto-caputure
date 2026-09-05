@@ -2,7 +2,7 @@
 
 - 系譜 id の採番と、表示名・保存先サブフォルダの規約（group_stamp / group_folder_name / group_subdir）
 - 系譜 1 つぶんの実行時状態（GroupState）と、その生成（make_group）
-- ページ → 所属グループの解決とメモ化を担うレジストリ（LineageRegistry）
+- ページ → 所属グループの解決・メモ化と、ページ消滅時の後始末を担うレジストリ（LineageRegistry）
 
 以前は capture.py のモジュール関数（group_stamp / group_folder_name / group_subdir）と、
 edge_auto_capture.py の CaptureSession が持つ groups / page_root および
@@ -80,7 +80,12 @@ class LineageRegistry:
 
     以前は CaptureSession が groups / page_root と _resolve_group / _find_root を直接持っていた。
     系譜の解決を CaptureSession から切り離してここへ寄せ、ブラウザ無しで単体テストできるようにする。
-    起動時の最初のグループは呼び出し側（setup() が start_recording に従って）先に用意する。
+    起動時の最初のグループは呼び出し側（setup() が start_recording に従って）作り、seed_root で預ける。
+
+    系譜の「生存管理」もここで完結させる（#48）。採番（resolve）だけをここに置いて掃除を
+    CaptureSession 側に残すと、状態を足したときに 2 モジュールを直さないと整合しなくなるため、
+    種入れ（seed_root）とページ消滅時の後始末（release）も API として持つ。外から groups /
+    page_root を直接書き換えないこと（CaptureSession 側は読み取り専用ビューだけを公開する）。
     """
 
     def __init__(self, default_selector: str) -> None:
@@ -88,6 +93,31 @@ class LineageRegistry:
         self.default_selector = default_selector
         self.groups: dict[Page, GroupState] = {}   # root ページ -> そのグループの状態
         self.page_root: dict[Page, Page] = {}      # 各ページ -> 所属グループの root（メモ化）
+
+    def seed_root(self, page, group: GroupState) -> None:
+        """page を「自分自身が root」のグループとして登録する（起動時ページの種入れ）。
+
+        起動時点で開いているページ（通常は1枚）は opener を持たないので、resolve に任せると
+        初期OFFの独立グループになってしまう。start_recording に従う最初のグループは呼び出し側
+        （CaptureSession.setup()）が作り、ここへ預ける。以後手動で開かれるタブは resolve が
+        初期OFFの独立グループとして採番する。
+        """
+        self.page_root[page] = page
+        self.groups[page] = group
+
+    def release(self, page) -> None:
+        """閉じられたページを系譜の管理から外し、参照の無くなったグループを捨てる。
+
+        ページ→root のメモを消し、どの生存ページからも参照されなくなった root のグループ状態も
+        捨てる（root ページ自身が閉じても、ポップアップが残る間はグループを保持する）。
+        以前は CaptureSession._on_page_closed がレジストリの辞書を直接書き換えていたため、
+        系譜の生存管理だけが 2 モジュールに分かれていた（#48）。
+        """
+        self.page_root.pop(page, None)
+        alive_roots = set(self.page_root.values())
+        for root in list(self.groups):
+            if root not in alive_roots:
+                del self.groups[root]
 
     async def find_root(self, page) -> Page:
         """page の所属グループの root ページを opener 連鎖から求める。
