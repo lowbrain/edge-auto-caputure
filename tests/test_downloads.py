@@ -11,11 +11,8 @@ from pathlib import Path
 
 from browser import browser_launch_kwargs
 from config import Config
-from edge_auto_capture import (
-    CaptureSession,
-    _downloads_dir,
-    _unique_path,
-)
+from downloads import _downloads_dir, _unique_path
+from edge_auto_capture import CaptureSession
 
 
 class FakeDownload:
