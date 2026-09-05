@@ -24,6 +24,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 全ジョブ共通で checkout するだけ（push/コメント等はしない）ので読み取りのみに絞る。
+permissions:
+  contents: read
+
 # 同一ブランチの古い実行はキャンセルして無駄な同時実行を減らす。
 concurrency:
   group: ci-${{ github.ref }}
