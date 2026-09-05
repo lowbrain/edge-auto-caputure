@@ -2,7 +2,8 @@
 
 タブ系譜（グループ）の解決・記録状態のゲート・URL変化のイベント駆動（B-1）・操作バーへの
 状態配布（F-D2 / F-D3 / F-D4）・main() から切り出した起動シーケンスを、実 Edge 無しで
-（opener を返すページ代役と spawn 記録用スタブで）守る。
+（opener を返すページ代役と spawn 記録用スタブで）守る。入口 cli()（#50）も、asyncio.run の
+差し替え口を使ってブラウザ無しで順序・多重起動抑止・終了コードを守る。
 
 実行:
     pip install -e ".[dev]"
@@ -19,7 +20,7 @@ import badge
 import capture
 import infra
 from capture import CaptureRequest, CaptureRunner
-from config import Config
+from config import Config, ConfigFatalError
 
 # --------------------------------------------------------------------------- #
 # タブ系譜グループ（CaptureSession）
@@ -1007,3 +1008,154 @@ def test_launch_browser_returns_none_and_notifies_when_all_fail(monkeypatch):
         assert "未インストール" in said[0]      # 各候補の失敗理由も添える
 
     asyncio.run(scenario())
+
+
+# --------------------------------------------------------------------------- #
+# 起動シーケンス（cli）
+#
+# __main__ から切り出した入口（#50）。asyncio.run の差し替え口を使い、実ブラウザを
+# 起こさずに「設定読み込み → 起動ログ3行 → 多重起動ロック → 監視の実行 → 終了ログ」の
+# 順序と終了コードを守る。特に多重起動抑止（D-C4）は、抜けると output/・log.txt・
+# 使い捨てプロファイル（A-5）を 2 プロセスで奪い合う実害のある分岐。
+# --------------------------------------------------------------------------- #
+
+
+class _CliStubs:
+    """cli() をブラウザ無しで回すためのスタブ一式。呼び出しを起きた順に events へ記録する。
+
+    log / notify_fatal / acquire_single_instance_lock / load_config / main を
+    edge_auto_capture の名前空間ごと差し替える（いずれも import 済みの名前なので
+    モジュール属性の置き換えで効く）。main は待たれないダミーを返すので、コルーチンを
+    作らずに「run へ何が渡ったか」だけを見る。
+    """
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.logs: list[str] = []
+        self.said: list[str] = []
+        self.ran: list = []
+        self.logs_at_load: list = []
+        self.lock_ok = True
+        self.config = Config()
+        self.config_error = None               # 設定読み込みで投げさせたい例外（あれば）
+        self.interrupt = False                 # run で KeyboardInterrupt を起こすか
+
+    def install(self, monkeypatch):
+        import edge_auto_capture as eac
+
+        def load_config():
+            # このスタブが呼ばれた時点までのログ本数を控える（順序依存の検証用）。
+            self.logs_at_load = list(self.logs)
+            self.events.append("load_config")
+            if self.config_error is not None:
+                raise self.config_error
+            return self.config
+
+        def log(msg):
+            self.events.append(f"log:{msg}")
+            self.logs.append(msg)
+
+        def acquire():
+            self.events.append("lock")
+            return self.lock_ok
+
+        def notify(msg):
+            self.events.append("notify")
+            self.said.append(msg)
+
+        def fake_main(config):
+            # 実物は async だが、ここでは run へ渡る値の同一性だけ見たいので普通の関数で代替。
+            self.events.append("main")
+            return ("coroutine-stand-in", config)
+
+        def fake_run(coro):
+            self.events.append("run")
+            self.ran.append(coro)
+            if self.interrupt:
+                raise KeyboardInterrupt
+
+        monkeypatch.setattr(eac, "load_config", load_config)
+        monkeypatch.setattr(eac, "log", log)
+        monkeypatch.setattr(eac, "acquire_single_instance_lock", acquire)
+        monkeypatch.setattr(eac, "notify_fatal", notify)
+        monkeypatch.setattr(eac, "main", fake_main)
+        monkeypatch.setattr(eac, "startup_environment_line", lambda: "[env] stub")
+        monkeypatch.setattr(eac, "summarize_config", lambda c: "[config] stub")
+        self.run = fake_run
+        return eac
+
+
+def test_cli_runs_startup_sequence_in_order(monkeypatch):
+    # 正常系: 設定 → 起動ログ3行 → ロック取得 → 監視の実行 → 終了ログ、で終了コード 0。
+    # ロック取得が run（＝ブラウザ起動と cleanup_old_profiles）より前にあることも、この順序で固定する。
+    stubs = _CliStubs()
+    eac = stubs.install(monkeypatch)
+
+    assert eac.cli(run=stubs.run) == 0
+    assert stubs.events == [
+        "load_config",
+        f"log:=== edge-auto-capture v{infra.__version__} 起動 ===",
+        "log:[env] stub",
+        "log:[config] stub",
+        "lock",
+        "main",
+        "run",
+        "log:=== 終了 ===",
+    ]
+
+
+def test_cli_logs_nothing_before_load_config(monkeypatch):
+    # 順序依存（infra.LOG_PATH の切り替えタイミング）: load_config が set_log_dir を呼ぶまでは
+    # ログが BASE_DIR/log.txt へ出てしまうので、その前に 1 行も出さない。
+    stubs = _CliStubs()
+    eac = stubs.install(monkeypatch)
+
+    assert eac.cli(run=stubs.run) == 0
+    assert stubs.logs_at_load == []
+
+
+def test_cli_hands_loaded_config_to_main(monkeypatch):
+    # asyncio.run の差し替え口には、読み込んだ Config で組んだ main(...) がそのまま渡る。
+    stubs = _CliStubs()
+    stubs.config = Config(start_url="https://example.test/")
+    eac = stubs.install(monkeypatch)
+
+    assert eac.cli(run=stubs.run) == 0
+    assert stubs.ran == [("coroutine-stand-in", stubs.config)]
+
+
+def test_cli_blocks_second_instance_before_starting_browser(monkeypatch):
+    # D-C4: ロックを取れなければブラウザを起こさずに終了コード 1。
+    # ここが抜けると 2 つ目のプロセスが output/・log.txt・使い捨てプロファイルを奪い合う。
+    stubs = _CliStubs()
+    stubs.lock_ok = False
+    eac = stubs.install(monkeypatch)
+
+    assert eac.cli(run=stubs.run) == 1
+    assert stubs.said and "すでに起動しています" in stubs.said[0]
+    assert stubs.logs[-1] == "=== 終了（多重起動を抑止） ==="
+    assert "main" not in stubs.events        # main() を組み立てもしない
+    assert stubs.ran == []                   # ＝ブラウザも掃除も走らない
+
+
+def test_cli_notifies_and_returns_one_on_config_fatal_error(monkeypatch):
+    # #49: config は落とさず ConfigFatalError で返す。通知と終了コードはここで決める。
+    stubs = _CliStubs()
+    stubs.config_error = ConfigFatalError("保存先フォルダに書き込めませんでした: X")
+    eac = stubs.install(monkeypatch)
+
+    assert eac.cli(run=stubs.run) == 1
+    assert stubs.said == ["保存先フォルダに書き込めませんでした: X"]
+    assert stubs.logs == []                  # 起動ログまで進まない
+    assert "lock" not in stubs.events        # ロックも取らない
+    assert stubs.ran == []
+
+
+def test_cli_catches_keyboard_interrupt_and_ends_normally(monkeypatch):
+    # コンソール実行時の Ctrl+C は保険的な停止経路。停止を記録して正常終了（0）で抜ける。
+    stubs = _CliStubs()
+    stubs.interrupt = True
+    eac = stubs.install(monkeypatch)
+
+    assert eac.cli(run=stubs.run) == 0
+    assert stubs.logs[-2:] == ["停止しました。", "=== 終了 ==="]

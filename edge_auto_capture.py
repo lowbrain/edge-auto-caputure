@@ -50,10 +50,10 @@ import secrets
 import shutil
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from pathlib import Path
 from types import MappingProxyType
-from typing import Optional
+from typing import Any, Optional
 
 from playwright.async_api import Page, async_playwright
 
@@ -743,7 +743,23 @@ async def main(config: Config) -> None:
                 shutil.rmtree(user_data_dir, ignore_errors=True)
 
 
-if __name__ == "__main__":
+def cli(run: Callable[[Coroutine[Any, Any, None]], None] = asyncio.run) -> int:
+    """起動シーケンス（設定読み込み・起動ログ・多重起動抑止・監視の実行）。終了コードを返す。
+
+    `if __name__ == "__main__":` へ直書きしていた約 28 行をここへ括り出したもの（#50）。
+    プロセスを落とすのは `__main__` の `sys.exit(cli())` 1 行だけにして、この関数は
+    「何をどの順でやり、どの終了コードになるか」を返す純粋な手続きに保つ。こうしておくと、
+    実ブラウザ無しでもロック取得・ログの順序・終了コードを回帰テストで押さえられる
+    （多重起動抑止 D-C4 は失敗すると保存先を 2 プロセスで奪い合う、実害のある分岐）。
+
+    run は `asyncio.run` の差し替え口。テストからブラウザを起こさずに、ここまでの
+    シーケンスが正しく組まれているかだけを確かめるために開けてある。
+
+    **順序に意味がある**（変えないこと）:
+      - `load_config()` より前のログは BASE_DIR/log.txt へ出る（load_config が
+        output_dir 確定時に set_log_dir を呼んで、そこで初めて出力先が切り替わる）。
+      - ロック取得は「ブラウザを起こす前・cleanup_old_profiles が走る前」。
+    """
     # 先に設定を読み、ログの出力先を保存先（output_dir）へ切り替えてから記録を始める。
     # （load_config が output_dir 確定時に set_log_dir を呼ぶ。以後のログはそこへ残る）
     #
@@ -754,7 +770,7 @@ if __name__ == "__main__":
         config = load_config()
     except ConfigFatalError as e:
         notify_fatal(str(e))
-        sys.exit(1)
+        return 1
 
     # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
     log(f"=== edge-auto-capture v{__version__} 起動 ===")
@@ -772,11 +788,16 @@ if __name__ == "__main__":
             "二重に起動することはできません。すでに開いているウィンドウをご確認ください。"
         )
         log("=== 終了（多重起動を抑止） ===")
-        sys.exit(1)
+        return 1
 
     try:
-        asyncio.run(main(config))
+        run(main(config))
     except KeyboardInterrupt:
         # コンソール実行時のみ届く保険的な停止経路。
         log("停止しました。")
     log("=== 終了 ===")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(cli())
