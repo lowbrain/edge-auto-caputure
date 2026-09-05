@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import re
 import shutil
 from pathlib import Path
 
@@ -714,10 +715,19 @@ def test_set_count_call_encodes_count():
 def test_new_namespace_is_random_and_carries_no_hint():
     # E-3: 起動ごとに使い捨てるランダム名。先頭は英字（数値インデックス的扱いを避ける）で、
     # __eac のような固定の手掛かりを含まない（含めると全文一致でなくても勘付かれうる）。
+    #
+    # 「手掛かりを含まない」は部分文字列ではなく**形そのもの**で縛る。以前は
+    # `"eac" not in a` と書いていたが、new_namespace() は "n" + token_hex(16) で
+    # 16 進の文字集合に e / a / c が全部含まれるため、ランダムに eac が並んで
+    # 約 0.7% の確率で落ちていた（#75。PR #73 の CI で実際に発生した）。
+    # ランダムな 16 進列にたまたま eac が並ぶことは、サイト側から見て他のどんな
+    # ランダム名とも区別できず存在検知の手掛かりにならない。縛りたいのは
+    # 「固定のマーカーを混ぜないこと」なので、n + 32 桁の 16 進という形を固定する。
+    # これなら __eac はもちろん、eac を接頭辞として混ぜた場合（"neac" + ...）も落ちる。
     a, b = badge.new_namespace(), badge.new_namespace()
     assert a != b
     assert a[0].isalpha()
-    assert "__eac" not in a and "eac" not in a
+    assert re.fullmatch(r"n[0-9a-f]{32}", a)
 
 
 def test_build_badge_script_hides_fixed_globals():
