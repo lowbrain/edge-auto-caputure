@@ -26,7 +26,7 @@ from playwright.async_api import Page
 
 import badge
 from config import Config
-from infra import iso_timestamp, log
+from infra import iso_timestamp, log, ms3
 from lineage import group_folder_name, group_subdir
 
 # 索引 CSV のファイル名と見出し。撮影ごとに 1 行追記して「いつ・何を撮ったか」を一覧にする（F-A1）。
@@ -50,9 +50,11 @@ def now_stamp() -> str:
     """現在時刻を「YYYY-MM-DD_HH-MM-SS-mmm」（ミリ秒まで）で返す。
 
     保存ファイル名の接頭辞に使う（人が時系列で見分けやすいよう区切り付き）。
+    ミリ秒 3 桁の切り出しは infra.ms3 が持つ（lineage.group_stamp と共通の 1 点。#56）。
+    書式そのものは共通化しない（あちらは `lineage-<id>` のトークンで区切り無し）。
     """
     now = datetime.now()
-    return f"{now:%Y-%m-%d_%H-%M-%S}-{now.strftime('%f')[:3]}"
+    return f"{now:%Y-%m-%d_%H-%M-%S}-{ms3(now)}"
 
 
 async def try_eval(page: Page, js: str, timeout: Optional[float] = None) -> None:
@@ -234,12 +236,10 @@ class CaptureRunner:
         # ファイル名は「日時（ミリ秒まで）_ページタイトル」。ミリ秒付き日時で一意性と
         # 時系列順を保証し、末尾のタイトルは人がページを見分けるための情報。
         # ts は await より前に確定させる。タイトルはページ読み込み後に確定させる。
+        # ローカルへ展開するのは多用する page / url だけに留め、他は req.* のまま参照する
+        # （CaptureRequest にフィールドを足したときに触る行を増やさないため。#55）。
         page = req.page
         url = req.url
-        config = req.config
-        selector = req.selector
-        group_id = req.group_id
-        trigger = req.trigger
         ts = now_stamp()                                     # 例: 2026-08-11_14-30-25-123
         # 索引 CSV 用の撮影時刻。ファイル名（ts）とは別に、オフセット付き ISO で撮影開始時刻を
         # 押さえる（F-A4）。後から遡って直せない情報なので、await より前のこの時点で確定させる。
@@ -247,13 +247,13 @@ class CaptureRunner:
 
         # 読み込み完了を待つ（タイムアウトしても続行）
         with _step("load", url):
-            await page.wait_for_load_state("load", timeout=config.load_timeout)
+            await page.wait_for_load_state("load", timeout=req.config.load_timeout)
         # 描画が落ち着くまで待つ（settle_delay）。ただし SPA 経由は、ページ側 badge.js が
         # SPA_SETTLE_MS のデバウンスで既に「変化が止まってから」通知している。ここで再び
         # settle_delay を待つと二重待ちになり体感が遅れるだけなので省く（B-4, #18）。
         # URL遷移/手動は load 直後にまだ描画が動きうるので従来どおり待つ。
-        if trigger != "spa":
-            await asyncio.sleep(config.settle_delay)
+        if req.trigger != "spa":
+            await asyncio.sleep(req.config.settle_delay)
 
         # タイトルを取得してファイル名の識別名を確定（失敗しても URL 由来の名前で代替）。
         title = ""
@@ -263,7 +263,7 @@ class CaptureRunner:
 
         # 保存先は系譜（lineage）ごとのサブフォルダ（output_dir/lineage-<id>）。未採番なら直下。
         # 3ファイルとも同じフォルダへ。フォルダが無ければ作る（失敗しても各 _step が握って skip）。
-        save_dir = group_subdir(config.output_dir, group_id)
+        save_dir = group_subdir(req.config.output_dir, req.group_id)
         save_dir.mkdir(parents=True, exist_ok=True)
 
         # 実際に保存できたステップの記録（A-3）。png / txt / part だけを積み、
@@ -276,29 +276,29 @@ class CaptureRunner:
         # 退避は png のためだが、txt/txt(part) は本文取得側でバーを除外するので退避したままでも
         # 支障はなく、フラッシュ色を _capture 全体の成否に一致させるため復帰は最後にまとめて行う。
         # captureEnd は失敗時も戻すため finally で必ず呼ぶ（フラッシュ色は done 有無で決める）。
-        eval_timeout = config.eval_timeout / 1000                # ミリ秒 → 秒（E-6）
+        eval_timeout = req.config.eval_timeout_sec               # ミリ秒 → 秒の換算は Config 側（E-6）
         await try_eval(page, badge.capture_start_call(self.ns), eval_timeout)
         try:
             # 1) フルページ スクリーンショット
             await self._save_screenshot(page, save_dir, stem, url, done)
             # 2) ページ全文テキスト
-            await self._save_text(page, save_dir, stem, url, config, done)
+            await self._save_text(page, save_dir, stem, url, req.config, done)
             # 3) 一部抜き出し（セレクタ設定時のみ）
-            if selector:
-                await self._save_part(page, save_dir, stem, url, selector, done)
+            if req.selector:
+                await self._save_part(page, save_dir, stem, url, req.selector, done)
         finally:
             await try_eval(page, badge.capture_end_call(self.ns, bool(done)), eval_timeout)
 
         # 1つでも保存できたら [saved]（何を保存したか併記）。全滅なら正直に「保存できず」。
         # group_id が採番済みなら、どの系譜（lineage）の保存かも併記する（＝保存先フォルダ名）。
-        who = f"{group_folder_name(group_id)} " if group_id else ""
+        who = f"{group_folder_name(req.group_id)} " if req.group_id else ""
         if done:
             log(f"[saved] {who}{stem}.*  ({','.join(done)})  <- {url}")
         else:
             log(f"[保存できず] {who}{stem}  <- {url}")
 
         # 撮影ごとに索引 CSV へ 1 行追記（F-A1）。成否は done（実際に保存できたステップ）で決める。
-        self._append_index(config, captured_at, url, title, stem, trigger, selector, done)
+        self._append_index(req, captured_at, title, stem, done)
 
         # 撮影 1 回分の成否を監視セッションへ通知する（F-D3。撮影カウンタ／失敗の把握に使う）。
         # 通知先が未設定（単体テスト等）や通知自体が失敗しても、撮影本体は成立しているので握る。
@@ -310,13 +310,10 @@ class CaptureRunner:
 
     def _append_index(
         self,
-        config: Config,
+        req: CaptureRequest,
         captured_at: str,
-        url: str,
         title: str,
         stem: str,
-        trigger: str,
-        selector: str,
         done: list[str],
     ) -> None:
         """撮影 1 回分を索引 CSV（output_dir/index.csv）へ 1 行追記する（F-A1）。
@@ -324,16 +321,21 @@ class CaptureRunner:
         系譜ごとのサブフォルダではなく output_dir 直下に置き、全系譜の撮影を 1 本の索引にまとめる
         （log.txt と同じ粒度）。列は時刻/URL/タイトル/ファイル名接頭辞/撮影契機/セレクタ/成否。
 
+        撮影要求そのもの（req）を受け取り、config / url / trigger / selector はそこから取る（#55）。
+        以前は 8 個の位置引数で、隣接する同型（str）の trigger と selector を取り違えても型検査で
+        止まらなかった。列を足すたびに並びを直す作業も CaptureRequest へフィールドを足すだけで済む。
+        引数に残る captured_at / title / stem は撮影中に確定する値で、req には載らない。
+
         文字化け対策（地雷）: Excel で開く前提なので BOM 付き（utf-8-sig）で書く。ただし追記のたびに
         utf-8-sig で開くと毎回 BOM を書き足して行頭へ紛れ込むため、BOM は新規作成時の 1 度だけにし、
         既存への追記は utf-8 で開く。csv.writer に任せて 値中のカンマ/改行/引用符を正しく退避する。
         newline="" は csv が改行を二重化しないための定石（Windows でも空行が入らない）。
         撮影本体は成立しているので、索引の書き込み失敗はログに残すだけで握り、撮影を巻き込まない。
         """
-        path = config.output_dir / INDEX_CSV_NAME
+        path = req.config.output_dir / INDEX_CSV_NAME
         row = [
-            captured_at, url, title, stem,
-            trigger_label(trigger), selector, "成功" if done else "失敗",
+            captured_at, req.url, title, stem,
+            trigger_label(req.trigger), req.selector, "成功" if done else "失敗",
         ]
         try:
             new_file = not path.exists()
@@ -344,7 +346,7 @@ class CaptureRunner:
                     writer.writerow(INDEX_CSV_HEADER)
                 writer.writerow(row)
         except Exception as e:
-            log(f"[skip index] {url}  ({e})")
+            log(f"[skip index] {req.url}  ({e})")
 
     async def _save_screenshot(
         self, page: Page, save_dir: Path, stem: str, url: str, done: list[str]
@@ -372,7 +374,7 @@ class CaptureRunner:
         """
         with _step("txt", url, done):
             text = await asyncio.wait_for(
-                page.evaluate(badge.body_text_call(self.ns)), timeout=config.eval_timeout / 1000
+                page.evaluate(badge.body_text_call(self.ns)), timeout=config.eval_timeout_sec
             )
             (save_dir / f"{stem}.txt").write_text(
                 f"URL: {url}\n\n{text}", encoding="utf-8"

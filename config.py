@@ -149,6 +149,17 @@ class Config:
     start_recording: bool = False           # 起動直後に記録を開始するか（False=待機状態で起動）
     profile_dir: str = ""                    # 再利用するブラウザプロファイルの場所（空なら毎回使い捨て）
 
+    @property
+    def eval_timeout_sec(self) -> float:
+        """eval_timeout を秒で返す（asyncio.wait_for / try_eval に渡す単位）。
+
+        config.ini の単位はミリ秒（利用者に分かりやすい整数で書ける）、コード内の利用は秒
+        （asyncio の単位）。この変換点をここ 1 か所に定める（#56）。以前は capture.py の
+        _capture と _save_text が `config.eval_timeout / 1000` を別々に計算していて、
+        片方だけ直る形の事故を招く並びだった。
+        """
+        return self.eval_timeout / 1000
+
 
 def session_stamp() -> str:
     """起動 1 回分（セッション）の保存先サブフォルダ名を返す（F-C3）。

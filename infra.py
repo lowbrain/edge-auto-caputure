@@ -1,7 +1,7 @@
 """基盤ユーティリティ（アプリの土台。Playwright 非依存）。
 
 - 基準フォルダ（BASE_DIR / _base_dir）
-- ログ（LOG_PATH / set_log_dir / log / iso_timestamp）
+- ログと時刻の整形（LOG_PATH / set_log_dir / log / iso_timestamp / ms3）
 - 致命的エラー通知（notify_fatal / _message_box）
 - 一時プロファイルの後始末（cleanup_old_profiles）
 
@@ -87,6 +87,19 @@ def set_log_dir(directory: Path) -> None:
     except Exception:
         pass
     LOG_PATH = directory / "log.txt"
+
+
+def ms3(now: datetime) -> str:
+    """時刻のマイクロ秒 6 桁をミリ秒 3 桁（切り捨て・ゼロ詰め）へ落として返す（例: "123"）。
+
+    タイムスタンプのミリ秒部を作る唯一の場所（#56）。呼び出し側は用途ごとに書式が違う
+    （capture.now_stamp は人が時系列で読む `YYYY-MM-DD_HH-MM-SS-mmm`、lineage.group_stamp は
+    `lineage-<id>` のトークン `YYYYMMDDHHMMSSmmm`）ので、共通なのは「6 桁を 3 桁へ落とす」
+    この 1 点だけ。書式そのものは各呼び出し側が持つ（関数を統合してはいけない）。
+    now を引数で受けるのは、呼び出し側が 1 つの datetime から日時部とミリ秒部を組み立てる
+    ため（内部で datetime.now() を取ると両者がまたぎでずれうる）。
+    """
+    return now.strftime("%f")[:3]
 
 
 def iso_timestamp() -> str:

@@ -40,6 +40,12 @@ def test_config_defaults():
     assert c.allow_urls == ()  # 既定は無効（撮る URL を絞らない。F-C2）
 
 
+def test_eval_timeout_sec_converts_milliseconds_to_seconds():
+    # config.ini はミリ秒、コード内（asyncio）は秒。換算点は Config へ 1 本化してある（#56）。
+    assert Config().eval_timeout_sec == 5.0
+    assert Config(eval_timeout=250).eval_timeout_sec == 0.25
+
+
 # --------------------------------------------------------------------------- #
 # should_capture（skip_urls / allow_urls / 前方一致・fnmatch。R3/F-C2/B-5）
 # --------------------------------------------------------------------------- #
