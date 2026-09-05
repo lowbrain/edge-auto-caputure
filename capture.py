@@ -274,7 +274,7 @@ class CaptureRunner:
         # 退避は png のためだが、txt/txt(part) は本文取得側でバーを除外するので退避したままでも
         # 支障はなく、フラッシュ色を _capture 全体の成否に一致させるため復帰は最後にまとめて行う。
         # captureEnd は失敗時も戻すため finally で必ず呼ぶ（フラッシュ色は done 有無で決める）。
-        eval_timeout = req.config.eval_timeout / 1000            # ミリ秒 → 秒（E-6）
+        eval_timeout = req.config.eval_timeout_sec               # ミリ秒 → 秒の換算は Config 側（E-6）
         await try_eval(page, badge.capture_start_call(self.ns), eval_timeout)
         try:
             # 1) フルページ スクリーンショット
@@ -372,7 +372,7 @@ class CaptureRunner:
         """
         with _step("txt", url, done):
             text = await asyncio.wait_for(
-                page.evaluate(badge.body_text_call(self.ns)), timeout=config.eval_timeout / 1000
+                page.evaluate(badge.body_text_call(self.ns)), timeout=config.eval_timeout_sec
             )
             (save_dir / f"{stem}.txt").write_text(
                 f"URL: {url}\n\n{text}", encoding="utf-8"
