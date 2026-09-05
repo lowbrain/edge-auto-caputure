@@ -15,3 +15,11 @@ venv/
 # このツールの生成物（キャプチャ保存先・動作ログ）
 output/
 log.txt
+
+# Claude Code
+# ローカル設定（settings.local.json）と作業用ワークツリーは追跡しないが、
+# スキル定義（.claude/skills/）はリポジトリの資産なので追跡する。
+# ディレクトリごと除外（.claude/）にすると git が中へ降りず否定パターンが効かないため
+# `.claude/*` と書くこと。
+.claude/*
+!.claude/skills/
