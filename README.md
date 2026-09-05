@@ -102,15 +102,8 @@ edge-auto-capture/
 ├─ browser.py             Edge/Chrome の起動候補と起動オプションの組み立て
 ├─ badge.py               操作バーのページ側JS組み立て（表示文言→$CONFIG／バインディング名）
 ├─ badge.js               操作バーのページ側JS本体（実ファイル）
-├─ tests/
-│  ├─ smoke_badge.py         操作バーJS＋SPA検知監視のスモークテスト（Edge headless）
-│  ├─ test_capture.py        1ページ分の保存処理（capture）のユニットテスト（pytest）
-│  ├─ test_config.py         設定読み込み（config）のユニットテスト（pytest）
-│  ├─ test_infra.py          基盤ユーティリティ（infra）のユニットテスト（pytest）
-│  ├─ test_session.py        監視セッション・起動シーケンスのユニットテスト（pytest）
-│  ├─ test_downloads.py      ダウンロード退避の回帰テスト（pytest）
-│  ├─ test_session_auth.py   合言葉(token)照合のユニットテスト（pytest）
-│  └─ conftest.py            pytest 共通設定（import パス／共通フィクスチャ）
+├─ downloads.py           ダウンロードの保存先解決とファイル退避（E-4）
+├─ tests/                 テストと conftest.py（構成は下の「テスト」節）
 ├─ .github/workflows/ci.yml  CI（ruff+mypy / pytest / smoke --strict）
 ├─ config.ini             既定の設定ファイル
 ├─ pyproject.toml         依存とパッケージ設定
@@ -166,27 +159,26 @@ python edge_auto_capture.py
 
 ### テスト
 
-テストは 2 系統ある。
+テストは 2 系統ある。**回し方と合否の見方は [CONTRIBUTING.md](CONTRIBUTING.md) §3「検証手順（4 点セット）」が正**
+（`--strict` の要否、ブラウザ不在時の `SKIP` の扱い、CI のジョブ構成を含む）。ここでは何を守っているかだけを書く。
 
 **1. ユニットテスト（pytest・速い／実 Edge 不要）**
 
 実 Edge を使わずに、間違えやすいロジックと「微妙な仕様」を回帰から守る。
+守っている範囲は大きく 4 つ。
 
-ファイルはソース側のモジュール構成に合わせてある（どこに足すか迷わないように）。
+- **純粋関数と判定ロジック** — ファイル名の安全化、URL 判定（`should_capture`）、
+  設定の既定値・自己修復、タブ系譜の解決、起動候補の組み立て
+- **「微妙な仕様」の固定** — 保存ステップの集約（`_step`）、ページ側 JS のハング保護（`try_eval`）、
+  撮影キューの合流、書き込み先の退避（`resolve_writable_dir`）、多重起動抑止、
+  操作バー以外からの呼び出しを弾く合言葉(token)照合
+- **言語境界・パッケージ境界の一致** — `badge.py` の `BIND_*` と `badge.js` の `BINDING_NAMES`、
+  `pyproject.toml` の `py-modules` と実ファイル、`USAGE.txt` の Shift-JIS 往復一致。
+  **どれも壊れても他の 3 点セットが落ちない**ので、テストだけが守っている（#67 / #68 / #69）
+- **起動シーケンスと入口** — `cli()` の起動ログの順序・終了コード
 
-- `test_capture.py` … 1ページ分の保存処理。純粋関数（`safe_name` / `page_label`）、
-  保存ステップの集約（`_step`）、ページ側 JS のハング保護（`try_eval`）、撮影キューの合流、
-  撮影要求（`CaptureRequest`）、索引 CSV。
-- `test_config.py` … 設定読み込み。`load_config` の既定値・自己修復、`profile_dir`、
-  セッションフォルダ、URL 判定（`should_capture`）、`summarize_config`。
-- `test_infra.py` … 基盤ユーティリティ。バージョンの出所、起動環境ログ、
-  書き込み先の退避（`resolve_writable_dir`）、多重起動抑止。
-- `test_session.py` … 監視セッション。タブ系譜（グループ）の解決、URL 変化のイベント駆動、
-  操作バーへの状態配布（セレクタ履歴 / 撮影カウンタ / 保存先を開く）、起動シーケンスのヘルパ、
-  入口 `cli()`（起動ログの順序・多重起動抑止・終了コード）。
-- `test_downloads.py` … ダウンロード退避の回帰。
-- `test_session_auth.py` … 操作バー以外からの呼び出しを弾く合言葉(token)照合
-  （SPA変化通知 `__eac_spa_changed` の記録状態ゲートを含む）。
+**テストファイルはソース側のモジュール構成に合わせてある**（どこに足すか迷わないように）。
+一覧は `ls tests/` で見られるので、ここには書かない（増減のたびにこの節が腐るため）。
 
 SPA検知の落ち着き判定はページ側（`badge.js`）へ移したため、その回帰確認はスモークテストが担う。
 
@@ -194,23 +186,10 @@ SPA検知の落ち着き判定はページ側（`badge.js`）へ移したため�
 
 操作バーの JS（`badge.js`）が実際に構築でき、ページ側ヘルパ（署名/本文取得/バー隠し）と
 SPA検知の監視（本文を変えると `__eac_spa_changed` が発火する一連）が例外なく動くかを確認する。
-
-```bash
-pip install -e ".[dev]"
-pytest
-python tests/smoke_badge.py --strict
-ruff check .
-mypy .
-```
-
-> **`--strict` を必ず付けること。** 付けないと、ブラウザが無い環境では `SKIP`（終了コード 0）で
-> 抜けてしまい「何も検証していないのに緑」になる。`--strict` はこれを FAIL 化する。
-
-CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）でも同じ 4 点が回る。`ruff` + `mypy` と
-`pytest` は Linux、**smoke は実 Edge が要るので Windows runner** で `--strict` 付き。
+**`badge.js` を守るのはこれだけで、pytest では守れない。**
 
 **変更時に踏みやすい落とし穴（`$CONFIG` 置換・バインディング名の二重管理・Shift-JIS・
-新モジュール追加時の同時更新など）は [CONTRIBUTING.md](CONTRIBUTING.md) にまとめてある。**
+新モジュール追加時の同時更新など）は [CONTRIBUTING.md](CONTRIBUTING.md) §1 にまとめてある。**
 
 ## 配布用 exe のビルド
 
