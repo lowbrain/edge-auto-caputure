@@ -17,6 +17,7 @@ import pytest
 import capture
 import config as config_mod
 import infra
+import lineage
 from config import Config, load_config, should_capture
 
 # session_stamp の実装本体への参照（conftest の autouse フィクスチャが "" へ差し替える前に押さえる）。
@@ -449,8 +450,8 @@ output_dir = {out}
     )
     c = load_config()
     session = out / "2026-08-11_143025"
-    # 撮影物の系譜サブフォルダ（capture.group_subdir）はセッションフォルダ配下。
-    assert capture.group_subdir(c.output_dir, "20260811143025000") == (
+    # 撮影物の系譜サブフォルダ（lineage.group_subdir）はセッションフォルダ配下。
+    assert lineage.group_subdir(c.output_dir, "20260811143025000") == (
         session / "lineage-20260811143025000"
     )
     # ダウンロード退避先（edge_auto_capture._downloads_dir）もセッションフォルダ配下。

@@ -10,7 +10,6 @@
 """
 
 import asyncio
-import re
 import shutil
 from pathlib import Path
 
@@ -635,25 +634,8 @@ def test_on_page_closed_prunes_state_and_gcs_group():
     asyncio.run(scenario())
 
 
-def test_group_subdir_and_folder_name():
-    # 採番済みは output_dir/lineage-<id>、未採番(空)は output_dir 直下。
-    from pathlib import Path
-
-    from capture import group_folder_name, group_subdir
-
-    out = Path("/tmp/out")
-    assert group_folder_name("20260814101105674") == "lineage-20260814101105674"
-    assert group_subdir(out, "20260814101105674") == out / "lineage-20260814101105674"
-    assert group_subdir(out, "") == out
-
-
-def test_make_group_id_is_timestamp():
-    # 新規グループの id は「作成時刻（ミリ秒まで）」の文字列（ログ/フォルダ識別用）。
-    from lineage import make_group
-
-    g = make_group(on=False, spa_on=False, selector="")
-    # 例: 20260814101105674（YYYYMMDDHHMMSSmmm・区切りなし＝17桁）
-    assert re.fullmatch(r"\d{17}", g.id)
+# 系譜 id・保存先フォルダ名の規約（group_stamp / group_folder_name / group_subdir /
+# make_group）と、LineageRegistry 自体の単体テストは tests/test_lineage.py にある（#53）。
 
 
 def test_get_state_returns_group_state():

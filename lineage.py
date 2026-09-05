@@ -10,8 +10,11 @@ _resolve_group / _make_group / _find_root に分かれていた。系譜まわ�
 1 か所へ寄せ、状態の所在を明確にし単体テストしやすくするために新設した（#36）。
 「既存クラスの移動」ではなく「新設して寄せた」もの。
 
-後方互換のため、capture.py は group_folder_name / group_subdir を、edge_auto_capture.py は
-GroupState をここから再輸出しており、既存の import 経路（capture.group_subdir 等）は保たれる。
+capture.py は保存先の組み立てとログ表記に group_folder_name / group_subdir を、
+edge_auto_capture.py は注釈と保存先の解決に GroupState / group_subdir 等を、それぞれここから
+import して使う。結果として capture.group_subdir のような経路でも辿れてしまうが、それに依存する
+コードは無い（テストも lineage から直接 import する。#53）。系譜の規約を参照する側は
+このモジュールから import すること。
 """
 
 from dataclasses import dataclass
