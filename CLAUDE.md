@@ -44,11 +44,3 @@ Claude Code 向けの**導線**。ここは内容の出所ではない。
 `--strict` 必須、smoke の FAIL 切り分け、全部緑でも残る未検証領域、報告フォーマットを含む。
 
 **未検証の項目は必ず「未検証」と明記する**（§4）。4 点が緑なのは自動検査であって実機動作ではない。
-
-## 既知のドキュメント不整合
-
-修正されたらこの節ごと消す。
-
-- CONTRIBUTING §2 / §3 が smoke を「macOS では回せない」と誤読させる
-  （実際は Edge 無しでも Chrome があれば走る）→ Issue
-  [#66](https://github.com/lowbrain/edge-auto-caputure/issues/66)

@@ -129,7 +129,7 @@
 | 事項 | 状況 |
 |------|------|
 | `pytest` / `ruff` / `mypy` | `pip install -e ".[dev]"` を先に。`ruff check` / `mypy` は緑（終了コード 0）が正常 |
-| `tests/smoke_badge.py` | 実 Edge/Chrome が要る。無ければ `SKIP`（終了コード 0）で抜けるので **PASS 表示を鵜呑みにしない**（`--strict` で FAIL 化） |
+| `tests/smoke_badge.py` | 実 Edge/Chrome が要る。**Edge → Chrome の順にフォールバックするので、Edge の無い macOS でも Chrome があれば実際に走って通る**（同じ Chromium 系でバー JS の検証としては等価）。どちらも無ければ `SKIP`（終了コード 0）で抜けるので **PASS 表示を鵜呑みにしない**（`--strict` で FAIL 化） |
 | `infra._message_box` | Windows は `ctypes.windll`、macOS は `osascript`（開発機での確認用に分岐追加済み） |
 | `build.ps1` | PowerShell / Windows 専用。macOS では実行検証できない |
 | `%LOCALAPPDATA%` | `D-C1` の退避先。macOS には存在せず `tempfile.gettempdir()` へフォールバック |
@@ -147,14 +147,19 @@
 ```bash
 pip install -e ".[dev]"
 pytest                                 # 速い純粋関数・token 照合・DL の回帰
-python tests/smoke_badge.py --strict   # 実 Edge。バー構築・SPA検知・写り込み防止・検知不能化(E-3)・JS エラー無し
+python tests/smoke_badge.py --strict   # 実 Edge/Chrome。バー構築・SPA検知・写り込み防止・検知不能化(E-3)・JS エラー無し
 ruff check .
 mypy .
 ```
 
-- **smoke は実 Edge/Chrome 必須**（Windows で実行）。手元に無ければ `SKIP`（終了コード 0）で抜けるので
+- **smoke は実 Edge/Chrome 必須**（**Chrome があれば macOS でも走る**。CI は Windows + 実 Edge）。
+  どちらも手元に無ければ `SKIP`（終了コード 0）で抜けるので
   **PASS 表示を鵜呑みにしない**。CI・検証では **`--strict`** を付けて FAIL 化する（付けないと
   ブラウザ不在環境で「何も検証せず緑」になる）。SKIP されたら報告では「未検証」と明記する。
+- **smoke が緑でも Windows 実機検証の代わりにはならない。** smoke が見るのは操作バーの JS で、
+  `build.ps1` / `infra._message_box_windows` の `ctypes.windll` / `%LOCALAPPDATA%` 退避（`D-C1`）/
+  実 Edge 固有の挙動は対象外。実機検証の現在地は Issue
+  [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38) の「検証状況」が正。
 - **新モジュールを足したときは** §1-10 のとおり `[tool.setuptools] py-modules` を更新する
   （`[tool.mypy]` は `files = ["."]` + `exclude` 方式なので追記不要。列挙方式へ戻さないこと）。
 - リファクタでは**新規テストを足せる場所は足す**（純粋関数・判定ロジック・レジストリ等はブラウザ無しで単体化できる）。
@@ -162,7 +167,7 @@ mypy .
 
 CI（GitHub Actions）でも同じ 4 点が回る（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）。
 ジョブは 3 本に分かれていて、`ruff` + `mypy` と `pytest` は Linux、**smoke は実 Edge が要るので Windows runner** で
-`--strict` 付きで回す。
+`--strict` 付きで回す（`pytest` は 3.9 / 3.12 のマトリクスなので、**実行されるチェックは 4 つ**になる）。
 
 ---
 
