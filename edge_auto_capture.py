@@ -64,7 +64,7 @@ from capture import (
     CaptureRunner,
     try_eval,
 )
-from config import Config, load_config, should_capture, summarize_config
+from config import Config, ConfigFatalError, load_config, should_capture, summarize_config
 from infra import (
     __version__,
     acquire_single_instance_lock,
@@ -746,7 +746,15 @@ async def main(config: Config) -> None:
 if __name__ == "__main__":
     # 先に設定を読み、ログの出力先を保存先（output_dir）へ切り替えてから記録を始める。
     # （load_config が output_dir 確定時に set_log_dir を呼ぶ。以後のログはそこへ残る）
-    config = load_config()
+    #
+    # 設定を読み切れないとき（保存先がどこにも書けない／数値項目が不正）は config が
+    # ConfigFatalError を投げる。ライブラリ層はプロセスを落とさないので、通知と終了は
+    # 入口のここ 1 か所で決める（#49）。文面は例外に載っているものをそのまま出す。
+    try:
+        config = load_config()
+    except ConfigFatalError as e:
+        notify_fatal(str(e))
+        sys.exit(1)
 
     # ログは追記のみ（既存があればそのまま末尾へ足す。削除・作り直しはしない）。
     log(f"=== edge-auto-capture v{__version__} 起動 ===")

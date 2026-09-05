@@ -2,11 +2,13 @@
 
 Config データクラスと load_config を提供する。基盤ユーティリティ（infra）だけに依存し、
 Playwright には依存しないので、実 Edge 無しで設定読み込みの仕様を回帰テストできる。
+
+読み切れない設定は ConfigFatalError で返す（プロセスは落とさない）。終了の判断は入口
+（edge_auto_capture.cli）の 1 か所に集める（#49）。
 """
 
 import configparser
 import fnmatch
-import sys
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +17,19 @@ from infra import BASE_DIR, log, notify_fatal, resolve_writable_dir, set_log_dir
 
 # 設定ファイルのパス（基準フォルダ固定）。
 CONFIG_PATH = BASE_DIR / "config.ini"
+
+
+class ConfigFatalError(Exception):
+    """設定を読み切れず、起動を続けられないときに送出する（#49）。
+
+    ライブラリ層（この config モジュール）はプロセスを落とさない。以前は notify_fatal →
+    sys.exit(1) をここで直接呼んでいたため、「設定を返す」はずの load_config が失敗時には
+    返らずプロセスを終わらせ、GUI 設定画面・設定検証コマンド・テストの別経路から再利用
+    できなかった（テストも「どう失敗したか」ではなく「落ちたこと」しか見られなかった）。
+
+    メッセージには利用者向けのダイアログ文面をそのまま載せる。通知（notify_fatal）と終了
+    コードの決定は入口（edge_auto_capture.cli）の 1 か所に集める。
+    """
 
 # 自己修復（D-C3）で書き出す既定 config.ini の中身。配布する config.ini と同一
 # （drift はテスト test_default_config_text_matches_bundled_ini で担保する）。
@@ -315,7 +330,8 @@ def _resolve_output_dir(config: Config) -> Config:
 
     _build_config（純粋な値組み立て）から分離した副作用側（R5b）。組み立て済みの Config を
     受け取り、以下を行って output_dir 差し替え済みの Config を返す:
-      - 書き込み可能なフォルダへの解決と %LOCALAPPDATA% 等への退避（D-C1）。どこにも書けなければ終了。
+      - 書き込み可能なフォルダへの解決と %LOCALAPPDATA% 等への退避（D-C1）。
+        どこにも書けなければ ConfigFatalError（通知と終了は入口が決める。#49）。
       - 起動 1 回分のセッションフォルダの挿入（F-C3）。
       - ログ出力先をその保存先へ切り替え（set_log_dir）。
       - 退避が起きた場合の通知。
@@ -324,13 +340,14 @@ def _resolve_output_dir(config: Config) -> Config:
 
     # 書き込み可能なフォルダへ解決する（D-C1）。権限の無い場所へ展開されても
     # 無言終了せず、%LOCALAPPDATA% 等へ退避して動き続ける。どこにも書けなければ終了。
+    # （終了そのものは入口の仕事なので、ここでは ConfigFatalError を投げるだけにする）
     resolved = resolve_writable_dir(output_dir)
     if resolved is None:
-        notify_fatal(
+        # 通知と終了は入口（cli）へ委ねる。文面はそのまま持たせて利用者から見た挙動を変えない。
+        raise ConfigFatalError(
             f"保存先フォルダに書き込めませんでした: {output_dir}\n"
             "書き込み可能な場所（例: ドキュメント配下）へ移して実行してください。"
         )
-        sys.exit(1)
 
     # F-C3: 起動 1 回分のセッションフォルダを 1 段挟む（例: output/2026-08-11_143025/）。
     # 撮影物・log.txt・index.csv・lineage-<id>/downloads はすべて output_dir からの相対で
@@ -428,6 +445,8 @@ def load_config() -> Config:
         （sec.get / getfloat / getint の第2引数が既定値）。
       - 数値項目の値だけが不正（例: settle_delay =／範囲外）→ ファイル自体は使えるので
         勝手に上書きせず、直し方を伝えて終了する（利用者の編集内容を失わせない）。
+        「伝えて終了」の実体は ConfigFatalError の送出で、通知（notify_fatal）と終了コードは
+        入口（edge_auto_capture.cli）が決める（#49）。保存先がどこにも書けないときも同じ。
       - output_dir の値が空 → 既定値（output）へフォールバックする
         （空だと Path('.') でカレントへ保存してしまう事故を防ぐ）。
       - 確定した output_dir の直下へ、起動時刻のセッションフォルダを 1 段挟む（F-C3。
@@ -467,8 +486,8 @@ def load_config() -> Config:
     except ValueError as e:
         # 値だけが不正（利用者の編集ミス）。ファイル構造は正しく他の設定は生きているので、
         # 勝手に既定へ戻さず、直し方を伝えて終了する（編集内容を失わせない）。
-        notify_fatal(
+        # 通知と終了は入口（cli）の仕事なので、文面を載せた ConfigFatalError に変換して返す。
+        raise ConfigFatalError(
             f"config.ini の読み込みに失敗しました: {e}\n"
             "[capture] セクションと各項目の値を確認してください。"
-        )
-        sys.exit(1)
+        ) from e
