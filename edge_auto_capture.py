@@ -28,6 +28,7 @@ Edge の起動・監視・後始末はこのスクリプトが一括で行う（
   - infra.py             … 基盤ユーティリティ（パス・ログ・致命エラー通知・一時プロファイル掃除）。
   - lineage.py           … タブ系譜（lineage）の識別・保存先規約と解決レジストリ。
   - browser.py           … Edge/Chrome の起動候補と起動オプションの組み立て。
+  - downloads.py         … ダウンロードの退避（保存先規約・衝突回避・save_as 実行）。
 
 事前準備:
   pip install -e .          （または pip install playwright）
@@ -58,6 +59,7 @@ from typing import Any, Optional
 from playwright.async_api import Page, async_playwright
 
 import badge
+import downloads
 from browser import browser_candidates, browser_launch_kwargs
 from capture import (
     CaptureRequest,
@@ -78,7 +80,6 @@ from lineage import (
     GroupState,
     LineageRegistry,
     group_folder_name,
-    group_subdir,
     make_group,
 )
 
@@ -92,33 +93,6 @@ def _url_key(url: str) -> str:
     型SPAの本当の中身変化は SPA検知（本文署名）が担うため、ここで落としても取りこぼさない。
     """
     return url.split("#", 1)[0]
-
-
-def _downloads_dir(config: Config, group_id: str = "") -> Path:
-    """利用者のダウンロードを残す保存先を返す（E-4）。
-
-    撮影成果物（png/txt/log.txt）と混ざらないよう downloads サブフォルダに分ける。
-    保存物と同じく系譜（lineage）ごとにまとめるため、group_id 採番済みなら
-    output_dir/lineage-<id>/downloads、未採番(空)なら output_dir/downloads を返す。
-    """
-    return group_subdir(config.output_dir, group_id) / "downloads"
-
-
-def _unique_path(directory: Path, name: str) -> Path:
-    """directory/name を返す。既に在れば name(1)/name(2)… と連番を付けて衝突を避ける。
-
-    同名ファイルを続けて落としても上書きしないようにするため（拡張子は保つ）。
-    """
-    target = directory / name
-    if not target.exists():
-        return target
-    stem, suffix = Path(name).stem, Path(name).suffix
-    n = 1
-    while True:
-        cand = directory / f"{stem}({n}){suffix}"
-        if not cand.exists():
-            return cand
-        n += 1
 
 
 # セレクタ履歴（F-D2）の保持上限。datalist の候補が無限に伸びないよう頭打ちにする。
@@ -447,16 +421,13 @@ class CaptureSession:
     # ---- ダウンロードの退避（E-4） ----
 
     async def on_download(self, download) -> None:
-        """利用者がブラウザで落としたファイルを保存先へ退避する（E-4）。
+        """発生元ページの系譜を解決し、保存の本体（downloads.save）へ委譲する（E-4）。
 
-        Playwright は既定でダウンロードをコンテキスト終了時に削除する。
-        accept_downloads / downloads_path を指定しても削除される（一時置き場が変わる
-        だけ）ので、ここで save_as して初めて手元に残る。元のファイル名のまま、撮影物と
-        同じく系譜（lineage）ごとの output_dir/lineage-<id>/downloads へ保存し、同名衝突時は連番を付ける。
+        系譜解決はページ集合の状態（_resolve_group）を持つこちらの責務、保存先規約・
+        連番衝突回避・save_as の実行は downloads.py 側の責務（#59 でそちらへ切り出した）。
         どの系譜かは発生元ページ（download.page）の所属グループで決める。
         token 照合は不要（ブラウザ本体が発火するイベントで、ページ側から詐称できない）。
         """
-        name = download.suggested_filename or "download"
         # 発生元ページの系譜を解決（取れなければ未採番＝空 として output_dir/downloads へ）。
         group_id = ""
         try:
@@ -465,16 +436,7 @@ class CaptureSession:
                 group_id = (await self._resolve_group(page)).id
         except Exception:
             group_id = ""
-        dl_dir = _downloads_dir(self.config, group_id)
-        try:
-            dl_dir.mkdir(parents=True, exist_ok=True)
-            target = _unique_path(dl_dir, name)
-            await download.save_as(str(target))
-            log(f"[DL] {group_folder_name(group_id)} 保存しました: {target.name}" if group_id
-                else f"[DL] 保存しました: {target.name}")
-        except Exception as e:
-            # 例: 保存前にウィンドウを閉じられ一時ファイルが消えた等。無言にはしない。
-            log(f"[DL] ダウンロードの保存に失敗しました: {name} ({e})")
+        await downloads.save(download, self.config, group_id)
 
     # ---- セットアップと監視ループ ----
 

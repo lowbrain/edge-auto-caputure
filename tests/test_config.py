@@ -490,8 +490,8 @@ output_dir = {out}
     assert lineage.group_subdir(c.output_dir, "20260811143025000") == (
         session / "lineage-20260811143025000"
     )
-    # ダウンロード退避先（edge_auto_capture._downloads_dir）もセッションフォルダ配下。
-    from edge_auto_capture import _downloads_dir
+    # ダウンロード退避先（downloads._downloads_dir）もセッションフォルダ配下。
+    from downloads import _downloads_dir
 
     assert _downloads_dir(c, "20260811143025000") == (
         session / "lineage-20260811143025000" / "downloads"
