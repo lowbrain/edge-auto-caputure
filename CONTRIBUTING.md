@@ -81,12 +81,15 @@
    `warn_unused_ignores = true` ゆえ **OS 次第で必ず片方が落ちる**。だから ignore を撤去して
    `Any` 経由に変えてある。`getattr` は ruff の `B009` と衝突するため不採用。
 
-10. **新モジュール（`lineage.py` / `browser.py` / サニタイズ器 等）を足すときは 2 箇所を同時更新** —
-    漏れると配布 / CI が**黙って割れる**。[`pyproject.toml`](pyproject.toml) の
-    `[tool.setuptools] py-modules` と `[tool.mypy] files` の**両方**へモジュール名を追加する。
-    `ruff` は `extend-exclude` 方式なので追記不要、[`build.ps1`](build.ps1) は import 追従なので変更不要。
+10. **新モジュール（`lineage.py` / `browser.py` / サニタイズ器 等）を足すときは `py-modules` を更新** —
+    漏れると配布が**黙って割れる**。[`pyproject.toml`](pyproject.toml) の
+    `[tool.setuptools] py-modules` へモジュール名を追加する。**手で追記が要るのはここ 1 箇所だけ。**
+    `[tool.mypy]` は `files = ["."]` + `exclude` 方式なので追記不要（列挙方式は新モジュールを
+    検査対象へ入れ忘れて型エラーが素通りする罠で、#40 で実際に起きたため構造的に潰した。
+    理由は [`pyproject.toml`](pyproject.toml) の `[tool.mypy]` のコメント参照。**列挙方式へ戻さないこと**）。
+    `ruff` も `extend-exclude` 方式なので追記不要、[`build.ps1`](build.ps1) は import 追従なので変更不要。
     **CI も `mypy .`（対象は `[tool.mypy] files` 由来）で回す。**CI 側に検査対象を列挙し直さないこと —
-    引数は `files` を上書きするので、ここの 2 箇所を守っても CI だけ新モジュールを検査しなくなる。
+    引数は `files` を上書きするので、`files = ["."]` にしていても CI だけ新モジュールを検査しなくなる。
 
 11. **コメントは資産。関数を移動するときは一緒に運ぶ** — 各所の日本語コメントは
     `A-1` / `A-2` / `B-3` / `E-6` 等の落とし穴回避の記録。リファクタで関数を移すときも
@@ -130,7 +133,8 @@ mypy .
 - **smoke は実 Edge/Chrome 必須**（Windows で実行）。手元に無ければ `SKIP`（終了コード 0）で抜けるので
   **PASS 表示を鵜呑みにしない**。CI・検証では **`--strict`** を付けて FAIL 化する（付けないと
   ブラウザ不在環境で「何も検証せず緑」になる）。SKIP されたら報告では「未検証」と明記する。
-- **新モジュールを足したときは** mypy を回す前に §1-10 の 2 箇所（`py-modules` / `[tool.mypy] files`）を更新する。
+- **新モジュールを足したときは** §1-10 のとおり `[tool.setuptools] py-modules` を更新する
+  （`[tool.mypy]` は `files = ["."]` + `exclude` 方式なので追記不要。列挙方式へ戻さないこと）。
 - リファクタでは**新規テストを足せる場所は足す**（純粋関数・判定ロジック・レジストリ等はブラウザ無しで単体化できる）。
 - `ruff` は `line-length = 120`、`select = ["E", "F", "I", "UP", "B"]`。
 
