@@ -1,0 +1,54 @@
+# CLAUDE.md
+
+Claude Code 向けの**導線**。ここは内容の出所ではない。
+
+> **このファイルに知識をコピーしないこと。** このリポジトリは過去に
+> `docs/ROADMAP.md` と Issue の二重管理で実害を出し（#38 冒頭）、
+> CONTRIBUTING の手順が実態からズレて「解消済みの罠を踏み直せ」と
+> 指示する状態にもなった（#51）。**CLAUDE.md を 4 枚目の drift 源にしない。**
+> ここに書いてよいのは「どこを見るか」だけで、「何が正しいか」は書かない。
+
+## 出所
+
+| 知りたいこと | 出所 |
+|---|---|
+| **触る前に知るべき落とし穴** | [`CONTRIBUTING.md`](CONTRIBUTING.md) §1「コードベース固有の落とし穴」 |
+| 作業環境（macOS 開発 / Windows 専用ツール） | [`CONTRIBUTING.md`](CONTRIBUTING.md) §2「作業環境の注意」 |
+| 検証手順 | [`CONTRIBUTING.md`](CONTRIBUTING.md) §3「検証手順（4 点セット）」／スキル `/verify` |
+| コミット・報告の慣習 | [`CONTRIBUTING.md`](CONTRIBUTING.md) §4「コミット・報告の慣習」 |
+| 課題タグ（`A-` / `B-` / `D-` / `E-` / `F-` / `R`）の意味 | [`CONTRIBUTING.md`](CONTRIBUTING.md) 冒頭の凡例 |
+| 仕組み・設定・ビルド・配布 | [`README.md`](README.md) |
+| 利用者向けの使い方（Shift-JIS） | [`USAGE.txt`](USAGE.txt) |
+| **残タスクと現在地・個々のタグの状態** | Issue [#38](https://github.com/lowbrain/edge-auto-caputure/issues/38)（ピン留め・これが正） |
+| 過去の完了作業の実装内容 | git 履歴 |
+
+**ドキュメントに残タスクの一覧を作らない**（#38 冒頭の方針）。
+
+## 変更前に読む場所（ファイル → 節）
+
+「知らないと無言で壊れる」箇所は変更対象ごとに違う。**着手前に該当節を読む。**
+
+| 触るもの | 読む節 | 一言 |
+|---|---|---|
+| `badge.js` / `badge.py` | §1-1, §1-5, §1-6 | 言語境界。`$CONFIG` 単純置換・バインディング名の二重管理・`closed` シャドウ・`E-3` 固定名禁止 |
+| `USAGE.txt` | §1-4 | Shift-JIS。往復変換で確認する |
+| 新モジュールの追加 | §1-10 | 手で足すのは `py-modules` の 1 箇所だけ |
+| 型注釈 | §1-2, §1-8 | Python 3.9+。`X \| Y` 記法は使わない。mypy の 3.10 設定は意図的 |
+| 例外処理まわり | §1-3 | 握り潰しは意図的な設計。消す方向の一括リファクタをしない |
+| 関数の移動・リファクタ | §1-11 | 日本語コメントは落とし穴回避の記録。削らない・要約しない |
+| `infra._message_box_windows` | §1-9 | `ctypes.windll` は `Any` 経由が正 |
+
+## 検証
+
+変更のたびに 4 点セット（§3）。**スキル `/verify` がこれを扱う** —
+`--strict` 必須、smoke の FAIL 切り分け、全部緑でも残る未検証領域、報告フォーマットを含む。
+
+**未検証の項目は必ず「未検証」と明記する**（§4）。4 点が緑なのは自動検査であって実機動作ではない。
+
+## 既知のドキュメント不整合
+
+修正されたらこの節ごと消す。
+
+- CONTRIBUTING §2 / §3 が smoke を「macOS では回せない」と誤読させる
+  （実際は Edge 無しでも Chrome があれば走る）→ Issue
+  [#66](https://github.com/lowbrain/edge-auto-caputure/issues/66)
