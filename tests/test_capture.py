@@ -19,6 +19,7 @@ import pytest
 import capture
 import infra
 from capture import (
+    INDEX_CSV_HEADER,
     CaptureRequest,
     CaptureRunner,
     page_label,
@@ -376,9 +377,12 @@ def test_append_index_writes_bom_header_and_row(tmp_path):
     runner = CaptureRunner()
     cfg = Config(output_dir=tmp_path)
     cfg.output_dir.mkdir(exist_ok=True)
+    req = CaptureRequest(
+        _FakePage("p"), "https://example.test/x", cfg, "#main", "20260811143025123", "spa"
+    )
     runner._append_index(
-        cfg, "2026-08-11T14:30:25.123+09:00", "https://example.test/x",
-        "タイトル,あり", "2026-08-11_14-30-25-123_stem", "spa", "#main", ["png", "txt"],
+        req, "2026-08-11T14:30:25.123+09:00",
+        "タイトル,あり", "2026-08-11_14-30-25-123_stem", ["png", "txt"],
     )
     path = tmp_path / "index.csv"
     # 地雷1: BOM 付きで書く（BOM 無しだと Excel で文字化け）。
@@ -397,8 +401,14 @@ def test_append_index_appends_without_duplicate_bom_or_header(tmp_path):
     runner = CaptureRunner()
     cfg = Config(output_dir=tmp_path)
     cfg.output_dir.mkdir(exist_ok=True)
-    runner._append_index(cfg, "t1", "u1", "titleA", "stemA", "manual", "", ["png"])
-    runner._append_index(cfg, "t2", "u2", "titleB", "stemB", "url", "#s", [])
+    runner._append_index(
+        CaptureRequest(_FakePage("p1"), "u1", cfg, "", "", "manual"),
+        "t1", "titleA", "stemA", ["png"],
+    )
+    runner._append_index(
+        CaptureRequest(_FakePage("p2"), "u2", cfg, "#s", "", "url"),
+        "t2", "titleB", "stemB", [],
+    )
     raw = (tmp_path / "index.csv").read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
     assert raw.count(b"\xef\xbb\xbf") == 1        # BOM は先頭 1 回だけ
@@ -414,6 +424,53 @@ def test_append_index_failure_does_not_raise(monkeypatch, tmp_path):
     cfg = Config(output_dir=tmp_path / "missing")   # 親フォルダが無く open が失敗する
     logged: list[str] = []
     monkeypatch.setattr(capture, "log", lambda m: logged.append(m))
-    runner._append_index(cfg, "t", "u", "ti", "st", "manual", "", ["png"])  # 例外は出ない
+    req = CaptureRequest(_FakePage("p"), "u", cfg, "", "", "manual")
+    runner._append_index(req, "t", "ti", "st", ["png"])  # 例外は出ない
     assert any("[skip index]" in m for m in logged)
 
+
+
+class _IndexPage:
+    """_capture を実 Edge 無しで 1 周させるための最小ページ代役（索引 CSV の検証用）。"""
+
+    async def wait_for_load_state(self, state, timeout=None):
+        return None
+
+    async def title(self):
+        return "ページ題名"
+
+    async def screenshot(self, path=None, full_page=None):
+        Path(path).write_bytes(b"png")
+
+    async def evaluate(self, js, *args):
+        return "body text"
+
+    def locator(self, selector):
+        raise AssertionError("この回帰テストでは _part.txt は使わない")
+
+
+def test_capture_writes_index_row_from_request(tmp_path):
+    # _capture → _append_index の受け渡しが、CaptureRequest の各値を正しい列へ落とすこと。
+    # trigger と selector は隣接する同型（str）で、取り違えても型検査では止まらない（#55）。
+    # 値を区別できる形（"spa"→"SPA変化" と "#main"）で与え、列の入れ替わりを検知する。
+    async def scenario():
+        runner = CaptureRunner()
+        cfg = Config(output_dir=tmp_path, settle_delay=0)
+        req = CaptureRequest(
+            _IndexPage(), "https://example.test/z", cfg,
+            selector="", group_id="20260811143025123", trigger="spa",
+        )
+        await runner._capture(req)
+
+        rows = _read_index(tmp_path / "index.csv")
+        assert rows[0] == INDEX_CSV_HEADER
+        assert len(rows) == 2
+        row = rows[1]
+        assert row[1] == "https://example.test/z"   # URL
+        assert row[2] == "ページ題名"                 # タイトル（撮影中に確定＝引数のまま）
+        assert row[3].endswith("_ページ題名")          # ファイル名接頭辞
+        assert row[4] == "SPA変化"                   # 撮影契機（req.trigger 由来）
+        assert row[5] == ""                          # セレクタ（req.selector 由来）
+        assert row[6] == "成功"
+
+    asyncio.run(scenario())
